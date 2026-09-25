@@ -1,5 +1,7 @@
 import { ConfigProvider, Effect, Layer } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { Inngest } from "inngest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { InngestClient } from "#/modules/inngest/client";
 import { readCollection } from "#/collections/read.server";
 import { publishClusterDomainNow, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { type FakeHostedDns, startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
@@ -14,13 +16,15 @@ import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret
 const organizationId = "00000000-0000-4000-8000-000000000a01";
 const userId = "00000000-0000-4000-8000-000000000a02";
 const encryption = makeSecretEncryption("cluster-domain-test-encryption-secret");
+const inngest = new Inngest({ id: "cluster-domain-test" });
+const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 describe("Organization Cluster Domain", () => {
   let harness: GithubPostgresTestHarness;
   let hostedDns: FakeHostedDns;
 
   function run<A, E>(
-    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption>,
+    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | InngestClient>,
     env: Record<string, string> = {},
   ) {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
@@ -35,7 +39,11 @@ describe("Organization Cluster Domain", () => {
         ...env,
       },
     }))));
-    return harness.runEffect(operation.pipe(Effect.provideService(SecretEncryption, encryption), Effect.provide(config)));
+    return harness.runEffect(operation.pipe(
+      Effect.provideService(SecretEncryption, encryption),
+      Effect.provideService(InngestClient, inngest),
+      Effect.provide(config),
+    ));
   }
 
   const rows = () => harness.pool.query<{ endpoint: string; name: string; encrypted_token: Parameters<typeof encryption.decrypt>[0] }>(
@@ -99,8 +107,10 @@ describe("Organization Cluster Domain", () => {
     hostedDns.state.failWith = 500;
     expect(await run(publishClusterDomainNow({ userId }, { organizationSlug: "acme" }).pipe(Effect.flip)))
       .toMatchObject({ _tag: "Conflict" });
+    expect(send).not.toHaveBeenCalled();
     hostedDns.state.failWith = null;
     expect(await run(publishClusterDomainNow({ userId }, { organizationSlug: "acme" }))).toEqual({ name: "acme.ployz.test" });
+    expect(send).toHaveBeenCalledWith({ name: "cluster-domain/sync.requested", data: { organizationId } });
     expect(await run(publishClusterDomainNow({ userId: organizationId }, { organizationSlug: "acme" }).pipe(Effect.flip)))
       .toMatchObject({ _tag: "NotFound" });
   });

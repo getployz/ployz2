@@ -1,0 +1,147 @@
+import "@tanstack/react-start/server-only";
+import { isIPv6 } from "node:net";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { Data, Effect } from "effect";
+import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { type HostedDnsError, putHostedDomainRecords, renewHostedDomainLease } from "#/modules/cluster-domain/hosted-dns.server";
+import {
+  type ClusterDomainPublishedAddress,
+  organizationClusterDomain,
+  type OrganizationClusterDomain,
+} from "#/modules/cluster-domain/tables";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { organizationPairing } from "#/modules/runtime/tables";
+import { Database } from "#/server/database.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
+
+const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
+const PROBE_TIMEOUT_MS = 5_000;
+/** Caddy answers it on port 80 of every ingress Server with the Machine id (core `INGRESS_VERIFY_PATH`). */
+const INGRESS_VERIFY_PATH = "/.ployz-verify";
+
+/** Hosted DNS refuses the stored name for good: 410 retired, or 401 for a token it no longer accepts. Retrying cannot help. */
+export class ClusterDomainUnusable extends Data.TaggedError("ClusterDomainUnusable")<{
+  readonly name: string;
+  readonly status: number;
+  readonly message: string;
+}> {
+  readonly retriable = false as const;
+}
+
+export type IngressProbe = {
+  readonly reachable: ClusterDomainPublishedAddress[];
+  readonly unreachable: ClusterDomainPublishedAddress[];
+};
+
+/**
+ * Runs one bearer call against the Organization's name, reserving one first when the row is missing.
+ * A reaped name (404: never had records and is over 24 hours old) is forgotten and reserved again, once.
+ */
+const withClusterDomain = <R>(
+  organizationId: string,
+  call: (target: { endpoint: string; name: string; token: string }) => Effect.Effect<void, HostedDnsError, R>,
+) => Effect.gen(function* () {
+  const encryption = yield* SecretEncryption;
+  const { drizzle } = yield* Database;
+  const attempt = (row: OrganizationClusterDomain) =>
+    call({ endpoint: row.endpoint, name: row.name, token: encryption.decrypt(row.encryptedToken) }).pipe(
+      Effect.mapError((error) => error.status === 401 || error.status === 410
+        ? new ClusterDomainUnusable({
+          name: row.name,
+          status: error.status,
+          message: error.status === 410 ? `Hosted DNS retired ${row.name}.` : `Hosted DNS rejected the token for ${row.name}.`,
+        })
+        : error),
+    );
+  const row = yield* reserveClusterDomain(organizationId);
+  yield* attempt(row).pipe(Effect.catchIf(
+    (error) => error._tag === "HostedDnsError" && error.status === 404,
+    () => drizzle.delete(organizationClusterDomain)
+      .where(and(eq(organizationClusterDomain.organizationId, organizationId), eq(organizationClusterDomain.name, row.name)))
+      .pipe(
+        Effect.andThen(Effect.logInfo("Hosted DNS reaped the Cluster Domain; reserving a new one.", { name: row.name })),
+        Effect.andThen(reserveClusterDomain(organizationId)),
+        Effect.flatMap(attempt),
+      ),
+  ));
+});
+
+/** True when `GET http://<ip>/.ployz-verify` answers with the Machine id within five seconds. */
+const probeIngressServer = (server: ClusterDomainPublishedAddress) => Effect.tryPromise({
+  try: async (signal) => {
+    const host = isIPv6(server.address) ? `[${server.address}]` : server.address;
+    const response = await fetch(`http://${host}${INGRESS_VERIFY_PATH}`, {
+      redirect: "manual",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)]),
+    });
+    return response.status === 200 && (await response.text()).trim() === server.machineId;
+  },
+  catch: () => false,
+}).pipe(Effect.orElseSucceed(() => false));
+
+/**
+ * Probes every ingress Server with a public IP in the Cluster's runtime frame.
+ * Null when no frame could be read: the caller then leaves the published records alone.
+ */
+export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers")(function* (organizationId: string) {
+  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (session.status !== "connected") return null;
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const servers = frame.machines.flatMap(({ machine }): ClusterDomainPublishedAddress[] =>
+    machine.accepts_ingress && machine.public_ip !== null ? [{ machineId: machine.id, address: machine.public_ip }] : []);
+  const probed = yield* Effect.forEach(servers, (server) =>
+    probeIngressServer(server).pipe(Effect.map((reachable) => ({ server, reachable }))), { concurrency: "unbounded" });
+  return {
+    reachable: probed.flatMap(({ server, reachable }) => reachable ? [server] : []),
+    unreachable: probed.flatMap(({ server, reachable }) => reachable ? [] : [server]),
+  } satisfies IngressProbe;
+}, Effect.scoped, Effect.catch((error) =>
+  Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error).pipe(Effect.as(null))));
+
+/**
+ * Points the apex at the reachable ingress Servers (a full-set PUT) and records the probe.
+ * An empty reachable set writes no records: Hosted DNS refuses it, and the last good set is better than none.
+ */
+export const publishClusterDomainRecords = Effect.fn("ClusterDomain.publishRecords")(function* (
+  organizationId: string,
+  probe: IngressProbe,
+) {
+  const { drizzle } = yield* Database;
+  const ofOrganization = eq(organizationClusterDomain.organizationId, organizationId);
+  if (probe.reachable.length === 0) {
+    yield* drizzle.update(organizationClusterDomain).set({ unreachable: probe.unreachable, updatedAt: new Date() }).where(ofOrganization);
+    return false;
+  }
+  const addresses = probe.reachable.map((server) => server.address);
+  yield* withClusterDomain(organizationId, (target) => putHostedDomainRecords({
+    ...target,
+    a: addresses.filter((address) => !isIPv6(address)),
+    aaaa: addresses.filter((address) => isIPv6(address)),
+  }));
+  const now = new Date();
+  yield* drizzle.update(organizationClusterDomain).set({
+    recordsSyncedAt: now,
+    leaseRenewedAt: now,
+    published: probe.reachable,
+    unreachable: probe.unreachable,
+    updatedAt: now,
+  }).where(ofOrganization);
+  return true;
+});
+
+/** Renews the lease, so a Cluster whose ingress is unreachable for a while keeps its name. */
+export const renewClusterDomainLease = Effect.fn("ClusterDomain.renewLease")(function* (organizationId: string) {
+  yield* withClusterDomain(organizationId, renewHostedDomainLease);
+  const now = new Date();
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(organizationClusterDomain).set({ leaseRenewedAt: now, updatedAt: now })
+    .where(eq(organizationClusterDomain.organizationId, organizationId));
+});
+
+/** Organizations with a founded Cloud Pairing that is not being removed: the hourly sync's fan-out. */
+export const listPairedOrganizationIds = Effect.fn("ClusterDomain.listPairedOrganizationIds")(function* () {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ id: organizationPairing.organizationId }).from(organizationPairing)
+    .where(and(isNotNull(organizationPairing.founderMachineId), isNull(organizationPairing.removalStartedAt)));
+  return rows.map((row) => row.id);
+});

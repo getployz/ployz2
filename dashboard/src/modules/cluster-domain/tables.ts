@@ -26,6 +26,8 @@ export const organizationClusterDomain = pgTable(
     /** Null until the first successful records PUT. */
     recordsSyncedAt: timestamptz("records_synced_at"),
     published: jsonb("published").notNull().default([]).$type<ClusterDomainPublishedAddress[]>(),
+    /** Ingress Servers with a public IP that the last sync could not reach on port 80. */
+    unreachable: jsonb("unreachable").notNull().default([]).$type<ClusterDomainPublishedAddress[]>(),
     /** The wildcard certificate for `*.name`: all three set together, or none. */
     encryptedCertificatePrivateKey: jsonb("encrypted_certificate_private_key").$type<EncryptedSecretValue>(),
     certificateChain: text("certificate_chain"),

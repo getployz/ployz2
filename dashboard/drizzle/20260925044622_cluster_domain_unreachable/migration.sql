@@ -1,0 +1,1 @@
+ALTER TABLE "organization_cluster_domain" ADD COLUMN "unreachable" jsonb DEFAULT '[]' NOT NULL;

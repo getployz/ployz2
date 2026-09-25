@@ -60,3 +60,26 @@ export const releaseHostedDomain = Effect.fn("HostedDns.release")(function* (inp
 }) {
   yield* request("release", "DELETE", domainsUrl(input.endpoint, input.name), { token: input.token });
 });
+
+/** Replaces the apex A/AAAA set. Hosted DNS refuses an empty set, so callers skip the call instead. */
+export const putHostedDomainRecords = Effect.fn("HostedDns.putRecords")(function* (input: {
+  readonly endpoint: string;
+  readonly name: string;
+  readonly token: string;
+  readonly a: readonly string[];
+  readonly aaaa: readonly string[];
+}) {
+  yield* request("put records", "PUT", domainsUrl(input.endpoint, input.name, "records"), {
+    token: input.token,
+    body: { a: input.a, aaaa: input.aaaa },
+  });
+});
+
+/** Extends the lease by seven days; a name whose lease runs out is retired. */
+export const renewHostedDomainLease = Effect.fn("HostedDns.renewLease")(function* (input: {
+  readonly endpoint: string;
+  readonly name: string;
+  readonly token: string;
+}) {
+  yield* request("renew lease", "POST", domainsUrl(input.endpoint, input.name, "lease"), { token: input.token });
+});

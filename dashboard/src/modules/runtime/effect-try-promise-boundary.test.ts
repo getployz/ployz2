@@ -10,6 +10,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/github/github-observation.api.ts",
   "modules/github/github-source.server.ts",
   "modules/cluster-domain/hosted-dns.server.ts",
+  "modules/cluster-domain/sync.server.ts",
   "server/auth.server.ts",
   "server/database.server.ts",
   "modules/inngest/client.ts",

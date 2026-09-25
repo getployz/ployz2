@@ -107,7 +107,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         const domain = tables.organizationClusterDomain;
         const rows: ClusterDomainRow[] = yield* database.drizzle.select({
           id: domain.organizationId, name: domain.name, reservedAt: domain.reservedAt, leaseRenewedAt: domain.leaseRenewedAt,
-          recordsSyncedAt: domain.recordsSyncedAt, published: domain.published, certificateNotAfter: domain.certificateNotAfter,
+          recordsSyncedAt: domain.recordsSyncedAt, published: domain.published, unreachable: domain.unreachable, certificateNotAfter: domain.certificateNotAfter,
         }).from(domain).where(scoped(domain));
         return rows;
       }

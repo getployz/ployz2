@@ -4,7 +4,7 @@ import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables"
 /** The Org Store's view of the Cluster Domain row, keyed by Organization id. Tokens and keys never leave the server. */
 export type ClusterDomainRow = { id: string } & Pick<
   OrganizationClusterDomain,
-  "name" | "reservedAt" | "leaseRenewedAt" | "recordsSyncedAt" | "published" | "certificateNotAfter"
+  "name" | "reservedAt" | "leaseRenewedAt" | "recordsSyncedAt" | "published" | "unreachable" | "certificateNotAfter"
 >;
 
 export const PublishClusterDomainInput = Schema.Struct({

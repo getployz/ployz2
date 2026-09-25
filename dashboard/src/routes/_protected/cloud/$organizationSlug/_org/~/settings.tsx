@@ -74,7 +74,7 @@ function GeneratedDomainSection({ organizationSlug }: { organizationSlug: string
   const publishNow = useServerFn(publishClusterDomainNowServerFn);
   return (
     <ClusterDomainSection
-      name={rows[0]?.name ?? null}
+      domain={rows[0] ?? null}
       onPublish={async () => {
         await publishNow({ data: { organizationSlug } });
         await reconcileCollection(clusterDomain);

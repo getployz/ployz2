@@ -4,6 +4,8 @@ import { Effect, Redacted } from "effect";
 import { releaseHostedDomain, reserveHostedDomain } from "#/modules/cluster-domain/hosted-dns.server";
 import { organizationClusterDomain, type OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import type { Actor } from "#/modules/identity/actor";
+import { sendInngestEvent } from "#/modules/inngest/client";
+import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
 import { organization as schemaOrganization } from "#/modules/organization/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { AppConfig } from "#/server/config.server";
@@ -65,7 +67,7 @@ export const releaseClusterDomain = Effect.fn("ClusterDomain.release")(function*
   );
 });
 
-/** Server Settings' Publish now: reserves the name when the Organization has none. */
+/** Server Settings' Publish now: reserves the name when the Organization has none, then requests a sync. */
 export const publishClusterDomainNow = Effect.fn("ClusterDomain.publishNow")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },
@@ -75,5 +77,10 @@ export const publishClusterDomainNow = Effect.fn("ClusterDomain.publishNow")(fun
     Effect.logWarning("Cluster Domain reservation failed.", error).pipe(
       Effect.andThen(Effect.fail(new Conflict({ message: "Hosted DNS is unreachable. Try again shortly." }))),
     )));
+  yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: id })).pipe(
+    Effect.catchTag("InngestEventSendError", (error) => Effect.logWarning("Cluster Domain sync request failed.", error).pipe(
+      Effect.andThen(Effect.fail(new Conflict({ message: "The records couldn’t be published. Try again shortly." }))),
+    )),
+  );
   return { name: row.name };
 });
