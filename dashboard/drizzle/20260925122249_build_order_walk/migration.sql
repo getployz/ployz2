@@ -1,2 +1,0 @@
-ALTER TABLE "environment_deployment_image_build" ADD COLUMN "skips" text[] DEFAULT '{}'::text[] NOT NULL;--> statement-breakpoint
-ALTER TABLE "organization_build_order" DROP CONSTRAINT "organization_build_order_check", ADD CONSTRAINT "organization_build_order_check" CHECK ("build_order" in ('servers-only', 'github-then-servers', 'servers-then-github', 'github-only'));

@@ -1,1 +1,0 @@
-ALTER TABLE "environment_deployment_image_build" ADD COLUMN "preferred" boolean DEFAULT false NOT NULL;
