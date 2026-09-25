@@ -1,3 +1,4 @@
+import { requiredServiceEnvironment } from "#/test/config-environment";
 import { environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { collectionReadInput } from "./read.contract";
 import { assert, it } from "@effect/vitest";
@@ -43,6 +44,7 @@ it.live(
       yield* migrateTestDatabase(container.url);
       const provider = ConfigProvider.fromEnv({
         env: {
+          ...requiredServiceEnvironment(),
           NODE_ENV: "test",
           DATABASE_URL: container.url.href,
           APP_URL: "http://localhost:3000",

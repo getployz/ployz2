@@ -1,4 +1,5 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
+import type { PolarConfiguration } from "#/server/config.server";
 import {
   createScheduleNightlyBillingReconcile,
   createSyncOrganizationBillingStateFunction,
@@ -32,7 +33,17 @@ import {
   createProcessVolumeRemove,
 } from "#/modules/runtime/volume-removal.inngest";
 
-export function createInngestFunctions(inngest: PloyzInngest) {
+/** A Self-hosted Cloud has no Polar, so billing sync is never registered. */
+export function createInngestFunctions(
+  inngest: PloyzInngest,
+  billingMode: PolarConfiguration["mode"],
+) {
+  const billing = billingMode === "hosted"
+    ? [
+        createSyncOrganizationBillingStateFunction(inngest),
+        createScheduleNightlyBillingReconcile(inngest),
+      ]
+    : [];
   return [
     createProcessGithubInstallationReceived(inngest),
     createProcessGithubInstallationRepositoriesReceived(inngest),
@@ -43,8 +54,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createMarkCancelledRowBackedWorkflow(inngest),
     createProcessEnvironmentDeployment(inngest),
     createScheduleGithubRepositorySync(inngest),
-    createSyncOrganizationBillingStateFunction(inngest),
-    createScheduleNightlyBillingReconcile(inngest),
+    ...billing,
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
     createProcessVolumeRemove(inngest),

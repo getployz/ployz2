@@ -28,6 +28,7 @@ import {
   createProcessTeardown,
 } from "#/modules/runtime/teardown.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
+import { createInngestFunctions } from "#/modules/inngest/index";
 import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
@@ -83,5 +84,15 @@ describe("Inngest function policies", () => {
       { id: "cancel-volume-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "prune-organization-change-log", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
+  });
+
+  it("registers billing sync only on hosted Cloud", () => {
+    const inngest = new Inngest({ id: "registration-contract" });
+    const billingIds = ["sync-organization-billing-state", "schedule-nightly-billing-reconcile"];
+    const ids = (mode: "hosted" | "self_hosted") =>
+      createInngestFunctions(inngest, mode).map(({ opts }) => opts.id);
+
+    expect(ids("hosted")).toEqual(expect.arrayContaining(billingIds));
+    expect(ids("self_hosted").filter((id) => billingIds.includes(id))).toEqual([]);
   });
 });

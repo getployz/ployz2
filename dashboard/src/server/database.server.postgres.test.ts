@@ -1,3 +1,4 @@
+import { requiredServiceEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -33,6 +34,7 @@ it.live(
       const container = yield* postgresTestContainer;
       const provider = ConfigProvider.fromEnv({
         env: {
+          ...requiredServiceEnvironment(),
           DATABASE_URL: container.url.href,
           APP_URL: "http://localhost:3000",
           BETTER_AUTH_SECRET: "better-auth-secret",

@@ -1,3 +1,4 @@
+import { requiredServiceEnvironment } from "#/test/config-environment";
 import { createHmac } from "node:crypto";
 import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
@@ -44,6 +45,7 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                ...requiredServiceEnvironment(),
                 DATABASE_URL: container.url.href,
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",

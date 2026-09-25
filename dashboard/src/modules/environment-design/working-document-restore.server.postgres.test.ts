@@ -1,3 +1,4 @@
+import { requiredServiceEnvironment } from "#/test/config-environment";
 import { getStoredServiceCredential } from "./service-repository.server";
 import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "./working-state-review";
 import { restoreWorkingDocument } from "./working-document-restore.server";
@@ -55,6 +56,7 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                ...requiredServiceEnvironment(),
                 DATABASE_URL: container.url.href,
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",

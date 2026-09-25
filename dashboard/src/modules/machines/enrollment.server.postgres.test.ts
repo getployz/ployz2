@@ -1,3 +1,4 @@
+import { requiredServiceEnvironment } from "#/test/config-environment";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
@@ -110,6 +111,7 @@ function enrollmentTestClient(
 ) {
   const provider = ConfigProvider.fromEnv({
     env: {
+      ...requiredServiceEnvironment(),
       NODE_ENV: "test",
       DATABASE_URL: "postgres://unused",
       APP_URL: "https://cloud.example.test",
@@ -210,6 +212,7 @@ describe("organization enrollment coordinator", () => {
   it("uses Actor and the managed database for enrollment commands", async () => {
     const provider = ConfigProvider.fromEnv({
       env: {
+        ...requiredServiceEnvironment(),
         NODE_ENV: "test",
         DATABASE_URL: harness.databaseUrl,
         APP_URL: "https://cloud.example.test",

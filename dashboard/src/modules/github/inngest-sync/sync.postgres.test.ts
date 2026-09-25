@@ -1,3 +1,4 @@
+import { requiredServiceEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { vi } from "vitest";
@@ -48,6 +49,7 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                ...requiredServiceEnvironment(),
                 ...process.env,
                 DATABASE_URL: container.url.href,
                 APP_URL: "http://localhost:3000",

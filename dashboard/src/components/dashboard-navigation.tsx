@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
+import { organizationStateQueryOptions } from "#/modules/environment-design/workspace.queries";
 import {
   ArrowLeftIcon,
   BoxIcon,
@@ -398,6 +400,9 @@ export function DashboardNavigation({
   onNavigate?: () => void;
 }) {
   const section = useDashboardSection();
+  // Self-hosted Cloud has no billing, so no Billing destination.
+  const billingEnabled =
+    useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.billingEnabled ?? false;
   if (scope.kind === "environment") {
     return (
       <EnvironmentNavigation
@@ -414,7 +419,9 @@ export function DashboardNavigation({
         <SidebarGroupLabel>Organization</SidebarGroupLabel>
       ) : null}
       <SidebarMenu>
-        {createDashboardNavItems(scope).map((item) => (
+        {createDashboardNavItems(scope)
+          .filter((item) => billingEnabled || item.section !== "billing")
+          .map((item) => (
           <Destination
             key={item.section}
             item={item}

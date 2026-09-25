@@ -6,10 +6,6 @@ import {
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { runInngestEffect } from "#/server/run.server";
 import {
-  BillingPlan,
-  persistableManagedSubscriptionSnapshot,
-} from "#/modules/billing/billing";
-import {
   getActiveManagedSubscriptionSnapshot,
   persistOrganizationBillingStateSnapshot,
 } from "#/modules/billing/billing.server";
@@ -39,14 +35,8 @@ const OrganizationBillingSyncEventData = Schema.Struct({
 });
 const DurableManagedSubscriptionSnapshot = Schema.Struct({
   activeSubscriptionId: Schema.NullOr(Schema.String),
-  currentPlan: Schema.NullOr(BillingPlan),
-  productId: Schema.NullOr(Schema.String),
-  amount: Schema.NullOr(Schema.Finite),
-  currency: Schema.NullOr(Schema.String),
-  currentPeriodStart: Schema.NullOr(Schema.DateFromString),
   currentPeriodEnd: Schema.NullOr(Schema.DateFromString),
   hasActiveSubscription: Schema.Boolean,
-  hasUnknownActiveProduct: Schema.Boolean,
 });
 
 export async function executeSyncOrganizationBillingState(
@@ -76,7 +66,6 @@ export async function executeSyncOrganizationBillingState(
     return {
       organizationId: null,
       hasActiveSubscription: false,
-      currentPlan: null,
       skipped: true,
     };
   }
@@ -108,7 +97,7 @@ export async function executeSyncOrganizationBillingState(
         )(serializedSnapshot);
         yield* persistOrganizationBillingStateSnapshot(
           organizationId,
-          persistableManagedSubscriptionSnapshot(snapshot),
+          snapshot,
           sourceUpdatedAtIso === null ? null : new Date(sourceUpdatedAtIso),
         );
         return snapshot;
@@ -119,7 +108,6 @@ export async function executeSyncOrganizationBillingState(
   return {
     organizationId,
     hasActiveSubscription: persistedSnapshot.hasActiveSubscription,
-    currentPlan: persistedSnapshot.currentPlan,
   };
 }
 

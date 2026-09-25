@@ -1,3 +1,4 @@
+import { requiredServiceEnvironment } from "#/test/config-environment";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";
@@ -36,6 +37,7 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                ...requiredServiceEnvironment(),
                 DATABASE_URL: container.url.href,
                 APP_URL: "http://localhost:3000",
                 BETTER_AUTH_SECRET: "better-auth-secret",
