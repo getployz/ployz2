@@ -71,7 +71,8 @@ export const handleGithubWebhookRequest = Effect.fn(
       ? yield* rejectDelivery({ deliveryId, eventKind: event, rejection: "malformed" })
       : new Response("Malformed webhook", { status: 400 });
   }
-  if (event === "ping") return new Response("OK", { status: 200 });
+  // workflow_run is subscribed for GitHub builds; acknowledge it until something reads it.
+  if (event === "ping" || event === "workflow_run") return new Response("OK", { status: 200 });
 
   if (event === "push") {
     const decoded = decodeGithubPushPayload(payload.value);

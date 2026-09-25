@@ -235,6 +235,10 @@ _Avoid_: Build pool, build preference, fallback builder
 One Builder a Service tries first, before the Organization's Build Order: GitHub Actions or one specific Server. When it does not start the build in time, the Image Build continues with the Build Order; it never forbids the others.
 _Avoid_: Builder override, pinned builder, build target
 
+**Build Workflow**:
+The `.github/workflows/ployz-build.yml` file that lets GitHub Actions be a Builder for one repository. It only runs when Cloud dispatches it, and calls the `getployz/build` Action. A repository is ready when the workflow is active on its default branch; Cloud checks this from GitHub and never writes the file itself.
+_Avoid_: CI pipeline, build config, GitHub integration
+
 **Build Method**:
 How a Service's image is described for building: a Dockerfile or Railpack.
 _Avoid_: Builder, builder type

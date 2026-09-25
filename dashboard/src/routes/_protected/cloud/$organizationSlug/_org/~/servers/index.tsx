@@ -11,8 +11,11 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "#/components/ui/empty";
+import { prefetchRemote } from "#/collections/route-data";
+import { githubBuildRepositoriesQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { AddServerDialog } from "./-components/add-server-dialog";
+import { GithubBuildsCard } from "./-components/github-builds-card";
 import { RuntimeMachineRow } from "./-components/server-list-rows";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import {
@@ -23,6 +26,9 @@ import {
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
 )({
+  loader: async ({ params, context }) => {
+    await prefetchRemote(context, githubBuildRepositoriesQueryOptions(params.organizationSlug));
+  },
   component: RouteComponent,
 });
 
@@ -116,6 +122,7 @@ function RouteComponent() {
           ))}
         </div>
       )}
+      <GithubBuildsCard organizationSlug={organizationSlug} />
     </DashboardPage>
   );
 }
