@@ -23,6 +23,7 @@ import {
 } from "#/modules/deployments/deployment-contract";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
+import { useBuildLog } from "#/modules/deployments/deployment-build-log.queries";
 
 export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
   const client = getDbClient(scope.queryClient);
@@ -145,8 +146,11 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
 
 export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView };
 
-/** One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt. */
-export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null): DeploymentAttempt | null {
+/**
+ * One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt.
+ * `buildLog` also reads the attempt's Build Steps (polled until it finishes) for per-image build stages and tails.
+ */
+export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}): DeploymentAttempt | null {
   const scope = useCollectionScope();
   const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
   const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
@@ -166,7 +170,8 @@ export function useDeploymentAttempt(organizationSlug: string, environmentId: st
       .select(({ snapshot }) => ({ environmentDeploymentId: snapshot.environmentDeploymentId, nodeType: snapshot.nodeType, nodeId: snapshot.nodeId, config: snapshot.config })),
   });
   const deployment = attempts[0];
+  const { data: log } = useBuildLog(organizationSlug, deploymentId ?? "", buildLog && (deployment?.buildServiceIds.length ?? 0) > 0);
   if (!deployment || deployment.environmentId !== environmentId) return null;
   const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history, snapshots: snapshotRows });
-  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes }) };
+  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes, buildLog: log }) };
 }

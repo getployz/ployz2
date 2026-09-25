@@ -13,6 +13,8 @@ function row(index: number, operation?: DeployOperation): OperationRow {
 /** The Engine serializes keys alphabetically, unlike the planned rows. */
 const engineOrdered = <T,>(value: T): T => JSON.parse(canonicalJson(value)) as T;
 const context = { serviceIdFor: (name: string | null) => name };
+const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null) =>
+  ({ id, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
 const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: Partial<DeploymentViewInput["deployment"]> = {}): DeploymentViewInput["deployment"] =>
   ({ status, failureCode: null, failureMessage: null, deployPreview: null, ...extra });
 
@@ -31,6 +33,17 @@ describe("deployment view projection", () => {
     expect(view.nodes.map((n) => n.outcome)).toEqual(["deployed", "deploying", "deploying"]);
     expect(view.nodes[1]?.tail).toEqual(["server-1 · starting · 12s / 60s deadline"]);
     expect(view.nodes[2]?.tail).toEqual(["server-2 · Creating container"]);
+  });
+
+  it("times each node's rollout from when its rows were first seen started and finished", () => {
+    const rows = [row(0), row(1)] as const;
+    const running = deploymentProgressForEvent({ type: "progress", completed: 0, total: 2, rows: [{ ...rows[0], status: { type: "running", phase: { type: "starting" } } }, rows[1]] }, rows, { ...context, now: 1_000 });
+    const progress = deploymentProgressForEvent({ type: "outcome", outcome: engineOrdered({ type: "success", completed: rows.map((r) => r.operation) } as const) }, rows, { ...context, prior: running, now: 13_000 });
+    const view = deploymentView({ deployment: deployment("applied"), progress, nodes: [{ nodeId: "svc-0", changed: true }, { nodeId: "svc-1", changed: true }] });
+    expect(view.nodes.map((n) => [n.deploy, n.tail])).toEqual([
+      [{ state: "done", durationMs: 12_000 }, ["server-0 · Starting replica · done"]],
+      [{ state: "done", durationMs: 0 }, ["server-1 · Starting replica · done"]],
+    ]);
   });
 
   it("matches the failed operation structurally in a mid-rollout failure, keeping its container ID", () => {
@@ -54,15 +67,39 @@ describe("deployment view projection", () => {
     expect(deploymentStatusLabel(view)).toBe("Failed · 1 of 3 deployed");
   });
 
-  it("fails built nodes on a build failure and leaves prebuilt ones not attempted", () => {
+  it("blames the Image Build that failed, timing each image and tailing its error", () => {
     const view = deploymentView({
-      deployment: deployment("failed", { failureCode: "sdk_preparation_failed", failureMessage: "Dockerfile parse error" }),
+      deployment: deployment("failed", { failureCode: "sdk_preparation_failed", failureMessage: "Image preparation failed" }),
       progress: { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "build", serviceId: "web", machineId: "m", machineName: "builder", message: null } },
-      nodes: [{ nodeId: "web", changed: true, built: true }, { nodeId: "worker", changed: true }],
+      nodes: [{ nodeId: "api", changed: true, built: true, image: "api" }, { nodeId: "web", changed: true, built: true, image: "web" },
+        { nodeId: "docs", changed: true, built: true, image: "docs" }, { nodeId: "worker", changed: true }],
+      buildLog: {
+        steps: [
+          step(1, 0, "stage:Upload", "Uploading source", 0, 1),
+          step(2, 1, "stage:Building", "api", 1, 42), step(3, 1, "stage:Output", "Loading images", 42, 43),
+          step(4, 2, "stage:Building", "web", 43, 50), step(5, 2, "sha256:a", "[2/3] RUN pnpm build", 44, 50, "exit code: 2"),
+          step(6, 2, "stage:Cleanup", "Cleaning up", 50, 90),
+        ],
+        output: [{ stepId: 5, text: "\u001b[31msrc/a.ts(3,1): error TS2345: nope\u001b[0m\n" }, { stepId: 3, text: "loaded api\n" }],
+      },
     });
-    expect(view.nodes[0]).toMatchObject({ outcome: "failed", build: { state: "failed" }, failure: { message: "Dockerfile parse error" }, tail: ["Dockerfile parse error"] });
-    expect(view.nodes[1]).toMatchObject({ outcome: "not_attempted", build: { state: "none" }, deploy: { state: "skipped" } });
-    expect(deploymentStatusLabel(view)).toBe("Failed · 0 of 2 deployed");
+    expect(view.nodes[0]).toMatchObject({ outcome: "not_attempted", build: { state: "done", durationMs: 42_000 }, deploy: { state: "skipped" }, tail: ["loaded api"] });
+    expect(view.nodes[1]).toMatchObject({ outcome: "failed", build: { state: "failed", durationMs: 7_000 }, failure: { message: "Image preparation failed" },
+      tail: ["src/a.ts(3,1): error TS2345: nope", "exit code: 2"] });
+    expect(view.nodes[2]).toMatchObject({ outcome: "not_attempted", build: { state: "skipped" } });
+    expect(view.nodes[3]).toMatchObject({ outcome: "not_attempted", build: { state: "none" }, deploy: { state: "skipped" } });
+    expect(deploymentStatusLabel(view)).toBe("Failed · 0 of 4 deployed");
+  });
+
+  it("tails the image building now while the next image waits its turn", () => {
+    const view = deploymentView({
+      deployment: deployment("planning"),
+      progress: { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "build", serviceId: "web", machineId: "m", machineName: "builder", message: null } },
+      nodes: [{ nodeId: "api", changed: true, built: true, image: "api" }, { nodeId: "web", changed: true, built: true, image: "web" }],
+      buildLog: { steps: [step(1, 1, "stage:Building", "api", 0, null), step(2, 1, "sha256:a", "[1/2] RUN make", 1, null)],
+        output: [{ stepId: 2, text: "one\ntwo\n" }, { stepId: 2, text: "three\n" }] },
+    });
+    expect(view.nodes.map((n) => [n.outcome, n.build.state, n.tail])).toEqual([["building", "running", ["two", "three"]], ["queued", "queued", []]]);
   });
 
   it("marks a node the attempt removed as Removed and counts it as deployed", () => {
