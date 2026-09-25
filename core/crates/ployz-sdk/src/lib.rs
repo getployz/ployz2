@@ -318,6 +318,20 @@ impl Client {
         })
     }
 
+    /// The platforms the one Service in `deployment` may be placed on run: what
+    /// a GitHub runner must build.
+    ///
+    /// # Errors
+    /// Returns a generated [`RpcError`] JSON payload for a closed session,
+    /// invalid deployment, transport failure, or an unbuildable architecture.
+    #[napi]
+    pub async fn build_platforms(&self, deployment: serde_json::Value) -> Result<Vec<String>> {
+        self.inner
+            .build_platforms(deployment)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Confirming executes these operations. It does not re-plan.

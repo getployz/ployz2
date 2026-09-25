@@ -285,6 +285,8 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   fingerprint: text("fingerprint"),
   /** Platforms the runner reported building; the Machine's store proves them at reuse. */
   platforms: text("platforms").array(),
+  /** Why each Builder tried before this one didn't take the build, in order: the skip trail. */
+  skips: text("skips").array().notNull().default(sql`'{}'::text[]`),
   createdAt,
   updatedAt,
 }, (table) => [
@@ -302,5 +304,5 @@ export const organizationBuildOrder = pgTable("organization_build_order", {
   createdAt,
   updatedAt,
 }, (table) => [
-  check("organization_build_order_check", sql`${table.buildOrder} in ('servers-only', 'github-then-servers', 'github-only')`),
+  check("organization_build_order_check", sql`${table.buildOrder} in ('servers-only', 'github-then-servers', 'servers-then-github', 'github-only')`),
 ]);

@@ -8,15 +8,17 @@ import { buildFingerprints, ployzVersion } from "#/modules/runtime/ployz.server"
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
-import { loadBuildOrder } from "./build-order.server";
 import { persistBuildLog } from "./deployment-events.server";
-import { settleImageBuild, type ImageBuildOutcome, type ImageBuildTarget } from "./image-builds.server";
+import {
+  settleImageBuildResult, skipImageBuilder, START_WITHIN_MINUTES,
+  type ImageBuildAttempt, type ImageBuildResult, type ImageBuildTarget,
+} from "./image-builds.server";
 import { preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
 import { compileRuntimeIntent, connectedRuntime } from "./runtime-activities.server";
 import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
 import { pinSourceCommit } from "./runtime-sources.server";
-import { environmentDeploymentImageBuild as imageBuild, type ImageBuildStatus } from "./tables";
+import { environmentDeploymentImageBuild as imageBuild } from "./tables";
 
 /**
  * GitHub as a Builder. Cloud dispatches the repository's build workflow, the runner checks in once
@@ -24,16 +26,15 @@ import { environmentDeploymentImageBuild as imageBuild, type ImageBuildStatus } 
  * completes Cloud ends the grant and writes the receipt from the digest the Machine received.
  *
  *   dispatch ──▶ check-in (once) ──▶ steps ──▶ workflow_run completed ──▶ end grant ──▶ receipt
+ *
+ * Check-in is the build starting. Until then GitHub can still be skipped: at once when it can't take
+ * the build, at the "start within" limit, or when the run ends first.
  */
 
 /** How long a dispatched run may take, queueing included, before Cloud cancels it. */
 export const GITHUB_RUN_TIMEOUT = "2h";
 
-export type ImageBuildResult = { imageBuildId: string; image: string; status: ImageBuildStatus };
-export type GithubBuildStart =
-  | { kind: "servers" }
-  | { kind: "dispatched"; runId: number }
-  | { kind: "settled"; result: ImageBuildResult };
+export type GithubBuildStart = ImageBuildAttempt | { kind: "dispatched"; runId: number };
 
 type Snapshot = DeploymentContext["snapshots"][number];
 const installedSource = (snapshot: Snapshot | undefined) => {
@@ -42,51 +43,83 @@ const installedSource = (snapshot: Snapshot | undefined) => {
     ? { ...source, installationId: source.access.installationId } : null;
 };
 
-const settled = (build: ImageBuildTarget, outcome: ImageBuildOutcome) =>
-  settleImageBuild(build.id, outcome).pipe(Effect.map((status): ImageBuildResult => ({ imageBuildId: build.id, image: build.image, status })));
+/** The same one-Service deployment a server build gets, so fingerprints and platforms match deploy's. */
+const oneServiceDeployment = (context: DeploymentContext, serviceId: string) => compileRuntimeIntent(context).pipe(
+  Effect.map((intent) => ({ ...intent, snapshots: intent.snapshots.filter((candidate) => candidate.serviceId === serviceId), dependencies: {} })),
+);
+
+/** The GitHub-hosted runner that builds each platform natively. */
+const GITHUB_RUNNERS = new Map([["linux/amd64", "ubuntu-latest"], ["linux/arm64", "ubuntu-24.04-arm"]]);
+
+const skipGithub = (build: ImageBuildTarget, reason: string) =>
+  skipImageBuilder(build.id, reason).pipe(Effect.as<GithubBuildStart>({ kind: "skipped", reason }));
+
+/** The row's status as the walk reports it, once something else settled it. */
+const currentResult = Effect.fn("Deployments.currentImageBuildResult")(function* (build: ImageBuildTarget) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ status: imageBuild.status }).from(imageBuild).where(eq(imageBuild.id, build.id)).limit(1);
+  return { imageBuildId: build.id, image: build.image, status: row?.status ?? "failed" } satisfies ImageBuildResult;
+});
 
 /**
- * Starts an Image Build on GitHub when the Organization's Build Order says so. With GitHub unusable,
- * "GitHub only" fails the build and "GitHub, then your servers" builds on the servers.
+ * Dispatches an Image Build to GitHub Actions on the runner for its one platform. GitHub is skipped
+ * at once, with the reason on the Image Build, when it can't take the build: the repository isn't
+ * reachable through the GitHub App or lacks permission, has no workflow, needs several platforms,
+ * or the dispatch fails.
  */
 export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuild")(function* (build: ImageBuildTarget) {
   const context = yield* loadDeploymentContext(build.deploymentId);
-  if (!context) return { kind: "servers" } satisfies GithubBuildStart;
-  const order = yield* loadBuildOrder(context.organization.id);
-  if (order === "servers-only") return { kind: "servers" } satisfies GithubBuildStart;
-  // ponytail: no skip trail yet; #1084 records why GitHub was skipped.
-  const unusable = (message: string) => order === "github-only"
-    ? settled(build, { status: "failed", message, machineId: null }).pipe(Effect.map((result): GithubBuildStart => ({ kind: "settled", result })))
-    : Effect.succeed<GithubBuildStart>({ kind: "servers" });
-  const snapshot = context.snapshots.find((candidate) => candidate.serviceId === build.serviceId);
+  const snapshot = context?.snapshots.find((candidate) => candidate.serviceId === build.serviceId);
   const source = installedSource(snapshot);
-  if (!snapshot || !source) return yield* unusable("GitHub: the repository isn't connected through the GitHub App.");
+  if (!context || !snapshot || !source) return yield* skipGithub(build, "GitHub: the repository isn't connected through the GitHub App");
   const workflow = yield* checkGithubBuildWorkflow(source.installationId, source.repositoryId);
-  if (workflow.readiness !== "ready" || !workflow.fullName || !workflow.defaultBranch) {
-    return yield* unusable(`GitHub: no workflow in ${workflow.fullName ?? source.repository}.`);
-  }
+  const repository = workflow.fullName ?? source.repository;
+  if (workflow.readiness === "no_permission") return yield* skipGithub(build, `GitHub: no permission in ${repository}`);
+  if (workflow.readiness !== "ready" || !workflow.fullName || !workflow.defaultBranch) return yield* skipGithub(build, `GitHub: no workflow in ${repository}`);
+  const deployment = yield* oneServiceDeployment(context, build.serviceId);
+  const platforms = yield* connectedRuntime(context.organization.id).pipe(Effect.flatMap((sdk) => sdk.buildPlatforms(deployment)), Effect.scoped);
+  if (platforms.length > 1) return yield* skipGithub(build, `GitHub: needs ${platforms.map((platform) => platform.replace(/^linux\//, "")).join("+")}`);
+  // With no visible placement, deploy's coverage check decides, as it does after a server build.
+  const platform = platforms[0] ?? "linux/amd64";
+  const runner = GITHUB_RUNNERS.get(platform);
+  if (!runner) return yield* skipGithub(build, `GitHub: no runner for ${platform}`);
   // The check-in hands the runner this pinned commit.
   yield* pinSourceCommit(context, snapshot, source);
   const config = yield* AppConfig;
   const run = yield* dispatchGithubBuildWorkflow({
     installationId: source.installationId, fullName: workflow.fullName, defaultBranch: workflow.defaultBranch,
-    // ponytail: amd64 runners only; an arm64-only cluster's receipt won't cover its Servers. #1084 picks by platform.
-    inputs: { build: build.id, cloud: config.app.url.origin, ployz_version: ployzVersion(), runner: "ubuntu-latest" },
+    inputs: { build: build.id, cloud: config.app.url.origin, ployz_version: ployzVersion(), runner },
   });
   const { drizzle } = yield* Database;
-  yield* drizzle.update(imageBuild).set({ builder: "github", githubRunId: run.runId, githubRunUrl: run.runUrl, githubWorkflowRef: run.workflowRef, updatedAt: new Date() })
-    .where(and(eq(imageBuild.id, build.id), eq(imageBuild.status, "building")));
+  const [recorded] = yield* drizzle.update(imageBuild).set({ builder: "github", githubRunId: run.runId, githubRunUrl: run.runUrl, githubWorkflowRef: run.workflowRef, updatedAt: new Date() })
+    .where(and(eq(imageBuild.id, build.id), eq(imageBuild.status, "building"))).returning({ id: imageBuild.id });
+  if (!recorded) {
+    // Settled (cancelled) while dispatching: the run must not build.
+    yield* cancelGithubRun({ installationId: source.installationId, fullName: workflow.fullName, runId: run.runId }).pipe(Effect.ignore);
+    return { kind: "settled", result: yield* currentResult(build) } satisfies GithubBuildStart;
+  }
   return { kind: "dispatched", runId: run.runId } satisfies GithubBuildStart;
 }, (effect, build) => effect.pipe(
   // A GitHub or SDK failure before dispatch is GitHub being unusable, not the build failing.
-  Effect.catch((error) => Effect.gen(function* () {
-    const context = yield* loadDeploymentContext(build.deploymentId);
-    const order = context ? yield* loadBuildOrder(context.organization.id) : "servers-only";
-    if (order !== "github-only") return { kind: "servers" } satisfies GithubBuildStart;
-    const message = `GitHub: could not start the build (${error.message}).`;
-    return { kind: "settled", result: yield* settled(build, { status: "failed", message, machineId: null }) } satisfies GithubBuildStart;
-  })),
+  Effect.catch((error) => skipGithub(build, `GitHub: could not start the build (${error.message})`)),
 ));
+
+/**
+ * GitHub's "start within" limit passed. A run that checked in has started and keeps the build;
+ * otherwise GitHub is skipped and its run cancelled. Check-in and this skip update the same row
+ * under exclusive conditions, so exactly one wins.
+ */
+export const withdrawGithubImageBuild = Effect.fn("Deployments.withdrawGithubImageBuild")(function* (build: ImageBuildTarget) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select().from(imageBuild).where(eq(imageBuild.id, build.id)).limit(1);
+  const reason = `GitHub: no runner in ${START_WITHIN_MINUTES} min`;
+  if (row?.status === "building" && (yield* skipImageBuilder(build.id, reason))) {
+    yield* cancelGithubBuildRun(row);
+    return { kind: "skipped", reason } satisfies GithubBuildStart;
+  }
+  const result = yield* currentResult(build);
+  return result.status === "building" ? { kind: "started" as const } : { kind: "settled" as const, result };
+});
 
 const bearer = (request: Request) => {
   const match = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "");
@@ -109,28 +142,28 @@ const authorizeRunner = Effect.fn("Deployments.authorizeGithubRunner")(function*
   if (claims.job_workflow_ref !== row.githubWorkflowRef) return yield* new Forbidden({ message: "The token is for another workflow or branch." });
   if (claims.run_id !== String(row.githubRunId)) return yield* new Forbidden({ message: "The token is for another run." });
   if (claims.event_name !== "workflow_dispatch") return yield* new Forbidden({ message: "The run was not dispatched by Ployz." });
-  return { row, context };
+  return { row, context, githubRunId: row.githubRunId };
 });
 
 /**
- * The runner's one check-in. Accepted once, while the build is still wanted. Mints a Build Grant on
- * the Machine Cloud deploys through and returns it with the commit, the expected fingerprint, and the
- * frozen deployment whose `resolvedEnv` carries the build secrets. Nothing secret is ever a workflow input.
+ * The runner's one check-in: the build starts. Accepted once, while GitHub still holds the build.
+ * Mints a Build Grant on the Machine Cloud deploys through and returns it with the commit, the
+ * expected fingerprint, and the frozen deployment whose `resolvedEnv` carries the build secrets.
+ * Nothing secret is ever a workflow input.
  */
 export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(function* (request: Request, imageBuildId: string) {
-  const { row, context } = yield* authorizeRunner(request, imageBuildId);
+  const { row, context, githubRunId } = yield* authorizeRunner(request, imageBuildId);
   const { drizzle } = yield* Database;
+  // The run must still hold the build: a skip at the start limit clears it in the same row.
   const [claimed] = yield* drizzle.update(imageBuild).set({ checkedInAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(imageBuild.id, row.id), eq(imageBuild.status, "building"), isNull(imageBuild.checkedInAt)))
+    .where(and(eq(imageBuild.id, row.id), eq(imageBuild.status, "building"), isNull(imageBuild.checkedInAt), eq(imageBuild.githubRunId, githubRunId)))
     .returning({ id: imageBuild.id });
   if (!claimed) return yield* new Conflict({ message: "This build already checked in or is no longer wanted." });
   const snapshot = context.snapshots.find((candidate) => candidate.serviceId === row.serviceId);
   const source = snapshot?.config.source;
   if (!snapshot || source?.type !== "git") return yield* new NotFound({ message: "No GitHub build has this id." });
   const commit = yield* pinSourceCommit(context, snapshot, source);
-  const intent = yield* compileRuntimeIntent(context);
-  // The same one-Service deployment a server build gets, so the fingerprint matches deploy's.
-  const deployment = { ...intent, snapshots: intent.snapshots.filter((candidate) => candidate.serviceId === row.serviceId), dependencies: {} };
+  const deployment = yield* oneServiceDeployment(context, row.serviceId);
   const fingerprint = buildFingerprints({ deployment, source_commits: { [row.image]: commit } })[row.image];
   if (!fingerprint) return yield* new Validation({ message: "The build has no fingerprint." });
   const sdk = yield* connectedRuntime(context.organization.id);
@@ -195,18 +228,31 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
 
 /**
  * Settles a GitHub build once its run ended (or ran out of time): ends the grant and writes the
- * receipt from the digest the Machine verified. A run that never checked in, or pushed nothing, failed.
+ * receipt from the digest the Machine verified. A run that ended, or ran out of time, before it
+ * checked in never started, so GitHub is skipped. A started run that pushed nothing failed.
  */
 export const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(function* (build: ImageBuildTarget, timedOut: boolean) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select().from(imageBuild).where(eq(imageBuild.id, build.id)).limit(1);
-  if (!row) return { imageBuildId: build.id, image: build.image, status: "failed" } satisfies ImageBuildResult;
-  if (timedOut) yield* cancelGithubBuildRun(row);
-  if (row.status !== "building") return { imageBuildId: build.id, image: build.image, status: row.status } satisfies ImageBuildResult;
-  const failed = (message: string) => settled(build, { status: "failed", message, machineId: row.machineId });
-  if (!row.grantId || !row.machineId || !row.fingerprint) {
-    return yield* failed(timedOut ? "GitHub: the run didn't start in time." : "GitHub: the run ended before it checked in.");
+  const load = Effect.fn(function* () {
+    const [loaded] = yield* drizzle.select().from(imageBuild).where(eq(imageBuild.id, build.id)).limit(1);
+    return loaded;
+  });
+  const found = yield* load();
+  if (found?.status !== "building") return { kind: "settled", result: yield* currentResult(build) } satisfies ImageBuildAttempt;
+  if (found.checkedInAt === null) {
+    const reason = timedOut ? "GitHub: the run didn't start in time" : "GitHub: the run ended before it started";
+    if (yield* skipImageBuilder(build.id, reason)) {
+      if (timedOut) yield* cancelGithubBuildRun(found);
+      return { kind: "skipped", reason } satisfies ImageBuildAttempt;
+    }
   }
+  // It started, perhaps just now: re-read what check-in recorded.
+  const row = found.checkedInAt === null ? yield* load() : found;
+  if (row?.status !== "building") return { kind: "settled", result: yield* currentResult(build) } satisfies ImageBuildAttempt;
+  if (timedOut) yield* cancelGithubBuildRun(row);
+  const failed = (message: string) => settleImageBuildResult(build, { status: "failed", message, machineId: row.machineId })
+    .pipe(Effect.map((result): ImageBuildAttempt => ({ kind: "settled", result })));
+  if (!row.grantId || !row.machineId || !row.fingerprint) return yield* failed("GitHub: the run ended before it received its grant.");
   const pushed = yield* endGrant(row.organizationId, row.machineId, row.grantId).pipe(
     Effect.map((ended) => ended.pushed ?? null),
     Effect.orElseSucceed(() => null),
@@ -218,7 +264,7 @@ export const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBu
     fingerprint: row.fingerprint, machine_id: machineId,
     image: { reference: pushed, tags: [`ployz-build/${row.image}:ployz-sha256-${pushed.replace(/^sha256:/, "")}`], platforms: [...row.platforms], location: "build-grant" },
   };
-  return yield* settled(build, { status: "built", receipt });
+  return { kind: "settled", result: yield* settleImageBuildResult(build, { status: "built", receipt }) } satisfies ImageBuildAttempt;
 });
 
 type GithubRunRow = Pick<typeof imageBuild.$inferSelect, "deploymentId" | "serviceId" | "organizationId" | "githubRunId" | "githubWorkflowRef" | "grantId" | "machineId">;
@@ -242,7 +288,7 @@ const endGrant = (organizationId: string, machineId: string, grantId: string) =>
     Effect.scoped,
   );
 
-/** A cancelled attempt's GitHub builds: cancel each run and end its grant. Idempotent. */
+/** An ended attempt's GitHub builds: cancel each run and end its grant. Idempotent. */
 export const cancelGithubImageBuilds = Effect.fn("Deployments.cancelGithubImageBuilds")(function* (inngestRunId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(imageBuild)

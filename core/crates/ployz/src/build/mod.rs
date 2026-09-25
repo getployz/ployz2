@@ -22,6 +22,7 @@ mod ignore;
 mod inputs;
 mod local;
 mod platforms;
+pub use platforms::placement_platforms;
 mod remote;
 pub use local::LocalImage;
 mod reuse;

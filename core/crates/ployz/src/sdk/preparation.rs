@@ -269,6 +269,13 @@ pub fn expected_fingerprints(
     Ok(fingerprints(&frozen.intent, frozen.identities))
 }
 
+/// The Deploy Intent `capture` would build for, without any checkout.
+/// # Errors
+/// Rejects an invalid deployment.
+pub(crate) fn frozen_intent(deployment: Value) -> Result<DeployIntent, RpcError> {
+    Ok(freeze(deployment, &mut BTreeMap::new())?.intent)
+}
+
 fn lower_hex(value: &str, length: usize) -> bool {
     value.len() == length
         && value

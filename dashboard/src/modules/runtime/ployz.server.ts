@@ -142,6 +142,8 @@ export interface PloyzSession {
     onEvent: (event: PreparationEvent) => Promise<void>,
     options: { readonly signal: AbortSignal; readonly startWithinMs?: number },
   ) => Effect.Effect<BuildOutcome, PloyzSdkError, Scope.Scope>;
+  /** The platforms the one Service in `deployment` may be placed on run. */
+  readonly buildPlatforms: (deployment: PreparationInput["deployment"]) => Effect.Effect<string[], PloyzSdkError>;
   readonly preview: (
     intent: DeployIntent,
   ) => Effect.Effect<PloyzPreparedDeploy, PloyzSdkError>;
@@ -383,6 +385,7 @@ function wrapClient(client: Client): PloyzSession {
         return running.finished;
       }, secrets);
     }),
+    buildPlatforms: (deployment) => sdkPromise("build platforms", () => client.buildPlatforms(deployment)),
     mintBuildGrant: (repository) => sdkPromise("mint build grant", () => client.mintBuildGrant({ repository })),
     endBuildGrant: (id) => sdkPromise("end build grant", () => client.endBuildGrant({ id })),
     preview: (intent) =>

@@ -382,6 +382,21 @@ impl Session {
         }))
     }
 
+    /// The Build Platform Requirement of the one Service in `deployment`
+    /// (`PreparationInput.deployment`), read from the Machines it may be placed on.
+    ///
+    /// # Errors
+    /// Rejects a closed session or invalid deployment; returns transport errors,
+    /// or `invalid_argument` naming a Machine no build platform runs.
+    pub async fn build_platforms(
+        &self,
+        deployment: serde_json::Value,
+    ) -> Result<Vec<String>, RpcError> {
+        let client = self.client()?;
+        let token = self.inner.cancel.child_token();
+        build::platforms(client, deployment, token).await
+    }
+
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Same planner, ingress expansion, and DNS warnings as the CLI. Confirming
