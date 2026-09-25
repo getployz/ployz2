@@ -35,15 +35,15 @@ pub struct PreparationInput {
     pub preferred_machine: Option<ployz_core::MachineId>,
 }
 
-/// A Service's latest receipt and the commit its next build would build: whether
-/// that image can be reused without a checkout or a build.
+/// The one Git Service's frozen deployment, the commit a build would build, and
+/// its latest receipt, if any: what a Builder outside the Cluster must do.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReuseInput {
+pub struct OutsideBuildInput {
     pub deployment: Value,
-    /// Git commits pinned by the source owner, keyed by runtime Service name.
-    pub source_commits: BTreeMap<ServiceName, String>,
-    pub receipt: BuildReceipt,
+    pub commit: String,
+    #[serde(default)]
+    pub receipt: Option<BuildReceipt>,
 }
 
 /// Private build evidence, independent of deployment success or current image availability.

@@ -1,7 +1,10 @@
 //! Reuse completed images only after observing complete content and placement coverage.
 use super::{BuiltService, CapturedBuild, CapturedTarget, platforms::placeable};
 use crate::connect::Client;
-use ployz_core::{DeployIntent, MachineId, MachineObservation, PartialResult, RpcError};
+use ployz_core::{
+    DeployIntent, MachineId, MachineObservation, PartialResult, ProjectName, RequestedServiceSpec,
+    RpcError,
+};
 use tokio_util::sync::CancellationToken;
 
 impl CapturedBuild {
@@ -53,17 +56,26 @@ fn reusable(
         .platforms
         .iter()
         .all(|platform| receipt.built.platforms.contains(platform));
-    let runs_everywhere = placeable(spec, &intent.project_name, machines).all(|machine| {
-        receipt.built.platforms.iter().any(|platform| {
-            crate::image::platform_compatible(platform, &machine.machine.runtime.architecture)
-        })
-    });
-    if !covers_platforms || !runs_everywhere {
+    if !covers_platforms || !runs_everywhere(&receipt.built, spec, &intent.project_name, machines) {
         return None;
     }
     let mut image = receipt.clone();
     image.machine_id = holder(stores, &receipt.built, receipt.machine_id)?;
     Some(image)
+}
+
+/// Whether `built` has a platform for every Machine `spec` may be placed on.
+pub(crate) fn runs_everywhere(
+    built: &ployz_build::BuiltImage,
+    spec: &RequestedServiceSpec,
+    project: &ProjectName,
+    machines: &[MachineObservation],
+) -> bool {
+    placeable(spec, project, machines).all(|machine| {
+        built.platforms.iter().any(|platform| {
+            crate::image::platform_compatible(platform, &machine.machine.runtime.architecture)
+        })
+    })
 }
 
 /// Every reachable Machine's image store; `None` once cancelled.

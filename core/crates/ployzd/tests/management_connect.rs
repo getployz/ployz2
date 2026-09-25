@@ -479,40 +479,18 @@ async fn build_grant_contract() {
     use ployz_core::BuildGrant;
     use sha2::{Digest as _, Sha256};
 
-    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let (_dir, owner, local) = participating().await;
-    let capability = local
+    let machine = GrantMachine::start().await;
+    let capability = machine
+        .local
         .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
         .unwrap()
         .capability
         .unwrap();
-    let (ingest, seen) = fake_ingest().await;
-    let endpoint = management::bind(
-        local.record().management_secret(),
-        &ManagementConfig {
-            relay_url: relay_url.clone(),
-            port: 0,
-            relay_tls: CaTlsConfig::insecure_skip_verify(),
-        },
-    )
-    .await
-    .unwrap();
-    let grants = Arc::new(management::BuildGrants::default());
-    let shutdown = CancellationToken::new();
-    let server = tokio::spawn(management::serve(
-        endpoint,
-        local.clone(),
-        MachineApi::builder(owner).build(),
-        Arc::clone(&grants),
-        shutdown.clone(),
-    ));
-    let minted = grants.mint(
-        local.record().management_secret().public_key(),
-        ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
-        ingest,
-    );
-    let relay = ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify());
+    let minted = machine.mint();
+    let relay = &machine.relay;
+    let grants = &machine.grants;
+    let seen = &machine.seen;
 
     // The grant key is not a Management Capability: Machine RPC refuses it.
     let connector = SystemConnector::default().with_management_relay(relay.clone());
@@ -521,7 +499,7 @@ async fn build_grant_contract() {
     // A Management Capability's key holds no grant, so it cannot push.
     let stranger = open_grant_registry(
         &BuildGrant::new(*capability.machine(), *capability.client_secret()),
-        &relay,
+        relay,
     )
     .await
     .unwrap();
@@ -533,7 +511,7 @@ async fn build_grant_contract() {
             .is_err()
     );
 
-    let registry = open_grant_registry(&minted.grant, &relay).await.unwrap();
+    let registry = open_grant_registry(&minted.grant, relay).await.unwrap();
     let base = format!("http://{}/v2/ployz-build/web", registry.address());
     let blob = format!("{base}/blobs/sha256:{}", "a".repeat(64));
     assert_eq!(http.head(&blob).send().await.unwrap().status(), 200);
@@ -591,7 +569,7 @@ async fn build_grant_contract() {
         Some(format!("sha256:{hex}").as_str())
     );
     assert!(http.head(&blob).send().await.is_err());
-    let again = open_grant_registry(&minted.grant, &relay).await.unwrap();
+    let again = open_grant_registry(&minted.grant, relay).await.unwrap();
     assert!(
         http.get(format!("http://{}/v2/", again.address()))
             .send()
@@ -600,8 +578,7 @@ async fn build_grant_contract() {
     );
     assert!(again.refusal().is_some());
     assert_eq!(grants.end(&minted.id).unwrap(), ended);
-    shutdown.cancel();
-    server.await.unwrap();
+    machine.stop().await;
 }
 
 /// A Machine that already holds the image answers the pusher's manifest HEAD, and the
@@ -614,39 +591,15 @@ async fn a_build_grant_records_an_image_the_machine_already_holds() {
 }
 
 async fn already_held_contract() {
-    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
-    let (_dir, owner, local) = participating().await;
-    let (ingest, _seen) = fake_ingest().await;
-    let endpoint = management::bind(
-        local.record().management_secret(),
-        &ManagementConfig {
-            relay_url: relay_url.clone(),
-            port: 0,
-            relay_tls: CaTlsConfig::insecure_skip_verify(),
-        },
-    )
-    .await
-    .unwrap();
-    let grants = Arc::new(management::BuildGrants::default());
-    let shutdown = CancellationToken::new();
-    let server = tokio::spawn(management::serve(
-        endpoint,
-        local.clone(),
-        MachineApi::builder(owner).build(),
-        Arc::clone(&grants),
-        shutdown.clone(),
-    ));
-    let relay = ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify());
+    let machine = GrantMachine::start().await;
     let http = reqwest::Client::new();
     // Mint a grant, HEAD `reference` through it, and hand back the grant and its
     // manifests base.
     let head = async |reference: String| {
-        let minted = grants.mint(
-            local.record().management_secret().public_key(),
-            ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
-            ingest,
-        );
-        let registry = open_grant_registry(&minted.grant, &relay).await.unwrap();
+        let minted = machine.mint();
+        let registry = open_grant_registry(&minted.grant, &machine.relay)
+            .await
+            .unwrap();
         let manifests = format!("http://{}/v2/ployz-build/web/manifests", registry.address());
         let status = http
             .head(format!("{manifests}/{reference}"))
@@ -666,7 +619,8 @@ async fn already_held_contract() {
         format!("ployz-sha256-{}", "b".repeat(64)),
     ] {
         let (minted, _, _registry) = head(reference.clone()).await;
-        assert_eq!(grants.end(&minted.id).unwrap().pushed, None, "{reference}");
+        let ended = machine.grants.end(&minted.id).unwrap();
+        assert_eq!(ended.pushed, None, "{reference}");
     }
 
     let (minted, manifests, _registry) = head(format!("ployz-sha256-{HELD}")).await;
@@ -678,13 +632,77 @@ async fn already_held_contract() {
         .await
         .unwrap();
     assert_eq!(put.status(), 403);
-    let ended = grants.end(&minted.id).unwrap();
+    let ended = machine.grants.end(&minted.id).unwrap();
     assert_eq!(
         ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
         Some(format!("sha256:{HELD}").as_str())
     );
-    shutdown.cancel();
-    server.await.unwrap();
+    machine.stop().await;
+}
+
+/// A participating Machine serving management, and so the Build Grant ALPN, over an
+/// in-process relay, with a [`fake_ingest`] behind its grants.
+struct GrantMachine {
+    local: LocalMachine,
+    grants: Arc<management::BuildGrants>,
+    relay: ManagementRelay,
+    ingest: std::net::SocketAddr,
+    seen: Arc<Mutex<Vec<String>>>,
+    shutdown: CancellationToken,
+    server: tokio::task::JoinHandle<()>,
+    /// The relay server and the Machine's state directory, alive while it serves.
+    _alive: Box<dyn std::any::Any>,
+}
+
+impl GrantMachine {
+    async fn start() -> Self {
+        let (map, relay_url, relay_server) = run_relay_server().await.unwrap();
+        let (dir, owner, local) = participating().await;
+        let (ingest, seen) = fake_ingest().await;
+        let endpoint = management::bind(
+            local.record().management_secret(),
+            &ManagementConfig {
+                relay_url: relay_url.clone(),
+                port: 0,
+                relay_tls: CaTlsConfig::insecure_skip_verify(),
+            },
+        )
+        .await
+        .unwrap();
+        let grants = Arc::new(management::BuildGrants::default());
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(management::serve(
+            endpoint,
+            local.clone(),
+            MachineApi::builder(owner).build(),
+            Arc::clone(&grants),
+            shutdown.clone(),
+        ));
+        Self {
+            local,
+            grants,
+            relay: ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify()),
+            ingest,
+            seen,
+            shutdown,
+            server,
+            _alive: Box::new((map, relay_server, dir)),
+        }
+    }
+
+    /// A grant for one push into `ployz-build/web`.
+    fn mint(&self) -> ployz_core::BuildGrantMinted {
+        self.grants.mint(
+            self.local.record().management_secret().public_key(),
+            ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            self.ingest,
+        )
+    }
+
+    async fn stop(self) {
+        self.shutdown.cancel();
+        self.server.await.unwrap();
+    }
 }
 
 /// The one image [`fake_ingest`] holds: a manifest HEAD answers with its digest.

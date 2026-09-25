@@ -5,7 +5,6 @@ import type {
   BuildGrantId,
   BuildGrantMinted,
   BuildOutcome,
-  BuildReceipt,
   Client,
   LogOptions, LogEvent, LogHistoryOptions, LogHistoryPage,
   EnrollmentAssignment,
@@ -21,6 +20,8 @@ import type {
   MachineDetails,
   MachineTarget,
   MachineUpdate,
+  OutsideBuild,
+  OutsideBuildInput,
   ObservedDataLoss,
   PreparedDeploy,
   PreparationInput,
@@ -143,10 +144,8 @@ export interface PloyzSession {
     onEvent: (event: PreparationEvent) => Promise<void>,
     options: { readonly signal: AbortSignal; readonly startWithinMs?: number },
   ) => Effect.Effect<BuildOutcome, PloyzSdkError, Scope.Scope>;
-  /** The platforms the one Service in `deployment` may be placed on run. */
-  readonly buildPlatforms: (deployment: PreparationInput["deployment"]) => Effect.Effect<string[], PloyzSdkError>;
-  /** The receipt, naming a Machine that still holds its image, when a build of this commit would reuse it; null: build. */
-  readonly reuseBuild: (input: Parameters<Client["reuseBuild"]>[0]) => Effect.Effect<BuildReceipt | null, PloyzSdkError>;
+  /** For the one Git Service in `deployment` at `commit`: reuse `receipt`, whose image the Cluster still holds, or build these platforms. */
+  readonly outsideBuild: (input: OutsideBuildInput) => Effect.Effect<OutsideBuild, PloyzSdkError>;
   readonly preview: (
     intent: DeployIntent,
   ) => Effect.Effect<PloyzPreparedDeploy, PloyzSdkError>;
@@ -388,8 +387,7 @@ function wrapClient(client: Client): PloyzSession {
         return running.finished;
       }, secrets);
     }),
-    buildPlatforms: (deployment) => sdkPromise("build platforms", () => client.buildPlatforms(deployment)),
-    reuseBuild: (input) => sdkPromise("reuse build", () => client.reuseBuild(input)),
+    outsideBuild: (input) => sdkPromise("outside build", () => client.outsideBuild(input)),
     mintBuildGrant: (repository) => sdkPromise("mint build grant", () => client.mintBuildGrant({ repository })),
     endBuildGrant: (id) => sdkPromise("end build grant", () => client.endBuildGrant({ id })),
     preview: (intent) =>

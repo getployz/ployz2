@@ -138,6 +138,13 @@ export type BuildOptions = WatchOptions & {
   readonly startWithinMs?: number;
 };
 
+/** The one Git Service's frozen deployment, the commit to build, and its latest receipt, if any. */
+export type OutsideBuildInput = { deployment: PreparationInput["deployment"]; commit: string; receipt?: BuildReceipt };
+/** `reuse`: the receipt is for this commit and `machine_name` still holds an image every placement runs. `build`: these platforms. */
+export type OutsideBuild =
+  | { kind: "reuse"; receipt: BuildReceipt; machine_name: string }
+  | { kind: "build"; platforms: string[] };
+
 /** `queued`: not admitted within `startWithinMs`, withdrawn; nothing started. */
 export type BuildOutcome = { kind: "queued" } | { kind: "built"; receipt: BuildReceipt };
 
@@ -176,10 +183,8 @@ export declare class Client {
   prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
   /** One Image Build. `input` holds exactly one Git Service with its checkout and commit; its receipt is a reuse hint. */
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
-  /** The platforms the one Service in `deployment` may be placed on run: what a Builder outside the Cluster must build. */
-  buildPlatforms(deployment: PreparationInput["deployment"]): Promise<string[]>;
-  /** `receipt` again, naming a Machine that still holds its image, when a build of this commit would reuse it; null when it must build. Never builds. */
-  reuseBuild(input: Pick<PreparationInput, "deployment"> & { source_commits: Record<string, string>; receipt: BuildReceipt }): Promise<BuildReceipt | null>;
+  /** What a Builder outside the Cluster does for the one Git Service in `deployment` at `commit`; never builds. */
+  outsideBuild(input: OutsideBuildInput): Promise<OutsideBuild>;
   clearManagementClient(label: string): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;

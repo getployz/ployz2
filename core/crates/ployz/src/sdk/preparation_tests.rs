@@ -1273,7 +1273,7 @@ async fn cancelling_a_build_stops_it_without_a_receipt() {
 }
 
 #[tokio::test]
-async fn reuse_build_names_a_holder_of_an_unchanged_image_and_never_builds() {
+async fn an_outside_build_reuses_a_held_unchanged_image_and_never_builds() {
     let (root, service, builds) = fixture();
     let (session, server) = session(service).await;
     let built = input(&root, vec![git("one", "dockerfile")]);
@@ -1287,61 +1287,71 @@ async fn reuse_build_names_a_holder_of_an_unchanged_image_and_never_builds() {
         panic!("an admitted build must finish with a receipt");
     };
     let deployment = input(&root, vec![git("one", "dockerfile")]).deployment;
-    let reuse = |commit: &str, receipt: crate::sdk::BuildReceipt| crate::sdk::ReuseInput {
-        deployment: deployment.clone(),
-        source_commits: BTreeMap::from([(ServiceName::parse("one").unwrap(), commit.to_owned())]),
-        receipt,
+    let outside = |commit: &str, receipt: Option<crate::sdk::BuildReceipt>| {
+        session.outside_build(crate::sdk::OutsideBuildInput {
+            deployment: deployment.clone(),
+            commit: commit.to_owned(),
+            receipt,
+        })
     };
-    let reused = session
-        .reuse_build(reuse(&"a".repeat(40), receipt.clone()))
+    let build = |outcome: crate::sdk::OutsideBuild| match outcome {
+        crate::sdk::OutsideBuild::Build { platforms } => platforms,
+        reused @ crate::sdk::OutsideBuild::Reuse { .. } => panic!("must build: {reused:?}"),
+    };
+    let crate::sdk::OutsideBuild::Reuse {
+        receipt: reused,
+        machine_name,
+    } = outside(&"a".repeat(40), Some(receipt.clone()))
         .await
         .unwrap()
-        .expect("the builder still holds the unchanged image");
+    else {
+        panic!("the builder still holds the unchanged image");
+    };
     assert_eq!(reused.image, receipt.image);
     assert_eq!(reused.machine_id, receipt.machine_id);
+    assert_eq!(machine_name, "builder");
 
-    // Another commit, or an image missing a platform its placements run, must build.
-    assert!(
-        session
-            .reuse_build(reuse(&"b".repeat(40), receipt.clone()))
-            .await
-            .unwrap()
-            .is_none()
+    // No receipt, another commit, or an image missing a platform its placements
+    // run must build what the placements run.
+    let amd64 = vec!["linux/amd64".to_owned()];
+    assert_eq!(build(outside(&"a".repeat(40), None).await.unwrap()), amd64);
+    assert_eq!(
+        build(
+            outside(&"b".repeat(40), Some(receipt.clone()))
+                .await
+                .unwrap()
+        ),
+        amd64
     );
     let mut uncovered = receipt.clone();
     uncovered.image.platforms = vec!["linux/arm64".into()];
-    assert!(
-        session
-            .reuse_build(reuse(&"a".repeat(40), uncovered))
-            .await
-            .unwrap()
-            .is_none()
+    assert_eq!(
+        build(outside(&"a".repeat(40), Some(uncovered)).await.unwrap()),
+        amd64
     );
     // A Cluster that no longer holds the image must build.
     builds.stores.lock().unwrap().clear();
-    assert!(
-        session
-            .reuse_build(reuse(&"a".repeat(40), receipt))
-            .await
-            .unwrap()
-            .is_none()
-    );
     assert_eq!(
-        builds.definitions.lock().unwrap().len(),
-        1,
-        "reuse never builds"
+        build(outside(&"a".repeat(40), Some(receipt)).await.unwrap()),
+        amd64
     );
+    assert_eq!(builds.definitions.lock().unwrap().len(), 1, "never builds");
     session.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
-async fn build_platforms_refuse_an_invalid_deployment_and_an_unbuildable_placement() {
+async fn an_outside_build_refuses_an_invalid_deployment_and_an_unbuildable_placement() {
     let (root, service, _) = fixture();
     let (sdk, server) = session(service.clone()).await;
+    let outside = |deployment| crate::sdk::OutsideBuildInput {
+        deployment,
+        commit: "a".repeat(40),
+        receipt: None,
+    };
     let error = sdk
-        .build_platforms(json!({"projectName": "app"}))
+        .outside_build(outside(json!({"projectName": "app"})))
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
@@ -1353,7 +1363,7 @@ async fn build_platforms_refuse_an_invalid_deployment_and_an_unbuildable_placeme
     odd.machine.runtime.architecture = "riscv64".into();
     let (sdk, server) = session(service.with_machines(vec![odd])).await;
     let deployment = input(&root, vec![git("one", "dockerfile")]).deployment;
-    let error = sdk.build_platforms(deployment).await.unwrap_err();
+    let error = sdk.outside_build(outside(deployment)).await.unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
     assert!(
         error.message.contains("odd") && error.message.contains("riscv64"),
