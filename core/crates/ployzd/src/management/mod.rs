@@ -287,12 +287,20 @@ where
     };
     // GOAWAY; once the remaining streams end, hyper finishes the QUIC stream.
     serving.as_mut().graceful_shutdown();
-    let _ = serving.await;
+    if let Err(error) = serving.await {
+        tracing::debug!(%error, "management connection failed while draining");
+    }
     if let Ended::Revoked = ended {
         // Closing discards unacknowledged data, so wait until the peer holds every
         // byte, including the caller's own Clear response. A silent peer is bounded by
         // the idle timeout, and its key can no longer run any RPC.
-        let _ = acknowledged.await;
+        match acknowledged.await {
+            Ok(None) => {}
+            Ok(Some(code)) => {
+                tracing::debug!(%code, "revoked management client stopped its stream")
+            }
+            Err(error) => tracing::debug!(%error, "revoked management stream was not acknowledged"),
+        }
     }
     ended
 }
