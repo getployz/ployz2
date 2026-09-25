@@ -1,6 +1,6 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { DashboardPageHeader } from "#/components/dashboard-header";
 import {
   Background,
@@ -33,7 +33,7 @@ import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
-import { DeployBar } from "./DeployBar";
+import { ApplyZoneSlot, DeployBar } from "./DeployBar";
 import { BackToLive, DeploymentModeProvider, useDeploymentMode } from "./deployment-mode";
 import { DeploymentServicePanel } from "./DeploymentServicePanel";
 import { buildEdges, buildNodes } from "./canvas/nodes";
@@ -218,11 +218,13 @@ function CanvasScene() {
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
   const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
   const attempt = useDeploymentMode();
+  const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
   // Deployment Mode opens only its read-only panel, and only for a service in the Attempt Target; the live panel edits.
   const inspectedNodeId = !attempt ? selectedNodeId
     : attempt.nodes.some((node) => node.nodeType === "service" && node.nodeId === selectedServiceId) ? selectedServiceId : null;
 
   return (
+    <ApplyZoneSlot.Provider value={applyZoneSlot}>
     <CanvasInspectorOverlay
       selection={inspectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${inspectedNodeId}`,
@@ -240,10 +242,11 @@ function CanvasScene() {
             ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
             : <CanvasWithData key={canvasKey} />}
         </Suspense>
-        <Suspense fallback={null}><DeployBar /></Suspense>
+        <Suspense fallback={null}><DeployBar><div ref={setApplyZoneSlot} className="contents" /></DeployBar></Suspense>
       </>}
     >
       {!inspectedNodeId ? null : attempt ? <DeploymentServicePanel attempt={attempt} serviceId={inspectedNodeId} /> : <Outlet />}
     </CanvasInspectorOverlay>
+    </ApplyZoneSlot.Provider>
   );
 }

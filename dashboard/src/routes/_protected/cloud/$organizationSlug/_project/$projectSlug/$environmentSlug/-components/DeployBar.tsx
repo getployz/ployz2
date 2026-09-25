@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon,
@@ -33,6 +33,9 @@ function StatusIcon({ view }: { view: DeploymentView }) {
   }
 }
 
+/** The live canvas owns the change state, so it portals the apply zone into this slot of the bar. */
+export const ApplyZoneSlot = createContext<HTMLElement | null>(null);
+
 /**
  * The floating deploy bar: Live | Deployments ⌄ on every screen size, usable while a service panel is open.
  * `children` renders after the segments (the apply zone, #1051).
@@ -47,8 +50,10 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const barRef = useRef<HTMLDivElement>(null);
-  // The oldest queued or running attempt holds, or is next for, the Environment execution slot.
-  const running = attempts.filter(isActive).at(-1);
+  // The oldest queued or running attempt holds, or is next for, the Environment execution slot; the rest wait behind it.
+  const active = attempts.filter(isActive);
+  const running = active.at(-1);
+  const queued = active.length > 1 ? active[0] : undefined;
   const latest = attempts[0];
 
   function setListOpen(open: boolean) {
@@ -86,6 +91,11 @@ export function DeployBar({ children }: { children?: ReactNode }) {
       <ChevronRightIcon />
     </Link>
   ) : null;
+  const openQueued = !viewed && queued ? (
+    <Link to="." search={(previous) => ({ ...previous, deployment: queued.deployment.id, deploymentList: undefined })} className={segment}>
+      <CircleDashedIcon />{active.length > 2 ? `${active.length - 1} queued` : "Queued"}
+    </Link>
+  ) : null;
   const list = <DeploymentList attempts={attempts} viewedId={viewed?.deployment.id ?? null} environmentSlug={environmentSlug} />;
 
   return (
@@ -96,6 +106,7 @@ export function DeployBar({ children }: { children?: ReactNode }) {
           Live
         </Link>
         {openRunning}
+        {openQueued}
         {isMobile ? (
           <Drawer open={listOpen} onOpenChange={setListOpen}>
             {openRunning ? null : <DrawerTrigger render={listTrigger} />}
