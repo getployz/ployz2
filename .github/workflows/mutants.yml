@@ -73,7 +73,7 @@ jobs:
           print(f"files={config['files'] if isinstance(config['files'], str) else ' '.join(config['files'])}")
           print(f"re={config.get('re') or ''}")
           print(f"count={count}")
-          print(f"shards={json.dumps(list(range(1, count + 1)))}")
+          print(f"shards={json.dumps(list(range(count)))}")
           PY
 
   mutate:
@@ -102,7 +102,7 @@ jobs:
         env:
           FILES: ${{ needs.plan.outputs.files }}
           RE: ${{ needs.plan.outputs.re }}
-          SHARD: ${{ matrix.shard }}/${{ needs.plan.outputs.count }}
+          SHARD: ${{ matrix.shard }}/${{ needs.plan.outputs.count }}  # cargo-mutants shards are 0-based
         run: |
           args=()
           for file in $FILES; do args+=(--file "$file"); done
@@ -113,6 +113,9 @@ jobs:
             --in-place --no-shuffle --output "$RUNNER_TEMP/mutants" -- -E 'not test(/node_/)' || status=$?
           # 2 = mutants missed, 3 = timeouts: still a complete result to compare.
           case "$status" in 0|2|3) ;; *) exit "$status" ;; esac
+          # A shard can draw no mutants; record that as an empty result.
+          outcomes="$RUNNER_TEMP/mutants/mutants.out/outcomes.json"
+          [ -f "$outcomes" ] || { mkdir -p "$(dirname "$outcomes")"; echo '{"outcomes": []}' > "$outcomes"; }
       - uses: actions/upload-artifact@v4
         with:
           name: mutants-${{ matrix.side }}-${{ matrix.shard }}
