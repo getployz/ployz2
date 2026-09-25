@@ -6,6 +6,7 @@
 //! A grant allows the OCI Distribution calls one `docker push` makes into its one
 //! repository, and ends after one tagged manifest lands, when its Build ends
 //! ([`BuildGrants::end`]), after [`GRANT_LIFETIME`], or when the daemon stops.
+//! The Machine RPC handlers only forward to [`mint_for`] and [`BuildGrants::end`].
 
 use std::{
     collections::HashMap,
@@ -26,8 +27,9 @@ use iroh::{
     endpoint::{Connection, VarInt},
 };
 use ployz_core::{
-    BuildGrant, BuildGrantEnded, BuildGrantId, BuildGrantMinted, ManagementIdentity,
-    RETAINED_DIGEST_TAG_PREFIX,
+    BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, BuildGrantEnded, BuildGrantId,
+    BuildGrantMinted, BuildGrantRepository, ImageDigest, ManagementIdentity, MintBuildGrantRequest,
+    RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
@@ -38,10 +40,6 @@ use tokio_util::sync::CancellationToken;
 /// `github-image-builds.server.ts`), so this must outlive that budget: a run Cloud
 /// still waits on never loses its grant mid-push.
 pub const GRANT_LIFETIME: Duration = Duration::from_secs(3 * 60 * 60);
-/// Close code for a key that holds no live grant.
-pub const GRANT_REFUSED: VarInt = VarInt::from_u32(0x53);
-/// Close code once a served grant ends.
-pub const GRANT_ENDED: VarInt = VarInt::from_u32(0x54);
 
 /// Largest manifest a grant push may write; the OCI Distribution limit.
 const MANIFEST_LIMIT: usize = 4 * 1024 * 1024;
@@ -53,7 +51,7 @@ pub struct BuildGrants {
 }
 
 struct Grant {
-    repository: String,
+    repository: BuildGrantRepository,
     ingest: SocketAddr,
     expires: Instant,
     ended: CancellationToken,
@@ -64,8 +62,8 @@ enum Push {
     Open,
     /// A tagged manifest is in flight; a second one is refused.
     Pushing,
-    /// The `sha256:` digest this Machine verified and stored.
-    Pushed(String),
+    /// The digest this Machine verified and stored.
+    Pushed(ImageDigest),
 }
 
 impl BuildGrants {
@@ -73,7 +71,7 @@ impl BuildGrants {
     pub fn mint(
         &self,
         machine: ManagementIdentity,
-        repository: String,
+        repository: BuildGrantRepository,
         ingest: SocketAddr,
     ) -> BuildGrantMinted {
         let secret = SecretKey::generate();
@@ -96,16 +94,30 @@ impl BuildGrants {
     }
 
     /// End a grant, closing its connections, and report what it pushed. Ending again
-    /// repeats the report, so a retried call loses nothing. `None` when this Machine
-    /// holds no such grant: it expired or the daemon restarted.
-    pub fn end(&self, id: &BuildGrantId) -> Option<BuildGrantEnded> {
-        let grant = Arc::clone(self.grants.lock().expect("grant registry lock").get(id)?);
+    /// repeats the report, so a retried call loses nothing.
+    ///
+    /// # Errors
+    /// `NotFound` when this Machine holds no such grant: it expired or the daemon restarted.
+    pub fn end(&self, id: &BuildGrantId) -> Result<BuildGrantEnded, RpcError> {
+        let grant = Arc::clone(
+            self.grants
+                .lock()
+                .expect("grant registry lock")
+                .get(id)
+                .ok_or_else(|| RpcError {
+                    code: RpcErrorCode::NotFound,
+                    message:
+                        "this Machine holds no such Build Grant; it expired or the daemon restarted"
+                            .into(),
+                    details: serde_json::Value::Null,
+                })?,
+        );
         grant.ended.cancel();
         let pushed = match &*grant.push.lock().expect("grant push lock") {
             Push::Pushed(digest) => Some(digest.clone()),
             Push::Open | Push::Pushing => None,
         };
-        Some(BuildGrantEnded { pushed })
+        Ok(BuildGrantEnded { pushed })
     }
 
     /// The live, unused grant `key` holds.
@@ -119,6 +131,22 @@ impl BuildGrants {
         (grant.expires > Instant::now() && !grant.ended.is_cancelled() && !grant.pushed())
             .then_some(grant)
     }
+}
+
+/// Mint for a Machine RPC request, opening image ingest first so its failure
+/// reaches the minting caller rather than the pusher.
+pub(crate) async fn mint_for(
+    grants: &BuildGrants,
+    local: &crate::machine::LocalMachine,
+    ingest: Arc<crate::docker::ImageIngest>,
+    request: MintBuildGrantRequest,
+) -> Result<BuildGrantMinted, crate::machine::LocalMachineError> {
+    let opened = local.ensure_image_ingest(ingest).await?.destination;
+    Ok(grants.mint(
+        local.record().management_secret().public_key(),
+        request.repository,
+        SocketAddr::from((opened.management_address.0, opened.port)),
+    ))
 }
 
 fn grant_id(key: &[u8; 32]) -> BuildGrantId {
@@ -139,7 +167,10 @@ pub(super) async fn serve(
     shutdown: CancellationToken,
 ) {
     let Some(grant) = grants.admit(connection.remote_id().as_bytes()) else {
-        connection.close(GRANT_REFUSED, b"build grant refused");
+        connection.close(
+            VarInt::from_u32(BUILD_GRANT_REFUSED),
+            b"build grant refused",
+        );
         return;
     };
     let client = reqwest::Client::new();
@@ -173,7 +204,7 @@ pub(super) async fn serve(
     }
     // Dropping the set aborts in-flight requests: an ended grant pushes nothing more.
     drop(streams);
-    connection.close(GRANT_ENDED, b"build grant ended");
+    connection.close(VarInt::from_u32(BUILD_GRANT_ENDED), b"build grant ended");
 }
 
 /// One registry call a grant allows, in its one repository.
@@ -184,25 +215,28 @@ enum Route {
     Upload,
     ManifestHead,
     /// A manifest pushed by digest, such as an index's platform manifest.
-    ManifestByDigest(String),
+    ManifestByDigest(ImageDigest),
     /// The one tagged manifest; its tag names its own digest.
-    ManifestTag(String),
+    ManifestTag(ImageDigest),
 }
 
 impl Route {
-    fn parse(method: &Method, path: &str, query: Option<&str>, repository: &str) -> Option<Self> {
+    fn parse(
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        repository: &BuildGrantRepository,
+    ) -> Option<Self> {
         if path == "/v2/" {
             return matches!(*method, Method::GET | Method::HEAD).then_some(Self::Ping);
         }
         let rest = path
             .strip_prefix("/v2/")?
-            .strip_prefix(repository)?
+            .strip_prefix(repository.as_str())?
             .strip_prefix('/')?;
         if let Some(digest) = rest.strip_prefix("blobs/") {
             return match (method, digest.strip_prefix("uploads/")) {
-                (&Method::HEAD, None) => {
-                    sha256_hex(digest.strip_prefix("sha256:")?).then_some(Self::Blob)
-                }
+                (&Method::HEAD, None) => ImageDigest::parse(digest).is_ok().then_some(Self::Blob),
                 // A cross-repository mount would read another repository's blob.
                 (&Method::POST, Some(""))
                     if !query.is_some_and(|query| query.contains("mount=")) =>
@@ -220,24 +254,17 @@ impl Route {
         let reference = rest.strip_prefix("manifests/")?;
         match *method {
             Method::HEAD => Some(Self::ManifestHead),
-            Method::PUT => {
-                if let Some(hex) = reference.strip_prefix("sha256:") {
-                    sha256_hex(hex).then(|| Self::ManifestByDigest(hex.to_owned()))
-                } else {
-                    let hex = reference.strip_prefix(RETAINED_DIGEST_TAG_PREFIX)?;
-                    sha256_hex(hex).then(|| Self::ManifestTag(hex.to_owned()))
-                }
-            }
+            Method::PUT => match reference.strip_prefix(RETAINED_DIGEST_TAG_PREFIX) {
+                Some(hex) => ImageDigest::parse(format!("sha256:{hex}"))
+                    .ok()
+                    .map(Self::ManifestTag),
+                None => ImageDigest::parse(reference)
+                    .ok()
+                    .map(Self::ManifestByDigest),
+            },
             _ => None,
         }
     }
-}
-
-fn sha256_hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 async fn handle(
@@ -257,13 +284,13 @@ async fn handle(
         return denied(StatusCode::FORBIDDEN, "the Build Grant was already used");
     }
     let (parts, body) = request.into_parts();
-    let (hex, tagged) = match route {
+    let (digest, tagged) = match route {
         Route::Ping | Route::Blob | Route::Upload | Route::ManifestHead => {
             let body = reqwest::Body::wrap_stream(Body::new(body).into_data_stream());
             return forward(client, grant.ingest, &parts, body).await;
         }
-        Route::ManifestByDigest(hex) => (hex, false),
-        Route::ManifestTag(hex) => (hex, true),
+        Route::ManifestByDigest(digest) => (digest, false),
+        Route::ManifestTag(digest) => (digest, true),
     };
     let Ok(manifest) = http_body_util::Limited::new(body, MANIFEST_LIMIT)
         .collect()
@@ -275,7 +302,7 @@ async fn handle(
         );
     };
     let manifest = manifest.to_bytes();
-    if hex::encode(Sha256::digest(&manifest)) != hex {
+    if hex::encode(Sha256::digest(&manifest)) != digest.hex() {
         return denied(
             StatusCode::BAD_REQUEST,
             "the manifest does not match the digest it is pushed as",
@@ -294,7 +321,7 @@ async fn handle(
     let response = forward(client, grant.ingest, &parts, manifest.into()).await;
     // Only a stored manifest spends the grant; a refused one may be retried.
     *grant.push.lock().expect("grant push lock") = if response.status().is_success() {
-        Push::Pushed(format!("sha256:{hex}"))
+        Push::Pushed(digest)
     } else {
         Push::Open
     };
@@ -376,8 +403,10 @@ mod tests {
     #[test]
     fn a_grant_allows_only_push_calls_into_its_repository() {
         let digest = "a".repeat(64);
+        let pushed = ImageDigest::parse(format!("sha256:{digest}")).unwrap();
+        let repository = BuildGrantRepository::parse("ployz-build/web").unwrap();
         let route = |method: Method, path: &str, query: Option<&str>| {
-            Route::parse(&method, path, query, "ployz-build/web")
+            Route::parse(&method, path, query, &repository)
         };
         assert_eq!(route(Method::GET, "/v2/", None), Some(Route::Ping));
         assert_eq!(
@@ -402,7 +431,7 @@ mod tests {
                 &format!("/v2/ployz-build/web/manifests/ployz-sha256-{digest}"),
                 None
             ),
-            Some(Route::ManifestTag(digest.clone()))
+            Some(Route::ManifestTag(pushed.clone()))
         );
         assert_eq!(
             route(
@@ -410,7 +439,7 @@ mod tests {
                 &format!("/v2/ployz-build/web/manifests/sha256:{digest}"),
                 None
             ),
-            Some(Route::ManifestByDigest(digest.clone()))
+            Some(Route::ManifestByDigest(pushed.clone()))
         );
         for (method, path, query) in [
             // Reading content back, or any other repository, is not a push.

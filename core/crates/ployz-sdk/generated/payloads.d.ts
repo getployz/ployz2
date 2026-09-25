@@ -20,7 +20,7 @@ export type BuildGrantEnded = {
  * `sha256:` digest of the manifest the Machine verified and stored, when the
  * push completed; absent when nothing was pushed.
  */
-pushed: string | null, };
+pushed: ImageDigest | null, };
 
 export type BuildGrantId = string & { readonly __brand: "BuildGrantId" };
 
@@ -37,6 +37,8 @@ grant: string,
  * The grant ends by itself this long after minting.
  */
 expires_in_seconds: number, };
+
+export type BuildGrantRepository = string;
 
 export type BuildMethod = "dockerfile" | "railpack";
 
@@ -303,6 +305,8 @@ export type HttpProtocol = "http" | "https";
 
 export type ImageCleanupReport = { machines: Array<MachineImageCleanup>, };
 
+export type ImageDigest = string;
+
 export type ImageRemoval = { reference: string, outcome: ImageRemovalOutcome, };
 
 export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, } | { "status": "unrecognized" };
@@ -531,7 +535,7 @@ export type MintBuildGrantRequest = {
 /**
  * The only repository the push may write, as Docker names it (`ployz-build/web`).
  */
-repository: string, };
+repository: BuildGrantRepository, };
 
 export type ObservationKind = "container" | "volume";
 
@@ -768,7 +772,7 @@ reason: RuntimeFailureKind, };
 
 export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<CertificateHost>, };
 
-export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, incomplete_ids: RuntimeWatchIncompleteIds,
+export type RuntimeWatchView = { services: Array<ServiceObservation>, effective_build_concurrency: { [key in MachineId]: BuildConcurrency }, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, incomplete_ids: RuntimeWatchIncompleteIds,
 /**
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */

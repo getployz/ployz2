@@ -509,7 +509,7 @@ async fn build_grant_contract() {
     ));
     let minted = grants.mint(
         local.record().management_secret().public_key(),
-        "ployz-build/web".into(),
+        ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
         ingest,
     );
     let relay = ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify());
@@ -586,7 +586,10 @@ async fn build_grant_contract() {
 
     // Ending the Build ends the grant: live streams stop and a redial is refused.
     let ended = grants.end(&minted.id).unwrap();
-    assert_eq!(ended.pushed, Some(format!("sha256:{hex}")));
+    assert_eq!(
+        ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
+        Some(format!("sha256:{hex}").as_str())
+    );
     assert!(http.head(&blob).send().await.is_err());
     let again = open_grant_registry(&minted.grant, &relay).await.unwrap();
     assert!(
@@ -596,7 +599,7 @@ async fn build_grant_contract() {
             .is_err()
     );
     assert!(again.refusal().is_some());
-    assert_eq!(grants.end(&minted.id), Some(ended));
+    assert_eq!(grants.end(&minted.id).unwrap(), ended);
     shutdown.cancel();
     server.await.unwrap();
 }

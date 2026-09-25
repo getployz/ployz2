@@ -11,6 +11,11 @@ use crate::{ManagementIdentity, ValueError};
 /// Machine RPC ALPN, so a grant key reaches image ingest and nothing else.
 pub const BUILD_GRANT_ALPN: &[u8] = b"ployz/build-grant/1";
 
+/// QUIC application close code on [`BUILD_GRANT_ALPN`] for a key that holds no live grant.
+pub const BUILD_GRANT_REFUSED: u32 = 0x53;
+/// QUIC application close code on [`BUILD_GRANT_ALPN`] once a served grant ends.
+pub const BUILD_GRANT_ENDED: u32 = 0x54;
+
 /// The only tag a grant push may write: this prefix plus the pushed manifest's
 /// SHA-256 hex. Direct Image Transfer retains images under the same tags, so Image
 /// Cleanup covers grant pushes without a second rule.

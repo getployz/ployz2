@@ -57,7 +57,7 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
 
     let minted = session
         .mint_build_grant(MintBuildGrantRequest {
-            repository: "ployz-build/app".into(),
+            repository: ployz_core::BuildGrantRepository::parse("ployz-build/app").unwrap(),
         })
         .await
         .unwrap();
@@ -95,6 +95,9 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
         .end_build_grant(EndBuildGrantRequest { id: minted.id })
         .await
         .unwrap();
-    assert_eq!(ended.pushed.as_deref(), Some(digest));
+    assert_eq!(
+        ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
+        Some(digest)
+    );
     session.close().await;
 }

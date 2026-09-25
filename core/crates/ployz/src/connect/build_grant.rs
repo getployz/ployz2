@@ -7,15 +7,10 @@ use iroh::{
     Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey,
     endpoint::{Connection, ConnectionError, VarInt, presets},
 };
-use ployz_core::{BUILD_GRANT_ALPN, BuildGrant};
+use ployz_core::{BUILD_GRANT_ALPN, BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant};
 use tokio::net::TcpListener;
 
 use super::ManagementRelay;
-
-/// Close code of a key that holds no live grant; mirrors the daemon's.
-const GRANT_REFUSED: VarInt = VarInt::from_u32(0x53);
-/// Close code once a served grant ends; mirrors the daemon's.
-const GRANT_ENDED: VarInt = VarInt::from_u32(0x54);
 
 /// A loopback registry address forwarding each TCP connection to the grant transport.
 /// Dropping it stops forwarding and closes the connection.
@@ -39,9 +34,9 @@ impl GrantRegistry {
         let ConnectionError::ApplicationClosed(close) = self.connection.close_reason()? else {
             return None;
         };
-        if close.error_code == GRANT_REFUSED {
+        if close.error_code == VarInt::from_u32(BUILD_GRANT_REFUSED) {
             Some("the Machine refused the Build Grant: it ended, expired, or was already used")
-        } else if close.error_code == GRANT_ENDED {
+        } else if close.error_code == VarInt::from_u32(BUILD_GRANT_ENDED) {
             Some("the Build Grant ended during the push")
         } else {
             None

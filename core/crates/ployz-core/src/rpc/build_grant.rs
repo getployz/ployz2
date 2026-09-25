@@ -7,7 +7,7 @@ use ts_rs::TS;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MintBuildGrantRequest {
     /// The only repository the push may write, as Docker names it (`ployz-build/web`).
-    pub repository: String,
+    pub repository: crate::BuildGrantRepository,
 }
 
 /// A minted grant. The Machine keeps it in memory only; a restart ends it.
@@ -34,5 +34,5 @@ pub struct BuildGrantEnded {
     /// `sha256:` digest of the manifest the Machine verified and stored, when the
     /// push completed; absent when nothing was pushed.
     #[serde(default)]
-    pub pushed: Option<String>,
+    pub pushed: Option<crate::ImageDigest>,
 }

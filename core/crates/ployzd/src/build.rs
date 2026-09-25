@@ -147,11 +147,10 @@ async fn attempt(
         );
     }
     let work = ployz_build::WorkEvidence::new(targets);
-    let concurrency = match require_build_acceptance(&local) {
-        Ok((_, concurrency)) => concurrency,
-        Err(reason) => return failed(Stage::Admission, reason.to_string()).with_work(work),
-    };
-    let permit = match runner.enter(concurrency) {
+    if let Err(reason) = require_build_acceptance(&local) {
+        return failed(Stage::Admission, reason.to_string()).with_work(work);
+    }
+    let mut permit = match runner.enter() {
         Ok(queue::Entry::Active(permit)) => permit,
         Ok(queue::Entry::Waiting(waiting)) => {
             let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued)))
@@ -214,8 +213,9 @@ async fn attempt(
     if events.send(Ok(admitted)).await.is_err() {
         return failed(Stage::Admission, "Build client disconnected");
     }
-    // Published until this attempt reports its end; capability checks are not Builds.
-    let _running = matches!(request, Input::Start(_)).then(|| local.running_build());
+    if matches!(request, Input::Start(_)) {
+        permit.count_as_build(&runner);
+    }
     let (upload, source) = mpsc::channel(2);
     let output = events.clone();
     let mut execution = tokio::task::spawn_blocking(move || {

@@ -38,26 +38,13 @@ pub struct LocalMachine {
     management_client: Option<[u8; 32]>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
+    /// Builds this Machine runs now, published with it; always 0 without a Build runner.
+    running_builds: tokio::sync::watch::Receiver<u32>,
 }
 
 mod container;
 mod management_client;
 mod upgrade;
-
-/// One Build counted as running on this Machine; dropping it publishes the lower count.
-pub(crate) struct RunningBuild(LocalMachine);
-
-impl Drop for RunningBuild {
-    fn drop(&mut self) {
-        if let Some(cluster) = &self.0.cluster {
-            cluster
-                .replicated
-                .running_builds()
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        self.0.publish_running_builds();
-    }
-}
 
 #[derive(Clone)]
 struct ClusterContext {
@@ -156,7 +143,23 @@ impl LocalMachine {
             management_client: None,
             cluster: None,
             containers: None,
+            running_builds: tokio::sync::watch::channel(0).1,
         }
+    }
+
+    /// Publish `running_builds` with this Machine's updates.
+    #[must_use]
+    pub(crate) fn with_running_builds(
+        mut self,
+        running_builds: tokio::sync::watch::Receiver<u32>,
+    ) -> Self {
+        self.running_builds = running_builds;
+        self
+    }
+
+    /// This Machine's record as it changes.
+    pub(crate) fn record_watch(&self) -> tokio::sync::watch::Receiver<Arc<LocalMachineRecord>> {
+        self.owner.watch()
     }
 
     /// Bind subsequent mutation admission to this authenticated management client.
@@ -223,37 +226,6 @@ impl LocalMachine {
     pub(crate) fn admit_build(&self) -> Result<crate::mutation::MutationGuard, Error> {
         self.require_management_access()?;
         Ok(self.owner.mutation_gate().try_mutation()?)
-    }
-
-    /// Count one running Build in this Machine's published record until the
-    /// returned guard drops. Display only: no placement decision reads it.
-    pub(crate) fn running_build(&self) -> RunningBuild {
-        if let Some(cluster) = &self.cluster {
-            cluster
-                .replicated
-                .running_builds()
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        self.publish_running_builds();
-        RunningBuild(self.clone())
-    }
-
-    fn publish_running_builds(&self) {
-        // A guard dropped during runtime shutdown has no one left to tell.
-        let (Some(cluster), Ok(runtime)) =
-            (self.cluster.clone(), tokio::runtime::Handle::try_current())
-        else {
-            return;
-        };
-        let owner = self.owner.clone();
-        runtime.spawn(async move {
-            let publication = cluster.replicated.machine_publication().await;
-            if let Some(machine) = publication.publishable_machine(&owner.record())
-                && let Err(error) = publication.publish_own(&machine).await
-            {
-                eprintln!("failed to publish running Builds: {error}");
-            }
-        });
     }
 
     async fn finish_mutation<T, F>(&self, work: F) -> Result<T, Error>
@@ -664,7 +636,10 @@ impl LocalMachine {
             .owner
             .mutate(move |store| store.update(update, &visible))
             .await??;
-        if let Err(error) = publication.publish_own(&machine).await {
+        let running = *self.running_builds.borrow();
+        if let Some(published) = publication.publishable_machine(&self.owner.record(), running)
+            && let Err(error) = publication.publish(&published).await
+        {
             eprintln!("failed to publish updated local Machine: {error}");
         }
         Ok(MachineUpdated { machine })

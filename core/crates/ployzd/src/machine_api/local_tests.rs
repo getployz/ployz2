@@ -668,7 +668,7 @@ async fn image_removal_without_docker_reports_an_error() {
 }
 
 #[tokio::test]
-async fn build_grants_refuse_a_malformed_repository_and_an_unknown_grant() {
+async fn ending_an_unknown_build_grant_is_not_found() {
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-build-grant-{}",
         ployz_core::MachineId::random()
@@ -681,26 +681,6 @@ async fn build_grants_refuse_a_malformed_repository_and_an_unknown_grant() {
         };
         error.code
     };
-    for repository in ["", "registry.example:5000/web", "web:tag", "Web", "a//b"] {
-        let response = service
-            .mint_build_grant(Request::new(
-                op::MintBuildGrant::into_request(ployz_core::MintBuildGrantRequest {
-                    repository: repository.into(),
-                })
-                .encode()
-                .unwrap(),
-            ))
-            .await
-            .unwrap()
-            .into_inner()
-            .decode_response()
-            .unwrap();
-        assert_eq!(
-            code(response.body),
-            RpcErrorCode::InvalidArgument,
-            "{repository}"
-        );
-    }
     let response = service
         .end_build_grant(Request::new(
             op::EndBuildGrant::into_request(ployz_core::EndBuildGrantRequest {

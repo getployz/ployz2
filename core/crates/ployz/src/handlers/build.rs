@@ -32,11 +32,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
     let deployment: Value =
         serde_json::from_slice(&std::fs::read(required(matches, "deployment")?)?)?;
     let service = git_service(&deployment)?;
-    if !(commit.len() == 40
-        && commit
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
-    {
+    if !ployz_core::is_lower_hex(&commit, 40) {
         return Err(Error::usage("--commit must be a full lowercase Git SHA"));
     }
     check_out(&source, &commit)?;

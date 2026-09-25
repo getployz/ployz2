@@ -57,6 +57,16 @@ impl MachineService {
         }
     }
 
+    /// Run Builds on `builds`, which follows this Machine's build concurrency
+    /// and reports its running Builds to the Machine's publications.
+    #[must_use]
+    pub(crate) fn with_builds(mut self, builds: Arc<crate::build::Runner>) -> Self {
+        builds.follow(self.local.record_watch());
+        self.local = self.local.with_running_builds(builds.running_builds());
+        self.builds = builds;
+        self
+    }
+
     pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
         self.local = self.local.with_management_client(remote);
         self
@@ -527,16 +537,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let updated = self
-            .local
-            .update(expect::<op::UpdateMachine>(request)?)
-            .await;
-        // Queued Builds follow a changed limit without waiting for a new arrival.
-        if let Ok(updated) = &updated {
-            self.builds
-                .resize(updated.machine.effective_build_concurrency());
-        }
-        finish(updated)
+        finish(
+            self.local
+                .update(expect::<op::UpdateMachine>(request)?)
+                .await,
+        )
     }
 
     async fn request_machine_upgrade(
@@ -647,28 +652,17 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::MintBuildGrant>(request)?;
-        if !docker_repository(&request.repository) {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "repository must be a Docker repository path without a registry or tag"
-                    .into(),
-                details: Value::Null,
-            });
-        }
-        // Opening ingest here surfaces its failure to the minting caller, not the pusher.
-        let opened = match self
-            .local
-            .ensure_image_ingest(Arc::clone(&self.ingest))
-            .await
+        match crate::management::build_grant::mint_for(
+            &self.grants,
+            &self.local,
+            Arc::clone(&self.ingest),
+            request,
+        )
+        .await
         {
-            Ok(opened) => opened.destination,
-            Err(error) => return local_error(error),
-        };
-        respond(self.grants.mint(
-            self.local_record().management_secret().public_key(),
-            request.repository,
-            std::net::SocketAddr::from((opened.management_address.0, opened.port)),
-        ))
+            Ok(minted) => respond(minted),
+            Err(error) => local_error(error),
+        }
     }
 
     async fn end_build_grant(
@@ -677,14 +671,8 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::EndBuildGrant>(request)?;
         match self.grants.end(&request.id) {
-            Some(ended) => respond(ended),
-            None => respond(RpcError {
-                code: RpcErrorCode::NotFound,
-                message:
-                    "this Machine holds no such Build Grant; it expired or the daemon restarted"
-                        .into(),
-                details: Value::Null,
-            }),
+            Ok(ended) => respond(ended),
+            Err(error) => respond(error),
         }
     }
 
@@ -892,20 +880,6 @@ fn finish(
         Ok(value) => respond(value),
         Err(error) => local_error(error),
     }
-}
-
-/// Docker's short repository form: lowercase path components, no registry or tag.
-fn docker_repository(value: &str) -> bool {
-    (1..=255).contains(&value.len())
-        && value.split('/').all(|component| {
-            component
-                .bytes()
-                .next()
-                .is_some_and(|byte| byte.is_ascii_alphanumeric())
-                && component
-                    .bytes()
-                    .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
-        })
 }
 
 fn unavailable(message: &str) -> RpcError {

@@ -27,6 +27,7 @@ struct Fixture {
     machine: ployz_core::Machine,
     address: String,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    running_builds: tokio::sync::watch::Receiver<u32>,
 }
 
 impl Fixture {
@@ -73,7 +74,9 @@ impl Fixture {
         };
         update(&mut policy);
         let shutdown = tokio_util::sync::CancellationToken::new();
-        service.builds = Runner::new(policy.clone(), shutdown.clone()).unwrap();
+        let builds = Runner::new(policy.clone(), shutdown.clone()).unwrap();
+        let running_builds = builds.running_builds();
+        service = service.with_builds(builds);
         let local = service.local();
         write_docker(&policy.docker, &root);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -91,6 +94,7 @@ impl Fixture {
             machine,
             address,
             server,
+            running_builds,
         }
     }
     async fn request(
@@ -230,33 +234,25 @@ async fn admitted_upload_queues_competitors_and_disconnect_releases_unused_owner
 }
 
 #[tokio::test]
-async fn running_builds_are_published_on_the_machine_until_they_end() {
+async fn running_builds_are_counted_until_they_end() {
     let fixture = Fixture::new().await;
-    let published = async |count| {
-        let replicated = fixture.local.replicated().unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while replicated
-                .machine(fixture.machine.id.as_str())
-                .await
-                .unwrap()
-                .unwrap()
-                .runtime
-                .running_builds
-                != count
-            {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
+    let mut running = fixture.running_builds.clone();
+    let count = async |running: &mut tokio::sync::watch::Receiver<u32>, count| {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            running.wait_for(|now| *now == count),
+        )
         .await
-        .unwrap_or_else(|_| panic!("running Builds never read {count}"));
+        .unwrap_or_else(|_| panic!("running Builds never read {count}"))
+        .unwrap();
     };
-    published(0).await;
+    count(&mut running, 0).await;
     let (first, mut response) = fixture.request(Output::Load).await;
     assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
-    published(1).await;
+    count(&mut running, 1).await;
     drop(first);
     let _ = terminal(&mut response).await;
-    published(0).await;
+    count(&mut running, 0).await;
 }
 
 #[tokio::test]
@@ -442,6 +438,7 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
         .execute_remote_images(
             &client,
             fixture.machine.id,
+            None,
             tokio_util::sync::CancellationToken::new(),
             |event| events.lock().unwrap().push(event),
         )
@@ -488,6 +485,7 @@ async fn retained_build_images_do_not_block_same_machine_mutation() {
         .execute_remote_images(
             &client,
             fixture.machine.id,
+            None,
             tokio_util::sync::CancellationToken::new(),
             |_| {},
         )
@@ -538,6 +536,7 @@ async fn oversized_diagnostics_still_return_a_definite_terminal_failure() {
             .execute_remote_images(
                 &client,
                 fixture.machine.id,
+                None,
                 tokio_util::sync::CancellationToken::new(),
                 |_| {},
             )
@@ -623,11 +622,17 @@ async fn active_cancellation_confirms_cleanup_or_quarantines_uncertain_terminati
         let cancel = cancellation.clone();
         let result = failure(
             capture
-                .execute_remote_images(&client, fixture.machine.id, cancellation, |progress| {
-                    if matches!(progress, Progress::Output(_)) {
-                        cancel.cancel();
-                    }
-                })
+                .execute_remote_images(
+                    &client,
+                    fixture.machine.id,
+                    None,
+                    cancellation,
+                    |progress| {
+                        if matches!(progress, Progress::Output(_)) {
+                            cancel.cancel();
+                        }
+                    },
+                )
                 .await,
         );
         if uncertain {
@@ -717,6 +722,7 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
                 .execute_remote_images(
                     &client,
                     fixture.machine.id,
+                    None,
                     tokio_util::sync::CancellationToken::new(),
                     |_| {},
                 )
@@ -814,12 +820,18 @@ async fn captured_client_cancels_in_queue_without_uploading() {
     let cancellation = tokio_util::sync::CancellationToken::new();
     let result = failure(
         capture
-            .execute_remote_images(&client, fixture.machine.id, cancellation.clone(), |event| {
-                if matches!(event, Progress::Stage(Stage::Queued)) {
-                    cancellation.cancel();
-                }
-                assert!(!matches!(event, Progress::Stage(Stage::Upload)));
-            })
+            .execute_remote_images(
+                &client,
+                fixture.machine.id,
+                None,
+                cancellation.clone(),
+                |event| {
+                    if matches!(event, Progress::Stage(Stage::Queued)) {
+                        cancellation.cancel();
+                    }
+                    assert!(!matches!(event, Progress::Stage(Stage::Upload)));
+                },
+            )
             .await,
     );
     assert!(
@@ -845,7 +857,7 @@ async fn client_waits_past_connection_deadline_and_uploads_only_after_admission(
     let selected = fixture.machine.id;
     let execution = tokio::spawn(async move {
         capture
-            .execute_remote_images(&client, selected, Default::default(), |event| {
+            .execute_remote_images(&client, selected, None, Default::default(), |event| {
                 if matches!(event, Progress::Stage(Stage::Queued)) {
                     waiting.try_send(()).unwrap();
                 }
@@ -913,6 +925,7 @@ async fn dropping_completed_build_releases_only_its_temporary_tags() {
             .execute_remote_images(
                 &client,
                 fixture.machine.id,
+                None,
                 tokio_util::sync::CancellationToken::new(),
                 |_| {},
             )
@@ -924,6 +937,7 @@ async fn dropping_completed_build_releases_only_its_temporary_tags() {
             fixture.capture().execute_remote_images(
                 &client,
                 fixture.machine.id,
+                None,
                 tokio_util::sync::CancellationToken::new(),
                 |_| {},
             ),

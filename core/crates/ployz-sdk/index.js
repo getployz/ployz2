@@ -323,6 +323,9 @@ module.exports = {
     try { return native.buildFingerprints(input); } catch (error) { throwRpcError(error); }
   },
   ployzVersion: () => native.ployzVersion(),
+  buildGrantTag: (repository, digest) => {
+    try { return native.buildGrantTag(repository, digest); } catch (error) { throwRpcError(error); }
+  },
   connect,
   Client,
   RpcError,

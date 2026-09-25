@@ -32,9 +32,12 @@ pub async fn wait_for_catch_up(
     }
 }
 
+/// Publish this Machine now and every minute, and whenever the number of
+/// Builds it runs changes.
 pub async fn run_machine_publisher(
     replicated: Option<ReplicatedStore>,
     local: RecordOwner,
+    mut running_builds: tokio::sync::watch::Receiver<u32>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     if let Some(replicated) = &replicated {
@@ -77,15 +80,18 @@ pub async fn run_machine_publisher(
                 eprintln!("failed to publish Cluster network: {error}");
             }
             let publication = replicated.machine_publication().await;
-            let machine = publication.publishable_machine(&local.record());
+            let running = *running_builds.borrow_and_update();
+            let machine = publication.publishable_machine(&local.record(), running);
             if let Some(machine) = machine
-                && let Err(error) = publication.publish_own(&machine).await
+                && let Err(error) = publication.publish(&machine).await
             {
                 eprintln!("failed to publish local Machine: {error}");
             }
         }
         tokio::select! {
             () = tokio::time::sleep(Duration::from_secs(60)) => {}
+            // A closed channel (no Build runner) never changes again.
+            Ok(()) = running_builds.changed() => {}
             () = shutdown.cancelled() => {
                 return Ok(());
             }

@@ -788,6 +788,23 @@ pub fn ployz_version() -> String {
     sdk::VERSION.to_owned()
 }
 
+/// The tag a Build Grant push retains `digest` under in `repository`, as Image
+/// Cleanup knows it: `repository:ployz-sha256-<hex>`.
+///
+/// # Errors
+/// Rejects a repository or digest a Build Grant could not have pushed.
+#[napi]
+pub fn build_grant_tag(repository: String, digest: String) -> Result<String> {
+    let repository =
+        ployz_core::BuildGrantRepository::parse(repository).map_err(invalid_argument)?;
+    let digest = ployz_core::ImageDigest::parse(digest).map_err(invalid_argument)?;
+    Ok(format!(
+        "{repository}:{}{}",
+        ployz_core::RETAINED_DIGEST_TAG_PREFIX,
+        digest.hex()
+    ))
+}
+
 /// Cancellable Container log reader.
 #[napi]
 pub struct ContainerLogStream {

@@ -44,19 +44,36 @@ pub type RunningBuild = Running<BuildOutcome>;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{BuildReceipt, PreparationInput, VERSION, expected_fingerprints};
 
-/// The public SDK Watch frame: the RPC frame plus the Services this observer
-/// derives from its Containers. The RPC frame carries only Container observations.
+/// The public SDK Watch frame: the RPC frame plus what this observer derives
+/// from it: the Services of its Containers, and each Machine's build
+/// concurrency in effect (its explicit value, or the automatic one).
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 pub struct RuntimeWatchView {
     #[serde(flatten)]
     pub frame: RuntimeWatchFrame,
     pub services: Vec<ServiceObservation>,
+    pub effective_build_concurrency:
+        std::collections::BTreeMap<ployz_core::MachineId, ployz_core::BuildConcurrency>,
 }
 
 impl From<RuntimeWatchFrame> for RuntimeWatchView {
     fn from(frame: RuntimeWatchFrame) -> Self {
         let services = frame.services();
-        Self { frame, services }
+        let effective_build_concurrency = frame
+            .machines
+            .iter()
+            .map(|observed| {
+                (
+                    observed.machine.id,
+                    observed.machine.effective_build_concurrency(),
+                )
+            })
+            .collect();
+        Self {
+            frame,
+            services,
+            effective_build_concurrency,
+        }
     }
 }
 

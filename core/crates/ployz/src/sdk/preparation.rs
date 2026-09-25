@@ -83,12 +83,12 @@ fn invalid(message: impl ToString) -> RpcError {
 /// Capture authorized checkouts as Builds.
 pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation, RpcError> {
     for receipt in input.build_receipts.values() {
-        if !lower_hex(&receipt.fingerprint, 64)
+        if !ployz_core::is_lower_hex(&receipt.fingerprint, 64)
             || !receipt
                 .image
                 .reference
                 .strip_prefix("sha256:")
-                .is_some_and(|digest| lower_hex(digest, 64))
+                .is_some_and(|digest| ployz_core::is_lower_hex(digest, 64))
         {
             return Err(invalid(
                 "build receipt must identify immutable image content",
@@ -203,7 +203,7 @@ fn freeze(
         {
             let name = &config.settings.private_dns;
             if let Some(commit) = source_commits.remove(name) {
-                if !lower_hex(&commit, 40) {
+                if !ployz_core::is_lower_hex(&commit, 40) {
                     return Err(invalid("source commit must be a lowercase Git SHA"));
                 }
                 identities.insert(name.clone(), json!({
@@ -278,13 +278,6 @@ pub fn expected_fingerprints(
 /// Rejects an invalid deployment.
 pub(crate) fn frozen_intent(deployment: Value) -> Result<DeployIntent, RpcError> {
     Ok(freeze(deployment, &mut BTreeMap::new())?.intent)
-}
-
-fn lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn contained(root: &Path, base: &Path, setting: &str) -> Result<PathBuf, RpcError> {
