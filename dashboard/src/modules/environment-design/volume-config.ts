@@ -36,10 +36,6 @@ export const persistedVolumeConfigSchema = historicalVolumeConfigSchema.pipe(
   }),
 );
 
-export function parseVolumeConfig<Input>(input: Input): VolumeConfig {
-  return decodeStrict(persistedVolumeConfigSchema, input);
-}
-
 export function getVolumePhysicalName(volumeResourceId: string): string {
   return `vol-${volumeResourceId}`;
 }

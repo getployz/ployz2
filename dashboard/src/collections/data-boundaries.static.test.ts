@@ -90,7 +90,6 @@ const ON_DEMAND_READS = {
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
   "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
-  "components/deployment-row.tsx": "deploy and retry start runtime work",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "plan changes and checkout involve money",

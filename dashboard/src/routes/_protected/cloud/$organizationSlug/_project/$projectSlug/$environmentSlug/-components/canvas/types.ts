@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react";
-import type { DeploymentNodeView } from "#/modules/deployments/deployment-view";
+import type { AttemptTargetNode, DeploymentNodeView } from "#/modules/deployments/deployment-view";
 
 export type CanvasResourceType = "service" | "volume";
 
@@ -28,11 +28,9 @@ export type CanvasVolumeNode = Node<CanvasVolumeNodeData, "volume">;
 
 /** A node as a Cloud Deployment Attempt saw it; drawn only in Deployment Mode. */
 export type CanvasDeploymentNodeData = {
-  nodeId: string;
-  nodeType: CanvasResourceType;
+  /** The node as the attempt's snapshot froze it. */
+  node: AttemptTargetNode;
   name: string;
-  /** The node's deployment snapshot configuration. */
-  config: unknown;
   view: DeploymentNodeView;
 };
 

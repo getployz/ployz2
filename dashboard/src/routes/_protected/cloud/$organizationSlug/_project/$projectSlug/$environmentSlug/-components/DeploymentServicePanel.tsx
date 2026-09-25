@@ -1,20 +1,19 @@
 import { Navigate, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Schema } from "effect";
-import { parseServiceConfig, type ServiceConfig } from "@ployz/sdk/config";
+import type { ServiceConfig } from "@ployz/sdk/config";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getRawServicesCollection } from "#/collections/collections";
 import { ServiceBuildLogs, ServiceDeployLogs } from "#/components/deployment-logs";
+import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import { cn } from "#/lib/utils";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { nodeOutcomeLabels, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
+import { nodeOutcomeLabels, outcomeBadges, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
   DEPLOYMENT_SERVICE_PAGES, deploymentServicePageSchema, type DeploymentServicePage,
 } from "../services/$serviceId/-components/service-pages";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
-import { outcomeBadges } from "./canvas/DeploymentNode";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
 /** The tab that matters for the node: the build or rollout that failed or is running, otherwise Details. */
@@ -34,10 +33,10 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
     queryKey: ["deployment-panel-service", services.id, serviceId],
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.id, serviceId)).select(({ service }) => ({ name: service.name })),
   });
-  const node = attempt.nodes.find((candidate) => candidate.nodeType === "service" && candidate.nodeId === serviceId);
+  const node = attempt.nodes.find((candidate) => candidate.nodeId === serviceId);
   const view = attempt.view.nodes.find((candidate) => candidate.nodeId === serviceId);
-  if (!node || !view) return null;
-  const config = parseServiceConfig(node.config);
+  if (node?.nodeType !== "service" || !view) return null;
+  const { config } = node;
   const built = view.build.state !== "none";
   const requested = Schema.is(deploymentServicePageSchema)(tab) && (built || tab !== "build-logs") ? tab : null;
   const current = requested ?? defaultDeploymentTab(view);
@@ -51,7 +50,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate font-medium">{named[0]?.name ?? config.privateDns}</span>
           <span aria-hidden className="text-muted-foreground">/</span>
-          <span className="font-mono text-muted-foreground">{deployment.id.slice(0, 8)}</span>
+          <span className="font-mono text-muted-foreground">{shortDeploymentId(deployment.id)}</span>
           <Badge variant={outcomeBadges[view.outcome]}>{nodeOutcomeLabels[view.outcome]}</Badge>
         </div>
       </CanvasInspectorHeader>
@@ -118,13 +117,17 @@ function DeploymentServiceDetails({ view, config, commitSha }: { view: Deploymen
   const variables = Object.entries(config.env).sort(([a], [b]) => a.localeCompare(b));
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      <div className={cn("rounded-lg border px-4 py-3", view.failure ? "border-destructive/30 bg-destructive/4" : "bg-muted/20")}>
-        {view.failure ? <>
-          <p className="font-medium text-destructive">Failed</p>
-          <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-xs">{view.failure.message}</pre>
-          {view.failure.containerId ? <p className="mt-2 text-xs text-muted-foreground">Container <span className="font-mono">{view.failure.containerId}</span></p> : null}
-        </> : <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>}
-      </div>
+      {view.failure ? (
+        <Alert variant="destructive">
+          <AlertTitle>Failed</AlertTitle>
+          <AlertDescription>
+            <pre className="whitespace-pre-wrap break-words font-mono">{view.failure.message}</pre>
+            {view.failure.containerId ? <p>Container <span className="font-mono">{view.failure.containerId}</span></p> : null}
+          </AlertDescription>
+        </Alert>
+      ) : (
+<p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
+      )}
       <details>
         <summary className="cursor-pointer font-medium">{variables.length} {variables.length === 1 ? "variable" : "variables"} (as deployed)</summary>
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 font-mono text-xs">

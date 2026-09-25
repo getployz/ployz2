@@ -1,15 +1,15 @@
 import type { ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { Handle, Position } from "@xyflow/react";
-import { CheckIcon, CircleHelpIcon, CircleIcon, HardDriveIcon, XIcon } from "lucide-react";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { CheckIcon, CircleIcon, HardDriveIcon, XIcon } from "lucide-react";
 import { formatDuration } from "#/components/deployment-logs";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
-import { nodeOutcomeLabels, type DeploymentNodeView, type Stage } from "#/modules/deployments/deployment-view";
+import { nodeOutcomeLabels, outcomeBadges, type Stage } from "#/modules/deployments/deployment-view";
+import { canvasNodeTransition } from "./constants";
 import { getServiceIcon, getServiceSubtitle } from "./service-node-helpers";
 import type { CanvasDeploymentNodeData } from "./types";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
@@ -17,21 +17,11 @@ import { useDeploymentMode } from "../deployment-mode";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
 
-export const outcomeBadges = {
-  deployed: "success", removed: "secondary", failed: "destructive", not_attempted: "secondary", unchanged: "secondary",
-  queued: "secondary", building: "info", deploying: "info",
-} as const satisfies Record<DeploymentNodeView["outcome"], "success" | "secondary" | "destructive" | "info">;
-const outcomeCards = {
-  deployed: "success", removed: undefined, failed: "destructive", not_attempted: undefined, unchanged: undefined,
-  queued: undefined, building: "info", deploying: "info",
-} as const satisfies Record<DeploymentNodeView["outcome"], "success" | "destructive" | "info" | undefined>;
-
 const stageIcons = {
   done: <CheckIcon className="size-3" aria-label="done" />,
   failed: <XIcon className="size-3" aria-label="failed" />,
   running: <Spinner className="size-3" aria-label="running" />,
   queued: <CircleIcon className="size-3" aria-label="queued" />,
-  unknown: <CircleHelpIcon className="size-3" aria-label="unknown" />,
 };
 
 /** One stage of Build → Deploy: its state and, once finished, its duration. "—" when it has nothing to do. */
@@ -49,13 +39,14 @@ function StageLabel({ name, stage }: { name: string; stage: Stage }) {
  * Unchanged and Not attempted nodes show only their name and outcome, dimmed.
  */
 export function DeploymentNodeCard({ data, className }: { data: CanvasDeploymentNodeData; className?: string }) {
-  const { view } = data;
-  const source = data.nodeType === "service" ? parseServiceConfig(data.config).source : null;
+  const { node, view } = data;
+  const source = node.nodeType === "service" ? node.config.source : null;
   const subtitle = source ? getServiceSubtitle({ source }) : "Named volume";
   const dimmed = view.outcome === "unchanged" || view.outcome === "not_attempted";
+  const badge = outcomeBadges[view.outcome];
   return (
-    <Card size="node" state={outcomeCards[view.outcome]}
-      data-canvas-node={data.nodeId} data-dimmed={dimmed} className={cn("justify-between", dimmed && "opacity-40", className)}>
+    <Card size="node" state={badge === "secondary" ? undefined : badge}
+      data-canvas-node={node.nodeId} data-dimmed={dimmed} className={cn("justify-between", dimmed && "opacity-40", className)}>
       <CardHeader>
         <div className="flex items-start gap-3">
           <Avatar>
@@ -65,7 +56,7 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
             <CardTitle className="truncate">{data.name}</CardTitle>
             {subtitle && !dimmed ? <CardDescription className="truncate">{subtitle}</CardDescription> : null}
           </div>
-          <Badge variant={outcomeBadges[view.outcome]}>{nodeOutcomeLabels[view.outcome]}</Badge>
+          <Badge variant={badge}>{nodeOutcomeLabels[view.outcome]}</Badge>
         </div>
       </CardHeader>
       {dimmed ? null : (
@@ -76,7 +67,7 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
             <StageLabel name="Deploy" stage={view.deploy} />
           </div>
           {view.tail.length ? (
-            <div data-tail className="rounded-md bg-muted px-2 py-1 font-mono text-[10.5px] leading-normal text-muted-foreground">
+            <div data-tail className="font-mono text-xs text-muted-foreground">
               {view.tail.map((line, index) => (
                 <div key={index} className={cn("truncate", view.failure ? "text-destructive" : index === view.tail.length - 1 && "text-foreground")}>{line}</div>
               ))}
@@ -93,10 +84,11 @@ export function DeploymentNodeLink({ data, className, children }: { data: Canvas
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = useCollectionScope();
   const attempt = useDeploymentMode();
-  if (data.nodeType !== "service") return <div className={className}>{children}</div>;
+  const style = canvasNodeTransition(data.node.nodeId);
+  if (data.node.nodeType !== "service") return <div style={style} className={className}>{children}</div>;
   const warm = () => { if (attempt) preloadDeploymentLogs(params.organizationSlug, attempt.deployment.id, scope); };
-  return <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: data.nodeId }} search={(previous) => ({ ...previous, tab: undefined })}
-    onPointerEnter={warm} onFocus={warm} data-canvas-node={data.nodeId} draggable={false} className={cn("block", className)}>{children}</Link>;
+  return <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: data.node.nodeId }} search={(previous) => ({ ...previous, tab: undefined })}
+    onPointerEnter={warm} onFocus={warm} data-canvas-node={data.node.nodeId} style={style} draggable={false} className={cn("block", className)}>{children}</Link>;
 }
 
 export function DeploymentNode({ data }: { data: CanvasDeploymentNodeData }) {

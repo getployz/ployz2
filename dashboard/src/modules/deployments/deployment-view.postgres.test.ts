@@ -22,7 +22,7 @@ const service = (privateDns: string, image = "nginx:1") => projectServiceDeploym
 const row = (index: number, serviceId: string | null, serviceName: string, operation: string, status: DeploymentProgressRow["status"]): DeploymentProgressRow => ({
   index, machineId: "machine", machineName: "server", serviceId, runtimeServiceId: null, serviceName, displayName: null,
   operation, target: null, updateOrder: null, status, phase: null, elapsedMs: null, deadlineMs: null, health: null,
-  error: status === "failed" ? "Health check timed out" : null, containerId: status === "failed" ? "c0ffee" : null,
+  error: status === "failed" ? "Health check timed out" : null, containerId: status === "failed" ? "c0ffee" : null, startedAt: null, finishedAt: null,
 });
 // The record side leaves the removed service's row without a serviceId: that attempt has no snapshot of it.
 const progress: DeploymentProgress = { completed: 2, total: 3, outcome: "failed", compensation: [], rows: [

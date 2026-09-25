@@ -5,15 +5,14 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { TabsContent } from "#/components/ui/tabs";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import { useNodeDeployments } from "#/modules/deployments/deployment.collection";
-import { nodeOutcomeLabels } from "#/modules/deployments/deployment-view";
+import { nodeOutcomeLabels, outcomeBadges, shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { formatRelativeTime } from "#/utils/relative-time";
-import { outcomeBadges } from "../../../-components/canvas/DeploymentNode";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../../../-components/environment-route-paths";
 
 function Summary({ deployment }: { deployment: EnvironmentDeploymentSummary }) {
   return (
     <ItemContent className="min-w-0">
-      <ItemTitle className="w-full truncate"><span className="font-mono">{deployment.id.slice(0, 8)}</span> · {deployment.message ?? "Deployment"}</ItemTitle>
+      <ItemTitle className="w-full truncate"><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</ItemTitle>
       <ItemDescription>{formatRelativeTime(deployment.createdAt)}</ItemDescription>
     </ItemContent>
   );

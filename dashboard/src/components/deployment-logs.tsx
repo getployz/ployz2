@@ -7,8 +7,8 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
-import { BUILDING_KEY } from "#/modules/deployments/preparation-progress";
-import { stripAnsi } from "#/modules/deployments/deployment-view";
+import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-progress";
+import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
@@ -38,8 +38,6 @@ function useNow(active: boolean) {
 
 export const clock = (date: Date) => date.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-export { stripAnsi };
-
 const lastLine = (rows: readonly BuildOutputRow[]) => {
   const lines = stripAnsi(rows.map((row) => row.text).join("")).split("\n").filter((line) => line.trim());
   return lines.at(-1) ?? null;
@@ -62,7 +60,7 @@ export function BuildLogs({ steps, output, finished, now = Date.now() }: {
   // One attempt may run BuildKit several times; the run's heading matters only then, or when it failed.
   const runs = new Set(started.map((step) => step.build).filter((build) => build > 0)).size;
   const failedRuns = new Set(steps.filter((step) => step.error !== null).map((step) => step.build));
-  const shown = started.filter((step) => step.error !== null || (step.key !== "stage:Cleanup" && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build))));
+  const shown = started.filter((step) => step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build))));
   return <ol>
     {shown.map((step) => step.key === BUILDING_KEY && step.error === null
       ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
@@ -118,18 +116,9 @@ function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress:
   return logs;
 }
 
-/**
- * One Image Build's steps: the runs whose heading names the image. The attempt-wide cleanup and
- * delivery rows filed under the last run are dropped; a shared pre-build failure stopped every image, so it stays.
- */
-export function imageBuildSteps(steps: readonly BuildStepRow[], image: string): BuildStepRow[] {
-  const runs = new Set(steps.filter((step) => step.key === BUILDING_KEY && step.name === image).map((step) => step.build));
-  return steps.filter((step) => step.build === 0 ? step.error !== null : runs.has(step.build) && step.key !== "stage:Cleanup" && step.key !== "transfer");
-}
-
 /** One service's Build logs in an attempt: only its own Image Build, which the engine names after the service's private DNS name. */
 export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { organizationSlug: string; deploymentId: string; image: string }) {
-  const build = useBuildLog(organizationSlug, deploymentId, true);
+  const build = useBuildLog(organizationSlug, deploymentId);
   const now = useNow(build.data?.finished === false);
   const steps = imageBuildSteps(build.data?.steps ?? [], image);
   const ids = new Set(steps.map((step) => step.id));

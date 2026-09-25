@@ -90,7 +90,7 @@ export function ApplyZone({
           </span>
           {isMobile ? null : <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openDetails}>Details</Button>}
           <Button size="sm" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy}>
-            Deploy{isMobile ? null : <Kbd className="bg-primary-foreground/15 text-primary-foreground">⇧+Enter</Kbd>}
+            Deploy{isMobile ? null : <Kbd>⇧+Enter</Kbd>}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label="More change actions" />}>

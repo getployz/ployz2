@@ -58,7 +58,7 @@ const snapshot = (deploymentId: string, nodeId: string, privateDns: string) => (
 // The attempt removed `old` (its row has no serviceId on the record side), failed `web`'s health check and left `api` unchanged; `worker` came later.
 const removal: DeploymentProgressRow = { index: 0, machineId: "m", machineName: "server", serviceId: null, runtimeServiceId: null, serviceName: "old", displayName: null,
   operation: "remove_container", target: null, updateOrder: null, status: "completed", phase: null, elapsedMs: null, deadlineMs: null, health: null, error: null,
-  startedAt: 0, finishedAt: 3_000 };
+  containerId: null, startedAt: 0, finishedAt: 3_000 };
 const healthFailure: DeploymentProgressRow = { ...removal, index: 1, serviceId: web, serviceName: "web", operation: "replace_container", status: "failed",
   error: "Health check timed out", containerId: "4e7a19c", startedAt: 3_000, finishedAt: 63_000 };
 // A later attempt failed replacing `api`: the health check failed in container c0ffee.
@@ -166,6 +166,23 @@ describe("deployment mode on the environment canvas", () => {
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
     expect(router.state.location.search).not.toHaveProperty("deployment");
     expect(screen.queryAllByText("Removed")).toEqual([]);
+  });
+
+  it("draws a node whose service row and position are both gone by its snapshot's name, clear of the origin", async () => {
+    const gone = "00000000-0000-4000-8000-000000000025";
+    const goneAttempt = "f0000000-0000-4000-8000-000000000016";
+    const router = await openCanvas({ extra: {
+      environment_deployment: [deployment(goneAttempt, 4, null)],
+      environment_node_config_snapshot: [snapshot(goneAttempt, api, "api"), snapshot(goneAttempt, gone, "billing")],
+      environment_canvas_node_position: [{ id: "00000000-0000-4000-8000-000000000031", organizationId, environmentId, resourceType: "service", resourceId: api, x: 0, y: 0, createdAt, updatedAt: createdAt }],
+    } });
+
+    await enterDeploymentMode(router, goneAttempt);
+    expect(card("billing")).toBeTruthy();
+    expect(screen.queryByText(gone)).toBeNull();
+    const at = (nodeId: string) => document.querySelector(`.react-flow__node[data-id="${nodeId}"]`)?.getAttribute("style");
+    expect(at(api)).toMatch(/translate\(0px, ?0px\)/);
+    expect(at(gone)).not.toMatch(/translate\(0px, ?0px\)/);
   });
 
   it("shows Build → Deploy and the tail on nodes the attempt changed, and nothing new on live nodes", async () => {
@@ -416,6 +433,10 @@ describe("the apply zone", () => {
     // Deployment Mode is read-only: no apply zone.
     expect(await bar().findByRole("button", { name: /Deployment c0000000/ })).toBeTruthy();
     expect(bar().queryByText(/Apply/)).toBeNull();
+    // Queued for the next trigger: it can be dispatched from the bar.
+    const dispatch = vi.spyOn(deploymentFunctions, "dispatchQueuedEnvironmentDeploymentServerFn").mockResolvedValue({ state: "dispatched" });
+    await click(bar().getByRole("button", { name: "Deploy now" }));
+    expect(dispatch).toHaveBeenCalledWith({ data: { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" } });
   });
 
   it("uses fewer words on mobile and keeps Details and Discard under ⋮", async () => {

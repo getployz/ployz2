@@ -1,10 +1,10 @@
 import { createContext, use, useEffect, useRef, type ReactNode } from "react";
 import { Link, retainSearchParams, useLoaderData, useParams, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { setOpenStartedDeployments } from "#/auth/open-started-deployments";
+import { openStartedDeploymentsChange, setOpenStartedDeployments } from "#/auth/open-started-deployments";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Button } from "#/components/ui/button";
-import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/runtime-contract";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { useDeploymentAttempt, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
@@ -38,19 +38,22 @@ export function DeploymentModeProvider({ children }: { children: ReactNode }) {
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deploymentId = useSearch({ from: CANVAS_ROUTE_ID, select: (search) => search.deployment ?? null });
   const attempt = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
+  useOpenStartedDeploymentsSync(attempt, deploymentId);
+  return <DeploymentModeContext value={attempt}>{children}</DeploymentModeContext>;
+}
+
+/** Keeps "open deployments I start" in step with how the user watches their own running attempts. */
+function useOpenStartedDeploymentsSync(attempt: DeploymentAttempt | null, deploymentId: string | null) {
   const { userId } = useCollectionScope();
   const origin = attempt?.deployment.triggerOrigin;
-  const ownRunningId = attempt && ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES.has(attempt.deployment.status)
+  const shownNow = attempt && isActiveDeployment(attempt.deployment.status)
     && origin?.origin === "manual" && origin.actorId === userId ? attempt.deployment.id : null;
-  // "Open deployments I start": opening your own running attempt turns it on; returning to live while it runs turns it off.
-  const shownOwnRunning = useRef<string | null>(null);
+  const shown = useRef<string | null>(null);
   useEffect(() => {
-    const previous = shownOwnRunning.current;
-    shownOwnRunning.current = ownRunningId;
-    if (ownRunningId !== null && ownRunningId !== previous) void setOpenStartedDeployments(true);
-    else if (previous !== null && deploymentId === null) void setOpenStartedDeployments(false);
-  }, [ownRunningId, deploymentId]);
-  return <DeploymentModeContext value={attempt}>{children}</DeploymentModeContext>;
+    const change = openStartedDeploymentsChange({ shownBefore: shown.current, shownNow, deploymentId });
+    shown.current = shownNow;
+    if (change !== null) void setOpenStartedDeployments(change);
+  }, [shownNow, deploymentId]);
 }
 
 export function BackToLive({ className }: { className?: string }) {

@@ -5,13 +5,15 @@ import { useParams } from "@tanstack/react-router";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getCanvasPositionsCollection, getRawServicesCollection } from "#/collections/collections";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { parseVolumeConfig } from "#/modules/environment-design/volume-config";
+import type { AttemptTargetNode } from "#/modules/deployments/deployment-view";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { BackToLive } from "../deployment-mode";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
 import { DeploymentNodeCard, DeploymentNodeLink } from "./DeploymentNode";
 import type { CanvasDeploymentNode } from "./types";
+
+const UNPLACED_GAP = 48;
 
 /**
  * The canvas as one Cloud Deployment Attempt saw it: exactly its node set at current positions.
@@ -32,26 +34,36 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.environmentId, environmentId))
       .select(({ service }) => ({ id: service.id, name: service.name })),
   });
+  const positionOf = (node: AttemptTargetNode) => positionRows.find((row) => row.resourceType === node.nodeType && row.resourceId === node.nodeId);
+  // A node deleted since the attempt lost its position: line those up below the canvas so they never stack at the origin.
+  const unplaced = attempt.nodes.filter((node) => !positionOf(node));
+  const belowAll = Math.max(0, ...positionRows.map((row) => row.y)) + SERVICE_NODE_HEIGHT + UNPLACED_GAP;
   const nodes = attempt.nodes.flatMap((node): CanvasDeploymentNode[] => {
     const view = attempt.view.nodes.find((candidate) => candidate.nodeId === node.nodeId);
     if (!view) return [];
-    const position = positionRows.find((row) => row.resourceType === node.nodeType && row.resourceId === node.nodeId);
-    const name = node.nodeType === "volume" ? parseVolumeConfig(node.config).name
-      : serviceRows.find((row) => row.id === node.nodeId)?.name ?? node.nodeId;
+    const position = positionOf(node) ?? { x: unplaced.indexOf(node) * (SERVICE_NODE_WIDTH + UNPLACED_GAP), y: belowAll };
+    // A service's name outlives it on its identity row; without one, its private DNS name is its name.
+    const name = node.nodeType === "volume" ? node.config.name
+      : serviceRows.find((row) => row.id === node.nodeId)?.name ?? node.config.privateDns;
     return [{
-      id: node.nodeId, type: "deployment", position: { x: position?.x ?? 0, y: position?.y ?? 0 },
+      id: node.nodeId, type: "deployment", position: { x: position.x, y: position.y },
       width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, draggable: false,
-      data: { nodeId: node.nodeId, nodeType: node.nodeType, name, config: node.config, view },
+      data: { node, name, view },
     }];
   });
+
+  // Mount edges come straight from the snapshots; reference edges need the live services' slugs, so the mode leaves them out.
+  const edges = attempt.nodes.flatMap((node) => node.nodeType !== "service" ? [] : node.config.mounts.flatMap(({ volumeResourceId }) =>
+    nodes.some((candidate) => candidate.id === volumeResourceId)
+      ? [{ id: `mount:${volumeResourceId}:${node.nodeId}`, source: volumeResourceId, target: node.nodeId }] : []));
 
   return (
     <div className="canvas-graph" data-deployment-canvas>
       <div className="hidden h-full min-[861px]:block">
-        <ReactFlowProvider initialNodes={nodes} initialWidth={1200} initialHeight={800} fitView initialMaxZoom={1.25}>
+        <ReactFlowProvider initialNodes={nodes} initialEdges={edges} initialWidth={1200} initialHeight={800} fitView initialMaxZoom={1.25}>
           <ReactFlow
             nodes={nodes}
-            edges={[]}
+            edges={edges}
             nodeTypes={canvasNodeTypes}
             nodesDraggable={false}
             nodesConnectable={false}
