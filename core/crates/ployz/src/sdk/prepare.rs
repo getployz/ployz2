@@ -304,6 +304,10 @@ pub async fn prepare(
 /// ([`crate::build::Error::Withdrawn`]) before any source leaves the client.
 /// # Errors
 /// Returns typed Build evidence across every target, eligibility, withdrawal, or cancellation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prepare and the one-Service build pass separate caller-owned inputs; a bundle would only rename them"
+)]
 pub(super) async fn build_images(
     client: &mut Client,
     intent: &DeployIntent,
