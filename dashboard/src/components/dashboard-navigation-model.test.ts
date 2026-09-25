@@ -44,12 +44,11 @@ describe("dashboard navigation model", () => {
 
     expect(items.map((item) => item.label)).toEqual([
       "Architecture",
-      "Deployments",
       "Logs",
       "Settings",
     ]);
     expect(items[1]).toMatchObject({
-      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
+      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
       params: {
         organizationSlug: "acme",
         projectSlug: "storefront",

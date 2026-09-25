@@ -62,11 +62,10 @@ const sectionDefinitions = {
     environmentPath:
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
   },
+  // Deployments are a mode of the canvas (the deploy bar); only the legacy organization route names this section.
   deployments: {
     label: "Deployments",
     icon: RocketIcon,
-    environmentPath:
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
   },
   logs: {
     label: "Logs",
@@ -168,8 +167,6 @@ const sectionByRouteId: SectionByRouteId = {
   "/_protected/cloud/$organizationSlug/_org/~/logs": "logs",
   "/_protected/cloud/$organizationSlug/_org/~/settings": "server-settings",
   "/_protected/cloud/$organizationSlug/_org/~/servers/": "servers",
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments":
-    "deployments",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs":
     "logs",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings":

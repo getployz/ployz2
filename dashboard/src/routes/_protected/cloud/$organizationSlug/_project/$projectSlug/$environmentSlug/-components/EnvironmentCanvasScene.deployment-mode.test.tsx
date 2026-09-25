@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { Suspense } from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { DbProvider } from "@tanstack/react-db";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -22,11 +22,13 @@ import { serviceSearchSchema } from "../services/$serviceId/-components/service-
 import { canvasRouteSearch } from "./deployment-mode";
 import { EnvironmentCanvasScene } from "./EnvironmentCanvasScene";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
+import { Route as deploymentsRoute } from "../deployments";
 
 const organizationId = "00000000-0000-4000-8000-000000000001";
 const projectId = "00000000-0000-4000-8000-000000000002";
 const environmentId = "00000000-0000-4000-8000-000000000003";
-const [previous, attemptId] = ["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"];
+const [previous, attemptId, failedId, runningId] = ["a0000000-0000-4000-8000-000000000011", "b0000000-0000-4000-8000-000000000012",
+  "c0000000-0000-4000-8000-000000000013", "d0000000-0000-4000-8000-000000000014"];
 const [api, old, worker] = ["00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022", "00000000-0000-4000-8000-000000000023"];
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
 const createdAt = new Date("2026-09-01T00:00:00Z");
@@ -38,9 +40,9 @@ const intentService = (id: string, slug: string) => {
 };
 const service = (id: string, name: string) => ({ id, organizationId, projectId, environmentId, lineageId: id, name, policy: defaultServicePolicy,
   hasRegistryCredential: false, firstDeployedAt: createdAt, createdAt, updatedAt: createdAt });
-const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgress | null) => ({
+const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgress | null, status = "applied") => ({
   id, organizationId, environmentId, triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: id, serviceActionPolicy: null,
-  status: "applied", inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, sourcePins: {}, variableProducers: null, deployManifest: null,
+  status, inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, sourcePins: {}, variableProducers: null, deployManifest: null,
   deployPreview: null, runtimeProgress, failureCode: null, failureMessage: null, message: null, cancellationRequestedAt: null, dispatchRequestedAt: null,
   startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt,
 });
@@ -60,10 +62,10 @@ const rows = new Map<string, unknown[]>(Object.entries({
   environment_node_config_snapshot: [snapshot(previous, api, "api"), snapshot(previous, old, "old"), snapshot(attemptId, api, "api")],
 }));
 
-async function openCanvas() {
+async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production" }: { extra?: Record<string, unknown[]>; path?: string } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
-  for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed(rows.get(table) ?? []));
+  for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([...rows.get(table) ?? [], ...extra[table] ?? []]));
   // The change-state projection stamps its version from these tables, then reads no states.
   await Promise.all([getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection].map((get) => preloadCollection(get("acme", scope))));
   await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => []));
@@ -82,10 +84,11 @@ async function openCanvas() {
   const index = createRoute({ getParentRoute: () => canvas, path: "/", component: () => null });
   const serviceRoute = createRoute({ getParentRoute: () => canvas, path: "services/$serviceId",
     validateSearch: Schema.toStandardSchemaV1(serviceSearchSchema), component: () => <p>Live service panel</p> });
+  const deployments = createRoute({ getParentRoute: () => environment, path: "deployments", beforeLoad: (context) => { deploymentsRoute.options.beforeLoad?.(context as never); } });
   const routeTree = root.addChildren([protectedRoute.addChildren([organization.addChildren([
-    projectGroup.addChildren([environment.addChildren([canvas.addChildren([index, serviceRoute])])]),
+    projectGroup.addChildren([environment.addChildren([canvas.addChildren([index, serviceRoute]), deployments])]),
   ])])]);
-  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/production"] }) });
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) });
   render(<DbProvider client={getDbClient(queryClient)}><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></DbProvider>);
   await screen.findAllByText("worker");
   return router;
@@ -140,5 +143,81 @@ describe("deployment mode on the environment canvas", () => {
     await act(async () => { router.history.back(); });
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
     expect(screen.queryByText("Back to live")).toBeNull();
+  });
+});
+
+describe("the deploy bar", () => {
+  const bar = () => within(screen.getByRole("group", { name: "Deploy bar" }));
+  const click = (element: HTMLElement) => act(async () => { fireEvent.click(element); });
+
+  it("switches between Live and a deployment picked from the list", async () => {
+    const router = await openCanvas();
+    expect(bar().getByRole("link", { name: "Live" }).getAttribute("data-active")).toBe("true");
+
+    await click(bar().getByRole("button", { name: "Deployments" }));
+    expect(router.state.location.search).toMatchObject({ deploymentList: true });
+    const list = within(await screen.findByRole("navigation", { name: "Deployments" }));
+    // Live first, then deployments newest first.
+    expect(list.getAllByRole("link").map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Live"), expect.stringContaining("b0000000"), expect.stringContaining("a0000000"),
+    ]);
+
+    await click(list.getByRole("link", { name: /b0000000/ }));
+    expect(router.state.location.search).toEqual({ deployment: attemptId });
+    expect(await screen.findByRole("button", { name: /Deployment b0000000/ })).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Deployments" })).toBeNull();
+
+    await click(bar().getByRole("link", { name: "Live" }));
+    expect(router.state.location.search).toEqual({});
+    expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
+  });
+
+  it("opens a running attempt directly and offers Cancel, and Retry on a failed one", async () => {
+    const router = await openCanvas({ extra: {
+      environment_deployment: [deployment(failedId, 3, null, "failed"), deployment(runningId, 4, null, "deploying")],
+      environment_node_config_snapshot: [snapshot(runningId, api, "api"), snapshot(runningId, worker, "worker")],
+    } });
+    await click(bar().getByRole("link", { name: /Deploying 0\/1/ }));
+    expect(router.state.location.search).toEqual({ deployment: runningId });
+    expect(await bar().findByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(bar().queryByRole("button", { name: "Retry" })).toBeNull();
+
+    await click(bar().getByRole("button", { name: /Deployment d0000000/ }));
+    await click(within(await screen.findByRole("navigation", { name: "Deployments" })).getByRole("link", { name: /c0000000/ }));
+    expect(await bar().findByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(bar().queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("stays usable while a service panel is open", async () => {
+    const router = await openCanvas();
+    await act(() => router.navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: api } }));
+    await screen.findByText("Live service panel");
+    expect(screen.getByRole("group", { name: "Deploy bar" }).closest("[inert]")).toBeNull();
+    await click(bar().getByRole("button", { name: "Deployments" }));
+    expect(await screen.findByRole("navigation", { name: "Deployments" })).toBeTruthy();
+  });
+
+  it("opens the list as a bottom sheet on mobile", async () => {
+    vi.stubGlobal("innerWidth", 375);
+    await openCanvas();
+    await click(bar().getByRole("button", { name: "Deployments" }));
+    const sheet = await screen.findByRole("dialog", { name: "Deployments" });
+    expect(sheet.getAttribute("data-swipe-direction")).toBe("down");
+    expect(within(sheet).getByRole("link", { name: /b0000000/ })).toBeTruthy();
+  });
+
+  it("leaves Deployment Mode on Esc", async () => {
+    const router = await openCanvas();
+    await enterDeploymentMode(router);
+    await screen.findAllByText("Removed");
+    await act(async () => { fireEvent.keyDown(document.body, { key: "Escape" }); });
+    expect(router.state.location.search).toEqual({});
+  });
+
+  it("redirects the old Deployments page to the canvas with the list open", async () => {
+    const router = await openCanvas({ path: "/cloud/acme/shop/production/deployments" });
+    expect(router.state.location.pathname).toBe("/cloud/acme/shop/production");
+    expect(router.state.location.search).toEqual({ deploymentList: true });
+    expect(await screen.findByRole("navigation", { name: "Deployments" })).toBeTruthy();
   });
 });

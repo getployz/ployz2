@@ -170,3 +170,24 @@ export function useDeploymentAttempt(organizationSlug: string, environmentId: st
   const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history, snapshots: snapshotRows });
   return { deployment, nodes, view: deploymentView({ deployment, progress, nodes }) };
 }
+
+/** Every Cloud Deployment Attempt of an environment through the deployment view projection, newest first. */
+// ponytail: projects every attempt on each change; page the history if environments grow long ones.
+export function useEnvironmentDeployments(organizationSlug: string, environmentId: string): DeploymentAttempt[] {
+  const scope = useCollectionScope();
+  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
+  const snapshots = getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
+  const { data: attempts } = useLiveSuspenseQuery({
+    queryKey: ["environment-deployment-attempts", summaries.id, environmentId],
+    query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.environmentId, environmentId)),
+  });
+  const { data: snapshotRows } = useLiveSuspenseQuery({
+    queryKey: ["deployment-attempt-snapshots", snapshots.id, environmentId],
+    query: (q) => q.from({ snapshot: snapshots }).where(({ snapshot }) => eq(snapshot.environmentId, environmentId))
+      .select(({ snapshot }) => ({ environmentDeploymentId: snapshot.environmentDeploymentId, nodeType: snapshot.nodeType, nodeId: snapshot.nodeId, config: snapshot.config })),
+  });
+  return [...attempts].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).map((deployment) => {
+    const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history: attempts, snapshots: snapshotRows });
+    return { deployment, nodes, view: deploymentView({ deployment, progress, nodes }) };
+  });
+}

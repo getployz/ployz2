@@ -12,9 +12,13 @@ export const CANVAS_ROUTE_ID =
  * The canvas route's search: `deployment=<id>` puts the canvas into Deployment Mode for that
  * Cloud Deployment Attempt and is retained across navigations inside the canvas.
  * Removing it (Back to live, browser Back) returns to Live Mode.
+ * `deploymentList=true` opens the deploy bar's deployment list; it is not retained.
  */
 export const canvasRouteSearch = {
-  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ deployment: Schema.optional(Schema.String) })),
+  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
+    deployment: Schema.optional(Schema.String),
+    deploymentList: Schema.optional(Schema.Boolean),
+  })),
   search: { middlewares: [retainSearchParams<{ deployment?: string }>(["deployment"])] },
 };
 

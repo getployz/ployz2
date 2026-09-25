@@ -257,6 +257,15 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
 [data-deployment-canvas]::after { content: ""; position: absolute; inset: 0; z-index: 5; pointer-events: none; box-shadow: inset 0 0 0 3px var(--info-border); }
 .canvas-graph { position: relative; grid-area: 2 / 1 / 4 / 2; min-width: 0; min-height: 0; overflow: hidden; }
 .canvas-change-controls { grid-area: 1 / 1; z-index: 30; justify-self: end; align-self: center; display: flex; align-items: center; gap: 0.75rem; padding: 0 1.5rem; }
+/* The deploy bar floats over the canvas on every screen size, above the inspector shade and pane. */
+.deploy-bar {
+  position: absolute; bottom: 1rem; left: 50%; translate: -50% 0; z-index: 30;
+  display: flex; align-items: center; gap: 0.375rem; max-width: calc(100% - 2rem); padding: 0.25rem;
+  border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--background); box-shadow: var(--shadow-md);
+  white-space: nowrap; transition: background-color 350ms ease, border-color 350ms ease;
+}
+.deploy-bar[data-deployment] { background: var(--info-soft); border-color: var(--info-border); }
+.canvas-node-list { padding-bottom: 5rem; }
 /* ponytail: reserve two mobile toolbar rows; measure if the action set grows. */
 .environment-canvas-scene:has(.canvas-change-controls) .canvas-node-list { padding-bottom: 9rem; }
 .canvas-inspector-shade {
@@ -324,6 +333,14 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
     border-radius: 0;
     box-shadow: none;
   }
+}
+/* Desktop panels stop above the deploy bar; the mobile full-screen panel leaves room under it. */
+.canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 4rem; }
+@media (max-width: 860px) {
+  .deploy-bar { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; translate: none; max-width: none; }
+  /* ponytail: sits above the mobile change footer until the apply zone moves into the bar (#1051). */
+  .environment-canvas-scene:has(.canvas-change-controls) .deploy-bar { bottom: 4.5rem; }
+  .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 0; padding-bottom: 4rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .canvas-inspector-pane { transition: none; }
