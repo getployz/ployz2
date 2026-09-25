@@ -381,12 +381,24 @@ fn requested_output_selects_exclusive_bake_behavior() {
         pull: false,
     };
 
-    let validate = bake_arguments(&request(Output::Validate), planned, metadata, None);
+    let validate = bake_arguments(
+        &request(Output::Validate),
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
     assert!(validate.contains(&"--check".to_owned()));
     assert!(!validate.contains(&"--load".to_owned()));
     assert!(!validate.contains(&"--metadata-file".to_owned()));
 
-    let load = bake_arguments(&request(Output::Load), planned, metadata, None);
+    let load = bake_arguments(
+        &request(Output::Load),
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
     assert!(load.contains(&"--load".to_owned()));
     assert!(!load.contains(&"--push".to_owned()));
     assert!(load.contains(&"--no-cache".to_owned()));
@@ -396,7 +408,13 @@ fn requested_output_selects_exclusive_bake_behavior() {
     assert!(!load.iter().any(|argument| argument.contains(".platform")));
     assert_eq!(load.last().map(String::as_str), Some("api"));
 
-    let registry = bake_arguments(&request(Output::Registry), planned, metadata, None);
+    let registry = bake_arguments(
+        &request(Output::Registry),
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
     assert!(registry.contains(&"--push".to_owned()));
     assert!(!registry.contains(&"--load".to_owned()));
     assert!(!registry.contains(&"--metadata-file".to_owned()));

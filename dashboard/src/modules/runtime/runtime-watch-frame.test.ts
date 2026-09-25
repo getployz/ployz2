@@ -37,6 +37,17 @@ describe("runtimeSnapshotFromWatchFrame", () => {
         runtimeWatchMachineObservationFixture({
           machine: runtimeWatchMachineFixture("machine-a", "edge-a", {
             public_ip: "203.0.113.10",
+            accepts_services: false,
+            build_concurrency: 2,
+            runtime: {
+              daemon_version: "0.1.2",
+              docker_version: "27.0.0",
+              hostname: "edge-a",
+              architecture: "x86_64",
+              os_pretty_name: "Debian",
+              kernel_version: "6.1.0",
+              memory_total_bytes: 16_000_000_000,
+            },
           }),
           membership: "suspect",
         }),
@@ -74,6 +85,10 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           name: "edge-a",
           publicIp: "203.0.113.10",
           endpoints: ["udp://203.0.113.10:51820"],
+          acceptsBuilds: true,
+          acceptsServices: false,
+          buildConcurrency: 2,
+          memoryTotalBytes: 16_000_000_000,
           membership: "suspect",
           observedContainerCount: 1,
           observedAt: OBSERVED_AT,

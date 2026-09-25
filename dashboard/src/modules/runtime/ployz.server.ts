@@ -15,6 +15,7 @@ import type {
   ExecutionError,
   MachineDetails,
   MachineTarget,
+  MachineUpdate,
   ObservedDataLoss,
   PreparedDeploy,
   PreparationInput,
@@ -94,6 +95,10 @@ export interface PloyzSession {
   readonly dataLossIfMachineRemoved: (
     machine: MachineTarget,
   ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
+  readonly updateMachine: (
+    machine: MachineTarget,
+    update: Partial<MachineUpdate>,
+  ) => Effect.Effect<void, PloyzSdkError>;
   readonly dataLossIfProjectDestroyed: (
     projectName: ProjectName,
     destroyVolumes?: boolean,
@@ -276,6 +281,10 @@ function wrapClient(client: Client): PloyzSession {
     dataLossIfMachineRemoved: (machine) =>
       sdkPromise("load machine data loss", () =>
         client.dataLossIfMachineRemoved(machine),
+      ),
+    updateMachine: (machine, update) =>
+      sdkPromise("update machine", () =>
+        client.updateMachine(machine, update).then(() => undefined),
       ),
     dataLossIfProjectDestroyed: (projectName, destroyVolumes) =>
       sdkPromise("load project data loss", () =>

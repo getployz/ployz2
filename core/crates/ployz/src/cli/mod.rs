@@ -235,6 +235,11 @@ fn machine() -> Command {
                 .arg(many("label-rm", None).value_name("KEY"))
                 .arg(value("name", None))
                 .arg(value("public-ip", None))
+                .arg(
+                    value("build-concurrency", None)
+                        .value_name("N|auto")
+                        .help("Builds this Machine runs at once; auto follows its roles and RAM"),
+                )
                 .arg(many("wg-endpoint", None))
                 .arg(positional("machine", true)),
         )

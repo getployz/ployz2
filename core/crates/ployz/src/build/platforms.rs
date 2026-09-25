@@ -125,6 +125,7 @@ mod tests {
                     architecture: architecture.into(),
                     ..Default::default()
                 },
+                build_concurrency: None,
             },
             membership,
         )

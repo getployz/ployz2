@@ -824,7 +824,7 @@ impl IngressProxyConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateMaterialPublished {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineUpdated {
     pub machine: Machine,
 }
@@ -1085,6 +1085,7 @@ mod set_management_client_wire {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
+            build_concurrency: None,
         }
     }
 

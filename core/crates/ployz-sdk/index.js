@@ -133,6 +133,10 @@ class Client {
     return withRpcError(this._inner.removeMachine(machine, confirmDataLoss));
   }
 
+  updateMachine(machine, update) {
+    return withRpcError(this._inner.updateMachine(machine, update));
+  }
+
   dataLossIfProjectDestroyed(projectName, destroyVolumes = false) {
     return withRpcError(this._inner.dataLossIfProjectDestroyed(projectName, destroyVolumes));
   }

@@ -40,6 +40,7 @@ fn projection(
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        build_concurrency: None,
     };
     IngressProjection::derive(
         &machine,
@@ -784,6 +785,7 @@ async fn failed_load_preserves_the_last_caddyfile() {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        build_concurrency: None,
     };
     let admin = FakeAdmin {
         fail_load: true,
@@ -819,6 +821,7 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        build_concurrency: None,
     };
     let observations = [observation(
         1,

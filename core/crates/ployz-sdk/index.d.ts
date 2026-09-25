@@ -12,6 +12,8 @@ import type {
   MachineId,
   MachineDetails,
   MachineTarget,
+  MachineUpdate,
+  MachineUpdated,
   ObservedDataLoss,
   LocalMachineRemoved,
   DataLossConfirmation,
@@ -169,6 +171,11 @@ export declare class Client {
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
   ): Promise<LocalMachineRemoved>;
+  /** One Server Policy edit; omitted fields keep their values. */
+  updateMachine(
+    machine: MachineTarget,
+    update: Partial<MachineUpdate>,
+  ): Promise<MachineUpdated>;
   dataLossIfProjectDestroyed(
     project_name: ProjectName,
     destroy_volumes?: boolean,
