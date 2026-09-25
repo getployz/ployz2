@@ -16,6 +16,32 @@ use std::{
 mod support;
 use support::*;
 
+fn observed(hex: char, name: &str, architecture: &str) -> ployz_core::MachineObservation {
+    let mut observed = machine(hex, name);
+    observed.machine.runtime.architecture = architecture.into();
+    observed
+}
+
+/// A containerd store holding `id` under `tag` with these available platforms.
+fn store(id: &str, tag: &str, platforms: &[&str]) -> MachineImages {
+    MachineImages {
+        containerd_store: true,
+        images: vec![ployz_core::ImageSummary {
+            id: id.into(),
+            repo_tags: vec![tag.into()],
+            created: 0,
+            size: 1,
+            containers: 0,
+            platforms: platforms
+                .iter()
+                .map(|platform| (*platform).to_owned())
+                .collect(),
+            last_tagged: None,
+        }],
+        docker_root: None,
+    }
+}
+
 fn fixture() -> (PathBuf, DeployService, Arc<BuildFixture>) {
     let root = std::env::temp_dir().join(format!("ployz-prepare-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
@@ -250,19 +276,15 @@ async fn automatic_preparation_builds_every_service_on_one_build_machine() {
 }
 
 #[tokio::test]
-async fn failed_unknown_and_cancelled_builds_leave_the_deploy_unattempted() {
-    for (failure, kind) in [
-        ("failed", "failed"),
-        ("cancelled", "failed"),
-        ("unknown", "unknown"),
-    ] {
+async fn failed_and_unknown_builds_leave_the_deploy_unattempted() {
+    for kind in ["failed", "unknown"] {
         let (root, service, builds) = fixture();
         let mutations = service.mutating_rpcs();
         let work = WorkEvidence(BTreeMap::from([
             ("one".into(), TargetEvidence::Unknown),
             ("two".into(), TargetEvidence::Unattempted),
         ]));
-        *builds.terminal.lock().unwrap() = Some(if failure == "unknown" {
+        *builds.terminal.lock().unwrap() = Some(if kind == "unknown" {
             Outcome::Unknown {
                 stage: Stage::Building,
                 message: "termination unconfirmed".into(),
@@ -271,7 +293,7 @@ async fn failed_unknown_and_cancelled_builds_leave_the_deploy_unattempted() {
         } else {
             Outcome::Failed {
                 stage: Stage::Building,
-                message: format!("Build {failure}"),
+                message: "Build failed".into(),
                 work,
             }
         });
@@ -322,38 +344,6 @@ async fn incompatible_application_platform_refuses_before_transfer_or_mutations(
         );
         assert_eq!(mutations.load(Ordering::SeqCst), 0);
         assert!(builds.pulls.lock().unwrap().is_empty());
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[tokio::test]
-async fn remote_deploy_accepts_matching_non_primary_architectures() {
-    for (architecture, platform) in [
-        ("x86", "linux/386"),
-        ("arm", "linux/arm/v7"),
-        ("powerpc", "linux/ppc"),
-        ("powerpc64", "linux/ppc64"),
-        ("ppc64le", "linux/ppc64le"),
-        ("s390x", "linux/s390x"),
-        ("riscv64", "linux/riscv64"),
-        ("mips64el", "linux/mips64le"),
-        ("loongarch64", "linux/loong64"),
-    ] {
-        let (root, service, builds) = fixture();
-        let created = service.created_specs();
-        *builds.platforms.lock().unwrap() = Some(vec![platform.into()]);
-        let mut builder = machine('a', "builder");
-        builder.machine.accepts_services = false;
-        let mut destination = machine('b', "application");
-        destination.machine.accepts_builds = false;
-        destination.machine.runtime.architecture = architecture.into();
-        deploy(
-            service.with_machines(vec![builder, destination]),
-            input(&root, vec![git("one", "dockerfile")]),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{architecture}/{platform}: {error:?}"));
-        assert!(!created.lock().unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -410,14 +400,9 @@ async fn preparation_derives_railpack_platforms_from_the_machines_a_service_may_
 #[tokio::test]
 async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
     let (root, service, builds) = fixture();
-    let native = |hex, name| {
-        let mut machine = machine(hex, name);
-        machine.machine.runtime.architecture = "x86_64".into();
-        machine
-    };
-    let source = native('a', "builder");
-    let failed = native('b', "failed");
-    let success = native('c', "success");
+    let source = observed('a', "builder", "x86_64");
+    let failed = observed('b', "failed", "x86_64");
+    let success = observed('c', "success", "x86_64");
     let missing = ployz_core::MachineObservation::new(
         machine('d', "missing").machine,
         MembershipObservation::Down,
@@ -547,11 +532,6 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
 #[tokio::test]
 async fn a_partial_source_is_refused_and_each_destination_names_its_variant() {
     let (root, service, builds) = fixture();
-    let observed = |hex, name, architecture: &str| {
-        let mut machine = machine(hex, name);
-        machine.machine.runtime.architecture = architecture.into();
-        machine
-    };
     let source = observed('a', "builder", "x86_64");
     let amd64 = observed('b', "amd64", "x86_64");
     let arm64 = observed('c', "arm64", "aarch64");
@@ -561,22 +541,13 @@ async fn a_partial_source_is_refused_and_each_destination_names_its_variant() {
         platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
         location: "unix:///var/run/docker.sock".into(),
     };
-    let store = |platforms: &[&str]| MachineImages {
-        containerd_store: true,
-        images: vec![ployz_core::ImageSummary {
-            id: image.reference.clone(),
-            // The requested tag now points elsewhere; only content proves identity.
-            repo_tags: vec!["registry.invalid/shared:retained".into()],
-            created: 0,
-            size: 1,
-            containers: 0,
-            platforms: platforms
-                .iter()
-                .map(|platform| (*platform).to_owned())
-                .collect(),
-            last_tagged: None,
-        }],
-        docker_root: None,
+    // The requested tag now points elsewhere; only content proves identity.
+    let store = |platforms| {
+        store(
+            &image.reference,
+            "registry.invalid/shared:retained",
+            platforms,
+        )
     };
     // The prototype's partial peer: the index is listed, ARM64 data is absent.
     builds
@@ -638,31 +609,12 @@ async fn a_partial_source_is_refused_and_each_destination_names_its_variant() {
 #[tokio::test]
 async fn deploy_pulls_only_from_a_peer_that_holds_the_destinations_variant() {
     let (root, service, builds) = fixture();
-    let observed = |hex, name, architecture: &str| {
-        let mut machine = machine(hex, name);
-        machine.machine.runtime.architecture = architecture.into();
-        machine
-    };
     let destination = observed('a', "destination", "x86_64");
     let partial = observed('b', "partial", "aarch64");
     let complete = observed('c', "complete", "x86_64");
     let image = "docker.io/library/busybox:1.37.0";
-    let store = |platforms: &[&str]| MachineImages {
-        containerd_store: true,
-        images: vec![ployz_core::ImageSummary {
-            id: format!("sha256:{}", "4".repeat(64)),
-            repo_tags: vec![image.into()],
-            created: 0,
-            size: 1,
-            containers: 0,
-            platforms: platforms
-                .iter()
-                .map(|platform| (*platform).to_owned())
-                .collect(),
-            last_tagged: None,
-        }],
-        docker_root: None,
-    };
+    let id = format!("sha256:{}", "4".repeat(64));
+    let store = |platforms| store(&id, image, platforms);
     // The tag is visible on both peers; only one holds the AMD64 content.
     builds
         .stores

@@ -250,14 +250,10 @@ impl Admission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn restart_removes_abandoned_uploads_but_keeps_unknown_ownership_unavailable() {
-        let root =
-            std::env::temp_dir().join(format!("ployz-build-restart-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root).unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = crate::tests::private_directory("ployz-build-restart");
         let policy = HostPolicy {
             state_directory: root.clone(),
             docker: root.join("docker"),
@@ -324,9 +320,7 @@ mod tests {
 
     #[test]
     fn expired_admission_and_docker_report_configured_budget() {
-        let root = std::env::temp_dir().join(format!("ployz-budget-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root).unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = crate::tests::private_directory("ployz-budget");
         let policy = HostPolicy {
             state_directory: root.clone(),
             active_timeout: Duration::from_secs(5),
@@ -335,14 +329,9 @@ mod tests {
         let mut admission = Admission::try_acquire_with(&policy).unwrap();
         admission.deadline.expires = std::time::Instant::now();
         assert!(matches!(admission.check(), Err(BuildError::TimedOut(5))));
-        let environment = std::collections::BTreeMap::new();
         let docker = crate::Docker {
-            program: &policy.docker,
-            environment: &environment,
-            working_dir: &root,
             deadline: admission.deadline,
-            cancellation: None,
-            progress: None,
+            ..crate::tests::docker(&policy.docker, &root)
         };
         assert!(matches!(
             docker.run("build", &["build"], crate::Streams::Captured),
@@ -354,10 +343,8 @@ mod tests {
 
     #[test]
     fn cancelled_admission_cannot_delete_or_create_upload_staging() {
-        let root =
-            std::env::temp_dir().join(format!("ployz-upload-cancel-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("build-upload")).unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = crate::tests::private_directory("ployz-upload-cancel");
+        std::fs::create_dir(root.join("build-upload")).unwrap();
         std::fs::write(root.join("build-upload/existing"), "capture").unwrap();
         let policy = HostPolicy {
             state_directory: root.clone(),

@@ -543,7 +543,12 @@ mod tests {
 
     #[test]
     fn links_cannot_cross_into_private_material_or_escape_through_another_link() {
-        for target in ["../private/key", "/etc/passwd", "../../source/again"] {
+        for (target, contained) in [
+            ("../private/key", false),
+            ("/etc/passwd", false),
+            ("../../source/again", false),
+            ("nested/../file", true),
+        ] {
             let mut upload = Upload::new().unwrap();
             upload
                 .accept(Input::Entry {
@@ -561,7 +566,7 @@ mod tests {
                     mode: 0o777,
                 })
                 .unwrap();
-            assert!(upload.accept(Input::Finish).is_err(), "{target}");
+            assert_eq!(upload.accept(Input::Finish).is_ok(), contained, "{target}");
         }
         let mut upload = Upload::new().unwrap();
         upload

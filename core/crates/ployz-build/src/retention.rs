@@ -122,5 +122,12 @@ mod tests {
                 "{reference}"
             );
         }
+        let generated = format!("example.test/api:ployz-build-{}", uuid::Uuid::new_v4());
+        ImageRetention::new(
+            vec![generated],
+            Some(Path::new("/bin/true")),
+            BTreeMap::new(),
+        )
+        .unwrap();
     }
 }

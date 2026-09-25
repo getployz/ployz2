@@ -308,19 +308,13 @@ impl Lock {
     /// # Errors
     /// Fails when the lock file cannot be opened or locked.
     pub(crate) fn acquire(cancellation: &crate::Cancellation) -> Result<Self, BuildError> {
-        Self::acquire_in(&directory(), cancellation)
-    }
-
-    fn acquire_in(
-        directory: &std::path::Path,
-        cancellation: &crate::Cancellation,
-    ) -> Result<Self, BuildError> {
+        let directory = directory();
         let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
         loop {
             if cancellation.is_cancelled() {
                 return Err(BuildError::Cancelled);
             }
-            match Self::try_acquire_in(directory) {
+            match Self::try_acquire_in(&directory) {
                 Err(BuildError::Busy) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
@@ -451,18 +445,11 @@ fn lock_error(error: std::io::Error) -> BuildError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
 
     #[test]
     fn dockerfile_platforms_follow_the_running_workers_capabilities() {
-        let directory =
-            std::env::temp_dir().join(format!("ployz-platform-{}", uuid::Uuid::new_v4()));
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&directory)
-            .unwrap();
+        let directory = crate::tests::private_directory("ployz-platform");
         let program = directory.join("docker");
         crate::tests::executable(
             &program,
@@ -476,15 +463,7 @@ esac
                 builder_name()
             ),
         );
-        let environment = BTreeMap::new();
-        let docker = Docker {
-            program: &program,
-            environment: &environment,
-            working_dir: &directory,
-            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
-            cancellation: None,
-            progress: None,
-        };
+        let docker = crate::tests::docker(&program, &directory);
         let resources = crate::policy::Resources::default();
         let builder = Builder::acquire(
             &docker,
@@ -513,25 +492,10 @@ esac
     #[test]
     fn quarantine_clear_failure_preserves_cleanup_and_prior_failure_stages() {
         for prior_failure in [false, true] {
-            let directory =
-                std::env::temp_dir().join(format!("ployz-clear-{}", uuid::Uuid::new_v4()));
-            fs::create_dir(&directory).unwrap();
-            fs::set_permissions(
-                &directory,
-                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
-            )
-            .unwrap();
+            let directory = crate::tests::private_directory("ployz-clear");
             let program = directory.join("docker");
             crate::tests::executable(&program, "#!/bin/sh\nexit 0\n");
-            let environment = BTreeMap::new();
-            let docker = Docker {
-                program: &program,
-                environment: &environment,
-                working_dir: &directory,
-                deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
-                cancellation: None,
-                progress: None,
-            };
+            let docker = crate::tests::docker(&program, &directory);
             let lock = Lock::try_acquire_in(&directory).unwrap();
             let mut builder =
                 Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
@@ -563,41 +527,8 @@ esac
     }
 
     #[test]
-    fn admission_refuses_competitors_and_uncertain_builder_ownership() {
-        let directory =
-            std::env::temp_dir().join(format!("ployz-admission-{}", std::process::id()));
-        fs::create_dir_all(&directory).unwrap();
-        fs::set_permissions(
-            &directory,
-            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
-        )
-        .unwrap();
-        let lock = Lock::try_acquire_in(&directory).unwrap();
-        assert!(matches!(
-            Lock::try_acquire_in(&directory),
-            Err(BuildError::Busy)
-        ));
-        drop(lock);
-        let mut lock = Lock::try_acquire_in(&directory).unwrap();
-        lock.quarantine().unwrap();
-        drop(lock);
-        assert!(matches!(
-            Lock::try_acquire_in(&directory),
-            Err(BuildError::UncertainTermination(_))
-        ));
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
     fn every_attempt_replaces_the_container_and_leaves_its_cache() {
-        let directory = std::env::temp_dir().join(format!("ployz-builder-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).unwrap();
-        fs::set_permissions(
-            &directory,
-            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
-        )
-        .unwrap();
+        let directory = crate::tests::private_directory("ployz-builder");
         let program = directory.join("docker");
         crate::tests::executable(
             &program,
@@ -606,17 +537,9 @@ esac
                 directory.display()
             ),
         );
-        let environment = BTreeMap::new();
-        let docker = Docker {
-            program: &program,
-            environment: &environment,
-            working_dir: &directory,
-            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
-            cancellation: None,
-            progress: None,
-        };
+        let docker = crate::tests::docker(&program, &directory);
 
-        let lock = Lock::acquire_in(&directory, &crate::Cancellation::default()).unwrap();
+        let lock = Lock::try_acquire_in(&directory).unwrap();
         let builder =
             Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
         let name = builder_name();

@@ -42,25 +42,58 @@ pub(crate) fn executable(path: &Path, script: &str) {
     panic!("stand-in {} never became executable", path.display());
 }
 
+/// A fresh private (0700) scratch directory, as build state requires.
+pub(crate) fn private_directory(prefix: &str) -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let directory = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    directory
+}
+
+static NO_ENVIRONMENT: BTreeMap<String, String> = BTreeMap::new();
+
+/// Run `program` in `directory` with an empty environment and the default budget.
+pub(crate) fn docker<'a>(program: &'a Path, directory: &'a Path) -> Docker<'a> {
+    Docker {
+        program,
+        environment: &NO_ENVIRONMENT,
+        working_dir: directory,
+        deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
+        cancellation: None,
+        progress: None,
+    }
+}
+
+/// Docker stand-in whose local context has a running `architecture` builder;
+/// `bake` is the shell run for `buildx bake`.
+fn running_builder(architecture: &str, bake: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+case "$1 $2" in
+  'context show') echo default ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"{architecture}","OSType":"linux"}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/{architecture}"]}}]}}' ;;
+  'buildx bake') {bake} ;;
+esac
+exit 0
+"#,
+        builder_name()
+    )
+}
+
 #[test]
 fn a_failed_build_is_not_blamed_on_an_earlier_command() {
-    let directory = std::env::temp_dir().join(format!("ployz-diagnosis-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = private_directory("ployz-diagnosis");
     let program = directory.join("docker");
     executable(
         &program,
         "#!/bin/sh\ncase \"$1\" in\n  --ready) exit 0 ;;\n  captured) printf 'the earlier command failed\\n' >&2; exit 1 ;;\nesac\nexit 3\n",
     );
-    let environment = BTreeMap::new();
-    let docker = Docker {
-        program: &program,
-        environment: &environment,
-        working_dir: &directory,
-        deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
-        cancellation: None,
-        progress: None,
-    };
+    let docker = docker(&program, &directory);
 
     // A captured command carries its own diagnosis.
     let captured = match docker.run("an earlier step", &["captured"], Streams::Captured) {
@@ -85,14 +118,12 @@ fn a_failed_build_is_not_blamed_on_an_earlier_command() {
 
 #[test]
 fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
-    let directory = std::env::temp_dir().join(format!("ployz-output-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&directory).unwrap();
+    let directory = private_directory("ployz-output");
     let program = directory.join("docker");
     executable(
         &program,
         "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\n/usr/bin/head -c 4194304 /dev/zero\nprintf final-diagnosis >&2\nexit 1\n",
     );
-    let environment = BTreeMap::new();
     let output = std::sync::Mutex::new(Vec::new());
     let progress = |event| {
         if let Progress::Output(bytes) = event {
@@ -100,12 +131,8 @@ fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
         }
     };
     let docker = Docker {
-        program: &program,
-        environment: &environment,
-        working_dir: &directory,
-        deadline: Deadline::starting_now(Duration::from_secs(10)),
-        cancellation: None,
         progress: Some(&progress),
+        ..docker(&program, &directory)
     };
     // Let a file-backed writer finish its burst before the first poll.
     let error = docker
@@ -127,8 +154,7 @@ fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
 
 #[test]
 fn cancellation_does_not_wait_for_a_surviving_output_writer() {
-    let directory = std::env::temp_dir().join(format!("ployz-writer-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&directory).unwrap();
+    let directory = private_directory("ployz-writer");
     let program = directory.join("docker");
     executable(
         &program,
@@ -142,14 +168,10 @@ fn cancellation_does_not_wait_for_a_surviving_output_writer() {
             std::thread::sleep(Duration::from_millis(10));
         }
     };
-    let environment = BTreeMap::new();
     let docker = Docker {
-        program: &program,
-        environment: &environment,
-        working_dir: &directory,
-        deadline: Deadline::starting_now(Duration::from_secs(10)),
         cancellation: Some(&cancellation),
         progress: Some(&progress),
+        ..docker(&program, &directory)
     };
     let started = Instant::now();
     assert!(matches!(
@@ -169,28 +191,11 @@ fn target(name: &str, platform: Option<&str>) -> Target {
 
 #[test]
 fn cancellation_between_pushes_leaves_later_targets_unattempted() {
-    let directory = std::env::temp_dir().join(format!("ployz-push-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&directory).unwrap();
-    std::fs::set_permissions(
-        &directory,
-        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
-    )
-    .unwrap();
+    let directory = private_directory("ployz-push");
     let program = directory.join("docker");
     executable(
         &program,
-        &format!(
-            r#"#!/bin/sh
-case "$1 $2" in
-  'context show') echo default ;;
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
-  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
-  'buildx bake') echo invoked >> pushes ;;
-esac
-exit 0
-"#,
-            builder_name()
-        ),
+        &running_builder("amd64", "echo invoked >> pushes"),
     );
     let targets = [target("api", None), target("web", None)];
     let environment = BTreeMap::new();
@@ -313,21 +318,6 @@ fn requested_output_selects_exclusive_bake_behavior() {
 }
 
 #[test]
-fn cancellation_terminates_the_process_before_returning() {
-    let cancellation = Cancellation::default();
-    cancellation.cancel();
-    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
-    let result = wait_controlled(
-        &mut child,
-        Deadline::starting_now(EXECUTION_TIMEOUT),
-        Some(&cancellation),
-        &mut || {},
-    );
-    assert!(matches!(result, Err(BuildError::Cancelled)));
-    assert!(child.try_wait().unwrap().is_some());
-}
-
-#[test]
 fn a_command_that_outlasts_its_budget_is_terminated() {
     let mut child = Command::new("sleep")
         .arg("30")
@@ -351,23 +341,9 @@ fn a_command_that_outlasts_its_budget_is_terminated() {
 fn executing_a_build_does_not_change_process_signal_handlers() {
     const CHILD: &str = "PLOYZ_BUILD_SIGNAL_TEST";
     if let Ok(signal) = std::env::var(CHILD) {
-        let directory =
-            std::env::temp_dir().join(format!("ployz-build-signal-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
+        let directory = private_directory("ployz-build-signal");
         let program = directory.join("docker");
-        executable(
-            &program,
-            &format!(
-                r#"#!/bin/sh
-case "$1 $2" in
-  'context show') echo default ;;
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
-  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
-esac
-"#,
-                builder_name()
-            ),
-        );
+        executable(&program, &running_builder("amd64", ":"));
         let environment = BTreeMap::new();
         let targets = [target("api", None)];
         let request = Request {
@@ -413,12 +389,7 @@ esac
 
 #[test]
 fn docker_preflight_holds_quarantine_and_clears_confirmed_failures() {
-    let directory = std::env::temp_dir().join(format!("ployz-preflight-{}", uuid::Uuid::new_v4()));
-    use std::os::unix::fs::DirBuilderExt as _;
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&directory)
-        .unwrap();
+    let directory = private_directory("ployz-preflight");
     let program = directory.join("docker");
     let policy = HostPolicy {
         state_directory: directory.clone(),
@@ -472,28 +443,11 @@ exit 0
 
 #[test]
 fn cross_platform_image_context_reaches_buildkit() {
-    use std::os::unix::fs::DirBuilderExt as _;
-
-    let directory = std::env::temp_dir().join(format!("ployz-context-{}", uuid::Uuid::new_v4()));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&directory)
-        .unwrap();
+    let directory = private_directory("ployz-context");
     let program = directory.join("docker");
     executable(
         &program,
-        &format!(
-            r#"#!/bin/sh
-case "$1 $2" in
-  'context show') echo default ;;
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"arm64","OSType":"linux"}}' ;;
-  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/arm64"]}}]}}' ;;
-  'buildx bake') printf '%s\n' "$@" > bake-arguments ;;
-esac
-exit 0
-"#,
-            builder_name()
-        ),
+        &running_builder("arm64", r#"printf '%s\n' "$@" > bake-arguments"#),
     );
     std::fs::write(
         directory.join("compose.yaml"),

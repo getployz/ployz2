@@ -384,37 +384,6 @@ mod tests {
     }
 
     #[test]
-    fn the_build_host_must_hold_every_verified_platform() {
-        let digest = format!("sha256:{}", "2".repeat(64));
-        let image = BuiltImage {
-            reference: digest.clone(),
-            tags: vec!["registry.invalid/api:v1".into()],
-            platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
-            location: "unix:///var/run/docker.sock".into(),
-        };
-        let source = |store| Source {
-            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-            destination: ImageIngestDestination {
-                management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
-                port: ployz_core::UNREGISTRY_PORT,
-            },
-            store,
-        };
-        let complete = source(store(&digest, &[], &["linux/amd64", "linux/arm64/v8"]));
-        complete.require_complete(&image).unwrap();
-        let partial = source(store(
-            &digest,
-            &["registry.invalid/api:v1"],
-            &["linux/amd64"],
-        ));
-        let error = partial.require_complete(&image).unwrap_err();
-        assert!(
-            matches!(&error, PushError::BuildIncomplete { missing, .. } if missing == &["linux/arm64"]),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn platform_compatibility_preserves_known_arm_generations() {
         for (platform, architecture, compatible) in [
             ("linux/arm/v7", "armv6l", false),
@@ -425,6 +394,11 @@ mod tests {
             ("linux/arm64/v8", "aarch64", true),
             ("linux/amd64/v3", "x86_64", false),
             ("linux/386", "i686", true),
+            ("linux/386", "x86", true),
+            ("linux/ppc", "powerpc", true),
+            ("linux/ppc64", "powerpc64", true),
+            ("linux/s390x", "s390x", true),
+            ("linux/riscv64", "riscv64", true),
             ("linux/ppc64le", "powerpc64", false),
             ("linux/ppc64le", "ppc64le", true),
             ("linux/mips64le", "mips64el", true),

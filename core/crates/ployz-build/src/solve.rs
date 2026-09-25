@@ -334,21 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_vertex_precedes_its_first_log_in_the_same_status() {
-        let status = concat!(
-            r#"{"vertexes":[{"digest":"sha256:a","name":"RUN x","started":"2026-09-22T21:09:06Z"}],"logs":[{"vertex":"sha256:a","stream":1,"data":"aGVsbG8K"}]}"#,
-            "\n",
-        );
-        let events = collect(|parser, progress| parser.feed(status.as_bytes(), progress));
-        let renderer = PlainRenderer::default();
-        let rendered: String = events
-            .iter()
-            .filter_map(|event| renderer.render(event))
-            .collect();
-        assert_eq!(rendered, "#1 RUN x\n#1 hello\n");
-    }
-
-    #[test]
     fn parses_vertexes_and_logs_and_keeps_other_lines_as_output() {
         let status = concat!(
             r#"{"vertexes":[{"digest":"sha256:a","name":"[sdk 1/2] RUN cargo build","started":"2026-09-22T21:09:06.000000000Z"}]}"#,

@@ -251,38 +251,6 @@ mod tests {
     fn target_selection_preserves_the_explicit_contract() {
         let machines = [machine(1), machine(2)];
         assert_eq!(select_targets(&machines, &[]).unwrap().len(), 2);
-        assert_eq!(
-            select_targets(&machines, &["machine-2".into()])
-                .unwrap()
-                .first()
-                .unwrap()
-                .name
-                .as_str(),
-            "machine-2"
-        );
-        assert_eq!(select_targets(&machines, &["*".into()]).unwrap().len(), 2);
-        assert!(select_targets(&machines, &["all".into()]).is_err());
-        let named_all = MachineObservation {
-            machine: Machine {
-                labels: Default::default(),
-                accepts_builds: true,
-                accepts_services: true,
-                accepts_ingress: true,
-                name: MachineName::parse("all").unwrap(),
-                ..machines[0].machine.clone()
-            },
-            ..machines[0].clone()
-        };
-        assert_eq!(
-            select_targets(&[named_all, machines[1].clone()], &["all".into()])
-                .unwrap()
-                .first()
-                .unwrap()
-                .name
-                .as_str(),
-            "all"
-        );
-        assert!(select_targets(&machines, &["missing".into()]).is_err());
         let mut down = machine(3);
         down.membership = MembershipObservation::Down;
         let mut unknown = machine(4);

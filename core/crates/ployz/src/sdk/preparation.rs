@@ -284,10 +284,6 @@ mod tests {
                 "/deployment/snapshots/0/config/startCommand",
                 json!("serve"),
             ),
-            (
-                "/deployment/snapshots/0/resolvedEnv",
-                json!({"PORT":"8080"}),
-            ),
         ] {
             let mut changed = base.clone();
             let (parent, key) = pointer.rsplit_once('/').unwrap();

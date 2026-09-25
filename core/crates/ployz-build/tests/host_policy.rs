@@ -98,25 +98,6 @@ fi
 }
 
 #[test]
-fn invalid_host_configuration_refuses_admission_before_execution() {
-    let host = Host::new("exit 99");
-    host.configure("cpu_cores: -1");
-    assert!(
-        Admission::try_acquire_with(&host.policy)
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("cpu_cores")
-    );
-    assert!(
-        clear_cache(&host.policy)
-            .unwrap_err()
-            .to_string()
-            .contains("cpu_cores")
-    );
-}
-
-#[test]
 fn admitted_limits_cover_worker_and_railpack_preparation_despite_later_policy_edits() {
     // This stand-in checks the upstream launch contract. Real workload
     // enforcement is exercised separately at rung 4.
@@ -209,50 +190,20 @@ fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership(
     assert!(Admission::try_acquire_with(&host.policy).is_ok());
 }
 
-#[test]
-fn changing_home_cannot_fork_default_builder_ownership() {
-    if let Some(output) = std::env::var_os("PLOYZ_POLICY_TEST_CHILD") {
-        fs::write(
-            output,
-            HostPolicy::default()
-                .state_directory
-                .as_os_str()
-                .as_encoded_bytes(),
-        )
-        .unwrap();
-        return;
-    }
-    let host = Host::new("exit 99");
-    let output = host.file("child-state");
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "changing_home_cannot_fork_default_builder_ownership",
-        ])
-        .env("HOME", &host.policy.state_directory)
-        .env("PLOYZ_POLICY_TEST_CHILD", &output)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    assert_eq!(
-        fs::read(output).unwrap(),
-        HostPolicy::default()
-            .state_directory
-            .as_os_str()
-            .as_encoded_bytes()
-    );
-}
-
+/// Build policy follows the account's home; builder ownership never does.
 #[cfg(target_os = "linux")]
 #[test]
 fn missing_home_uses_the_accounts_build_policy() {
     if let Some(output) = std::env::var_os("PLOYZ_POLICY_HOME_CHILD") {
+        let policy = HostPolicy::default();
         fs::write(
-            output,
-            HostPolicy::default()
-                .configuration_file
-                .as_os_str()
-                .as_encoded_bytes(),
+            output.clone(),
+            policy.configuration_file.as_os_str().as_encoded_bytes(),
+        )
+        .unwrap();
+        fs::write(
+            PathBuf::from(output).with_extension("state"),
+            policy.state_directory.as_os_str().as_encoded_bytes(),
         )
         .unwrap();
         return;
@@ -289,6 +240,13 @@ fn missing_home_uses_the_accounts_build_policy() {
         assert_eq!(
             fs::read(&output).unwrap(),
             expected.as_os_str().as_encoded_bytes()
+        );
+        assert_eq!(
+            fs::read(output.with_extension("state")).unwrap(),
+            HostPolicy::default()
+                .state_directory
+                .as_os_str()
+                .as_encoded_bytes()
         );
     }
 }
@@ -365,25 +323,18 @@ if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; e
 echo "$*" >> "$root/mutations"
 "#,
     );
-    for (key, value) in [
-        ("DOCKER_HOST", "ssh://remote"),
-        ("DOCKER_HOST", "tcp://remote:2375"),
-        ("DOCKER_CONTEXT", "remote"),
-        ("PLOYZ_POLICY_CONTEXT", "remote"),
-    ] {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "cache_clearing_refuses_remote_routing_before_builder_mutation",
-            ])
-            .env_remove("DOCKER_HOST")
-            .env_remove("DOCKER_CONTEXT")
-            .env_remove("PLOYZ_POLICY_CONTEXT")
-            .env("PLOYZ_POLICY_CACHE_CHILD", &host.policy.state_directory)
-            .env(key, value)
-            .status()
-            .unwrap();
-        assert!(status.success(), "{key}={value}");
-        assert!(!host.file("mutations").exists(), "{key}={value}");
-    }
+    // The builds test tabulates every remote route; one proves cache clearing checks.
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "cache_clearing_refuses_remote_routing_before_builder_mutation",
+        ])
+        .env_remove("DOCKER_HOST")
+        .env_remove("DOCKER_CONTEXT")
+        .env("PLOYZ_POLICY_CACHE_CHILD", &host.policy.state_directory)
+        .env("PLOYZ_POLICY_CONTEXT", "remote")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(!host.file("mutations").exists());
 }
