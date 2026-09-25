@@ -174,7 +174,7 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
   const { row, context } = yield* authorizeRunner(request, imageBuildId);
   const refused = new Conflict({ message: "This build already checked in or is no longer wanted." });
   // Only an early exit, so a refused runner mints nothing; the claim below decides.
-  if (!awaitsCheckIn(row, row.githubRunId)) return yield* refused;
+  if (!awaitsCheckIn(row)) return yield* refused;
   const snapshot = context.snapshots.find((candidate) => candidate.serviceId === row.serviceId);
   const source = snapshot?.config.source;
   if (!snapshot || source?.type !== "git") return yield* new NotFound({ message: "No GitHub build has this id." });
@@ -184,11 +184,13 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
   if (!fingerprint) return yield* new Validation({ message: "The build has no fingerprint." });
   const { minted, machine } = yield* Effect.gen(function* () {
     const sdk = yield* connectedRuntime(context.organization.id);
+    // Inspect first: a failure after the mint would leave an unclaimed grant.
+    const machine = yield* sdk.inspect();
     const minted = yield* sdk.mintBuildGrant(grantRepository(row.image)).pipe(
       Effect.tapError((error) => Effect.logWarning("Could not mint a Build Grant.", error)),
       Effect.mapError((cause) => new BuildGrantUnavailable({ cause })),
     );
-    return { minted, machine: yield* sdk.inspect() };
+    return { minted, machine };
   }).pipe(Effect.scoped);
   const grant = { id: minted.id, fingerprint };
   if (!(yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant }))) {

@@ -151,9 +151,8 @@ export const skipUnstarted = (build: Build, reason: SkipReason) => skipImageBuil
     : Effect.succeed<ImageBuildAttempt>(skip)),
 );
 
-/** Whether the runner of `runId` may still check in: the same conditions `checkInImageBuild` claims under. */
-export const awaitsCheckIn = (row: ImageBuildRow, runId: number) =>
-  row.status === "building" && row.builder === "github" && row.githubRunId === runId && row.checkedInAt === null;
+/** Whether a GitHub build may still check in; `checkInImageBuild` claims under these conditions and its run's. */
+export const awaitsCheckIn = (row: ImageBuildRow) => row.status === "building" && row.checkedInAt === null;
 
 /**
  * The runner of `runId` checks in with the Build Grant just minted for it: the build starts on GitHub.
