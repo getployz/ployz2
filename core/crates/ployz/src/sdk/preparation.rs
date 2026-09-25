@@ -333,6 +333,29 @@ mod tests {
     }
 
     #[test]
+    fn expected_fingerprints_refuse_an_invalid_deployment_or_commit() {
+        let web = ServiceName::parse("web").unwrap();
+        let commit = |value: &str| BTreeMap::from([(web.clone(), value.to_owned())]);
+        let error = expected_fingerprints(json!({"projectName": "app"}), commit(&"a".repeat(40)))
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+        let deployment = json!({"projectName": "app", "snapshots": [{"config": {
+            "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
+            "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
+                "access":{"type":"public"}, "rootDir":"/", "branch":{"type":"connected", "name":"main"}},
+            "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
+        }}]});
+        for refused in ["A".repeat(40), "abc".into()] {
+            let error = expected_fingerprints(deployment.clone(), commit(&refused)).unwrap_err();
+            assert_eq!(
+                error.code,
+                RpcErrorCode::InvalidArgument,
+                "{refused}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn build_identity_tracks_source_recipe_and_variables_but_not_runtime_settings() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();

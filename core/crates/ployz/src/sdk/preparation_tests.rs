@@ -1271,3 +1271,31 @@ async fn cancelling_a_build_stops_it_without_a_receipt() {
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn build_platforms_refuse_an_invalid_deployment_and_an_unbuildable_placement() {
+    let (root, service, _) = fixture();
+    let (sdk, server) = session(service.clone()).await;
+    let error = sdk
+        .build_platforms(json!({"projectName": "app"}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    sdk.close().await;
+    server.abort();
+
+    // The Service may land on a Machine no build platform runs.
+    let mut odd = machine('b', "odd");
+    odd.machine.runtime.architecture = "riscv64".into();
+    let (sdk, server) = session(service.with_machines(vec![odd])).await;
+    let deployment = input(&root, vec![git("one", "dockerfile")]).deployment;
+    let error = sdk.build_platforms(deployment).await.unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    assert!(
+        error.message.contains("odd") && error.message.contains("riscv64"),
+        "{error:?}"
+    );
+    sdk.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}

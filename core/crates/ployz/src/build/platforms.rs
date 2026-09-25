@@ -172,6 +172,15 @@ mod tests {
             placement_platforms(&anywhere, &machines).unwrap(),
             BTreeSet::from(["linux/amd64".to_owned(), "linux/arm64".to_owned()])
         );
+        // A placement no build platform runs refuses, naming the Machine.
+        let unbuildable = [observed(4, "riscv64", MembershipObservation::Up)];
+        let error = placement_platforms(&anywhere, &unbuildable)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("machine-4") && error.contains("riscv64"),
+            "{error}"
+        );
     }
 
     #[test]

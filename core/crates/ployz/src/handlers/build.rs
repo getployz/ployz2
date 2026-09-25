@@ -1,6 +1,7 @@
 //! `ployz build`: check out one Git Service's commit, refuse unless its build inputs
 //! match the expected fingerprint, build it with local Buildx, and push it into one
-//! Machine with a Build Grant. It knows nothing of the CI system running it.
+//! Machine with a Build Grant. It knows nothing of the CI system running it; it uses
+//! the GitHub Actions cache when that runtime's environment is exported to it.
 
 use std::{collections::BTreeMap, path::Path, process::Command};
 
@@ -15,8 +16,39 @@ use super::{Error, leaf_matches, required, runtime};
 use crate::{
     build::LocalImage,
     connect::{ManagementRelay, open_grant_registry},
+    failure::Failure,
     sdk::{PreparationInput, preparation::capture},
 };
+
+/// Why `ployz build` refused or failed after its arguments were accepted.
+#[derive(Debug, thiserror::Error)]
+enum BuildCommandError {
+    #[error(
+        "the checkout's build inputs do not match the expected fingerprint; refusing to build. \
+         The fingerprint covers this ployz version ({version}), so install the version that computed it"
+    )]
+    FingerprintMismatch { version: &'static str },
+    #[error("the checkout is not at {0}")]
+    NotAtCommit(String),
+    #[error("the checkout has changes outside its commit; refusing to build")]
+    UncleanCheckout,
+    #[error("git {command} failed: {stderr}")]
+    Git { command: String, stderr: String },
+    #[error("docker {command} failed: {stderr}")]
+    Docker { command: String, stderr: String },
+    #[error(transparent)]
+    Build(#[from] crate::build::Error),
+    #[error("the built image is not identified by a SHA-256 digest")]
+    NotDigestIdentified,
+    #[error("{0}")]
+    GrantRefused(&'static str),
+}
+
+impl From<BuildCommandError> for Failure {
+    fn from(error: BuildCommandError) -> Self {
+        Self::command(error)
+    }
+}
 
 pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -45,11 +77,10 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         preferred_machine: None,
     })?;
     if captured.fingerprints.get(&service) != Some(&expected) {
-        return Err(Error::usage(format!(
-            "the checkout's build inputs do not match the expected fingerprint; refusing to build. \
-             The fingerprint covers this ployz version ({}), so install the version that computed it",
-            env!("CARGO_PKG_VERSION")
-        )));
+        return Err(BuildCommandError::FingerprintMismatch {
+            version: env!("CARGO_PKG_VERSION"),
+        }
+        .into());
     }
     let events = matches
         .get_one::<String>("events")
@@ -68,7 +99,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         })
         .await
         .map_err(std::io::Error::other)?
-        .map_err(|error| Error::usage(error.to_string()))?;
+        .map_err(BuildCommandError::from)?;
         push(&grant, &built).await
     })
 }
@@ -111,12 +142,10 @@ fn check_out(source: &Path, commit: &str) -> Result<(), Error> {
         git(source, &["checkout", "--quiet", "--detach", commit])?;
     }
     if git(source, &["rev-parse", "HEAD"])? != commit {
-        return Err(Error::usage(format!("the checkout is not at {commit}")));
+        return Err(BuildCommandError::NotAtCommit(commit.to_owned()).into());
     }
     if !git(source, &["status", "--porcelain"])?.is_empty() {
-        return Err(Error::usage(
-            "the checkout has changes outside its commit; refusing to build",
-        ));
+        return Err(BuildCommandError::UncleanCheckout.into());
     }
     Ok(())
 }
@@ -128,11 +157,11 @@ fn git(source: &Path, args: &[&str]) -> Result<String, Error> {
         .args(args)
         .output()?;
     if !output.status.success() {
-        return Err(Error::usage(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        return Err(BuildCommandError::Git {
+            command: args.join(" "),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }
+        .into());
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
@@ -143,7 +172,7 @@ async fn push(grant: &BuildGrant, built: &LocalImage) -> Result<(), Error> {
     let digest = &built.image.reference;
     let hex = digest
         .strip_prefix("sha256:")
-        .ok_or_else(|| Error::usage("the built image is not identified by a SHA-256 digest"))?;
+        .ok_or(BuildCommandError::NotDigestIdentified)?;
     let tag = format!("{}:{RETAINED_DIGEST_TAG_PREFIX}{hex}", built.repository);
     let registry = open_grant_registry(grant, &ManagementRelay::default()).await?;
     let local = format!("{}/{tag}", registry.address());
@@ -152,7 +181,9 @@ async fn push(grant: &BuildGrant, built: &LocalImage) -> Result<(), Error> {
     // The loopback name is meaningless once this command exits.
     let _ = docker(&["image", "rm", &local]).await;
     if let Err(error) = pushed {
-        return Err(registry.refusal().map_or(error, Error::usage));
+        return Err(registry.refusal().map_or(error, |refusal| {
+            BuildCommandError::GrantRefused(refusal).into()
+        }));
     }
     // The Machine stores a tagged manifest only when its bytes hash to the tag's
     // digest, so a completed push is the Machine's confirmation of `digest`.
@@ -171,9 +202,9 @@ async fn docker(args: &[&str]) -> Result<(), Error> {
     if output.status.success() {
         return Ok(());
     }
-    Err(Error::usage(format!(
-        "docker {} failed: {}",
-        args.first().copied().unwrap_or_default(),
-        String::from_utf8_lossy(&output.stderr).trim()
-    )))
+    Err(BuildCommandError::Docker {
+        command: args.first().copied().unwrap_or_default().to_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    }
+    .into())
 }
