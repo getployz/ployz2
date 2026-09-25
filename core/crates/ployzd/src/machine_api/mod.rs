@@ -61,7 +61,7 @@ impl MachineApi {
 
 impl MachineApiBuilder {
     pub(crate) fn with_builds(mut self, builds: Arc<crate::build::Runner>) -> Self {
-        self.service = self.service.with_builds(builds);
+        self.service.builds = builds;
         self
     }
 

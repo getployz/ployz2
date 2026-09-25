@@ -38,8 +38,6 @@ pub struct LocalMachine {
     management_client: Option<[u8; 32]>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
-    /// Builds this Machine runs now, published with it; always 0 without a Build runner.
-    running_builds: tokio::sync::watch::Receiver<u32>,
 }
 
 mod container;
@@ -143,23 +141,7 @@ impl LocalMachine {
             management_client: None,
             cluster: None,
             containers: None,
-            running_builds: tokio::sync::watch::channel(0).1,
         }
-    }
-
-    /// Publish `running_builds` with this Machine's updates.
-    #[must_use]
-    pub(crate) fn with_running_builds(
-        mut self,
-        running_builds: tokio::sync::watch::Receiver<u32>,
-    ) -> Self {
-        self.running_builds = running_builds;
-        self
-    }
-
-    /// This Machine's record as it changes.
-    pub(crate) fn record_watch(&self) -> tokio::sync::watch::Receiver<Arc<LocalMachineRecord>> {
-        self.owner.watch()
     }
 
     /// Bind subsequent mutation admission to this authenticated management client.
@@ -630,18 +612,12 @@ impl LocalMachine {
         }
         let replicated = self.replicated()?;
         let visible = replicated.machines().await?.observations;
-        let publication = replicated.machine_publication().await;
         let update = request.update;
+        // The Machine publisher wakes on the changed record and publishes it.
         let machine = self
             .owner
             .mutate(move |store| store.update(update, &visible))
             .await??;
-        let running = *self.running_builds.borrow();
-        if let Some(published) = publication.publishable_machine(&self.owner.record(), running)
-            && let Err(error) = publication.publish(&published).await
-        {
-            eprintln!("failed to publish updated local Machine: {error}");
-        }
         Ok(MachineUpdated { machine })
     }
 

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io, time::Duration};
+use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
@@ -32,14 +32,16 @@ pub async fn wait_for_catch_up(
     }
 }
 
-/// Publish this Machine now and every minute, and whenever the number of
-/// Builds it runs changes.
+/// Publish this Machine now and every minute, and whenever its record (a
+/// policy edit) or the number of Builds it runs changes: the one path that
+/// publishes this Machine.
 pub async fn run_machine_publisher(
     replicated: Option<ReplicatedStore>,
     local: RecordOwner,
     mut running_builds: tokio::sync::watch::Receiver<u32>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
+    let mut records = local.watch();
     if let Some(replicated) = &replicated {
         let target = match local.record().body() {
             LocalMachineBody::Joining {
@@ -81,7 +83,8 @@ pub async fn run_machine_publisher(
             }
             let publication = replicated.machine_publication().await;
             let running = *running_builds.borrow_and_update();
-            let machine = publication.publishable_machine(&local.record(), running);
+            let record = Arc::clone(&records.borrow_and_update());
+            let machine = publication.publishable_machine(&record, running);
             if let Some(machine) = machine
                 && let Err(error) = publication.publish(&machine).await
             {
@@ -92,6 +95,7 @@ pub async fn run_machine_publisher(
             () = tokio::time::sleep(Duration::from_secs(60)) => {}
             // A closed channel (no Build runner) never changes again.
             Ok(()) = running_builds.changed() => {}
+            Ok(()) = records.changed() => {}
             () = shutdown.cancelled() => {
                 return Ok(());
             }

@@ -203,6 +203,7 @@ impl Daemon {
         let builds = crate::build::Runner::new(build_policy, shutdown.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let running_builds = builds.running_builds();
+        builds.follow(local.watch());
         let machine_api = MachineApi::builder(local.clone())
             .with_build_grants(Arc::clone(&grants))
             .with_builds(builds)

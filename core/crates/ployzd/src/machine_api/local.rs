@@ -57,16 +57,6 @@ impl MachineService {
         }
     }
 
-    /// Run Builds on `builds`, which follows this Machine's build concurrency
-    /// and reports its running Builds to the Machine's publications.
-    #[must_use]
-    pub(crate) fn with_builds(mut self, builds: Arc<crate::build::Runner>) -> Self {
-        builds.follow(self.local.record_watch());
-        self.local = self.local.with_running_builds(builds.running_builds());
-        self.builds = builds;
-        self
-    }
-
     pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
         self.local = self.local.with_management_client(remote);
         self

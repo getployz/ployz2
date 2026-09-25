@@ -60,6 +60,7 @@ impl Fixture {
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();
         let store = RecordOwner::spawn(store).unwrap();
+        let records = store.watch();
         let mut service = MachineService::with_cluster(
             store,
             Some((replicated, crate::corrosion::AdminClient::new("/no/admin"))),
@@ -76,7 +77,8 @@ impl Fixture {
         let shutdown = tokio_util::sync::CancellationToken::new();
         let builds = Runner::new(policy.clone(), shutdown.clone()).unwrap();
         let running_builds = builds.running_builds();
-        service = service.with_builds(builds);
+        builds.follow(records);
+        service.builds = builds;
         let local = service.local();
         write_docker(&policy.docker, &root);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
