@@ -39,16 +39,14 @@ export function useOrganizationChanges(organizationSlug: string) {
 
 export function watchOrganizationChanges(organizationSlug: string, scope: CollectionScope) {
   const source = new EventSource(buildOrgChangesUrl(organizationSlug));
-  // `reset` means retention passed the resume point; each collection's own cursor decides whether it reads in full.
   const refetchAll = () => applyOrganizationChanges(EffectRecord.keys(refetches), organizationSlug, scope);
   const handleChanges = (event: MessageEvent<string>) => {
     const changes = decodeOrgChangesEvent(event.data);
     if (Option.isSome(changes)) applyOrganizationChanges(changes.value.collections, organizationSlug, scope);
   };
-  // `open` fires on every connect and reconnect; refetching each collection since its own cursor covers any gap
-  // (before the first connect, or while disconnected) on its own.
+  // The stream never resumes: each connect starts at the server's current horizon. `open` fires on every
+  // connect and reconnect, and refetching each collection since its own cursor is the only gap recovery.
   source.addEventListener("open", refetchAll);
-  source.addEventListener("reset", refetchAll);
   source.addEventListener("changes", handleChanges);
   return () => source.close();
 }

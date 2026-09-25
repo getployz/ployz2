@@ -1,6 +1,6 @@
 /** One server-sent event frame. */
-export function sseEvent(input: { id?: string; event: string; data: object }) {
-  return `${input.id === undefined ? "" : `id: ${input.id}\n`}event: ${input.event}\ndata: ${JSON.stringify(input.data)}\n\n`;
+export function sseEvent(input: { event: string; data: object }) {
+  return `event: ${input.event}\ndata: ${JSON.stringify(input.data)}\n\n`;
 }
 
 /**

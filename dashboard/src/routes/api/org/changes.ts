@@ -24,7 +24,7 @@ export const Route = createFileRoute("/api/org/changes")({
           currentCursor: () => runAppEffect(currentChangeCursor(), { signal: request.signal }),
           readChanges: (input) =>
             runAppEffect(readChangeWindow(input).pipe(
-              Effect.map((window) => ({ cursor: window.cursor, expired: window.expired, collections: collectionsOf(window.sourceTables) })),
+              Effect.map((window) => ({ cursor: window.cursor, collections: collectionsOf(window.sourceTables) })),
             ), { signal: request.signal }),
         });
       },

@@ -17,15 +17,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("refetches every change-log collection on reset", async () => {
+it("refetches every change-log collection on every open", async () => {
   vi.stubGlobal("EventSource", FakeEventSource);
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
   const refetches = Object.values(orgStoreTables).map((get) => vi.spyOn(get("acme", scope).utils, "refetch").mockResolvedValue([]));
   const stop = watchOrganizationChanges("acme", scope);
   try {
-    FakeEventSource.latest?.dispatchEvent(new MessageEvent("reset", { data: "{}" }));
+    FakeEventSource.latest?.dispatchEvent(new Event("open"));
     for (const refetch of refetches) expect(refetch).toHaveBeenCalledOnce();
+    // A reconnect never resumes, so it refetches again.
+    FakeEventSource.latest?.dispatchEvent(new Event("open"));
+    for (const refetch of refetches) expect(refetch).toHaveBeenCalledTimes(2);
   } finally {
     stop();
     await getDbClient(queryClient).cleanup();

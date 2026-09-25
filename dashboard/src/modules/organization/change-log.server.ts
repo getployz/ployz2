@@ -15,12 +15,12 @@ export class OrganizationChangeLogFailure extends Data.TaggedError("Organization
 /**
  * Everything an Organization logged between `since` and `cursor`, merged across log rows.
  * `full` means read everything: there was no `since`, a logged statement touched too many rows
- * to name them, or retention deleted changes the window may need (`expired`, never set on a delta). Both kinds name
+ * to name them, or `since` is below the oldest retained change, so retention deleted changes it may need. Both kinds name
  * the source tables that logged changes, so the change stream can still name their collections.
  */
 export type ChangeWindow =
-  | { kind: "full"; cursor: string; expired: boolean; sourceTables: ChangeSource[] }
-  | { kind: "delta"; cursor: string; expired: false; sourceTables: ChangeSource[]; changed: string[]; deleted: string[] };
+  | { kind: "full"; cursor: string; sourceTables: ChangeSource[] }
+  | { kind: "delta"; cursor: string; sourceTables: ChangeSource[]; changed: string[]; deleted: string[] };
 
 /**
  * The cursor is the xid horizon, not the seq: seq order is insert order, so a transaction
@@ -29,7 +29,7 @@ export type ChangeWindow =
  * a slow transaction only delays the windows after it.
  *
  * Retention keeps every row at or above some xid, so the oldest retained xid is a fence:
- * a `since` below it, or any `since` against an empty log, may have lost changes.
+ * a `since` below it may have lost changes. An empty log has no fence and loses nothing.
  */
 export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(function* (input: {
   organizationId: string;
@@ -56,16 +56,16 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
         input.sourceTables ? inArray(change.sourceTable, [...input.sourceTables]) : undefined,
       )})
     select (select xid::text from horizon) as "cursor",
-      coalesce(${since}::xid8 < (select min(${change.xid}) from ${change}), ${since}::xid8 is not null) as "expired",
+      coalesce(${since}::xid8 < (select min(${change.xid}) from ${change}), false) as "expired",
       array(select distinct source_table from logged) as "sourceTables",
       coalesce((select bool_or(all_rows) from logged), false) as "fullRead",
       array(select distinct unnest(changed_ids) from logged) as "changed",
       array(select distinct unnest(deleted_ids) from logged) as "deleted"
   `, "objects").pipe(Effect.mapError((cause) => new OrganizationChangeLogFailure({ cause })));
   if (!window) return yield* new OrganizationChangeLogFailure({ cause: "The change window query returned no row." });
-  const { cursor, expired, sourceTables, changed, deleted } = window;
-  if (input.since === undefined || window.fullRead || expired) return { kind: "full", cursor, expired, sourceTables } satisfies ChangeWindow;
-  return { kind: "delta", cursor, expired: false, sourceTables, changed, deleted } satisfies ChangeWindow;
+  const { cursor, sourceTables, changed, deleted } = window;
+  if (input.since === undefined || window.fullRead || window.expired) return { kind: "full", cursor, sourceTables } satisfies ChangeWindow;
+  return { kind: "delta", cursor, sourceTables, changed, deleted } satisfies ChangeWindow;
 });
 
 /** A cursor at the current horizon, so reading from it sees only changes that commit afterwards. */

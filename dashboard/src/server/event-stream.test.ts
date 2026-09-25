@@ -5,9 +5,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("frames events with an optional id", () => {
-  expect(sseEvent({ id: "7", event: "changes", data: { a: 1 } })).toBe('id: 7\nevent: changes\ndata: {"a":1}\n\n');
-  expect(sseEvent({ event: "log", data: {} })).toBe("event: log\ndata: {}\n\n");
+it("frames an event", () => {
+  expect(sseEvent({ event: "changes", data: { a: 1 } })).toBe('event: changes\ndata: {"a":1}\n\n');
 });
 
 it("pings while no event arrives and delivers the pending event on a later pull", async () => {

@@ -107,7 +107,7 @@ describe("incremental Service reads from the Organization change log", () => {
     expect(changes.full).toBe(true);
     // The window still names its tables, so the change stream refetches their collections.
     expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since })))
-      .toMatchObject({ kind: "full", expired: false, sourceTables: expect.arrayContaining(["service"]) });
+      .toMatchObject({ kind: "full", sourceTables: expect.arrayContaining(["service"]) });
     expect(changes.rows.map((row) => row.id)).toEqual(expect.arrayContaining(created));
     expect(changes.rows.every((row) => row.organizationId === alpha.id)).toBe(true);
   });
@@ -202,13 +202,15 @@ describe("incremental Service reads from the Organization change log", () => {
       expect(await read(alpha, fence)).toMatchObject({ full: false, rows: [], deleted: [] });
     });
 
-    it("reads in full from any since against an empty log, and starts fresh without one", async () => {
+    it("reads an empty delta from a since against an empty log, and in full without one", async () => {
       const since = await cursorNow(alpha);
       await sql("delete from organization_change");
 
-      expect((await read(alpha, since)).full).toBe(true);
-      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since }))).toMatchObject({ kind: "full", expired: true });
-      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: undefined }))).toMatchObject({ kind: "full", expired: false });
+      // An empty log has no fence: nothing was pruned after `since`, so nothing is missing.
+      expect(await read(alpha, since)).toMatchObject({ full: false, rows: [], deleted: [] });
+      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since })))
+        .toEqual({ kind: "delta", cursor: expect.any(String), sourceTables: [], changed: [], deleted: [] });
+      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: undefined }))).toMatchObject({ kind: "full" });
     });
   });
 });
