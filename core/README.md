@@ -21,6 +21,15 @@ cannot establish a shared scope. Different computers, configuration stores, and
 Cloud remain independent operators and can still choose overlapping subnets;
 there is no automatic reclamation, cross-store synchronization, or subnet repair.
 
+`ployzd` issues https Ingress certificates from the ACME directory named by
+`PLOYZ_ACME_DIRECTORY` in the daemon environment:
+
+| `PLOYZ_ACME_DIRECTORY` | Certificate issuance |
+| --- | --- |
+| unset | Let's Encrypt production |
+| a URL | that ACME directory |
+| empty | off |
+
 ## Workspace
 
 Run Cargo and engine script commands from `core/`.
