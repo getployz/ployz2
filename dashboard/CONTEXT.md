@@ -143,7 +143,7 @@ The mutable Environment configuration currently being edited, with a revision th
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Cluster Domain**:
-The generated base hostname an Organization holds from Hosted DNS, owned by the Organization rather than by any Cloud Pairing, so it survives teardown and re-pairing. Cloud reserves it when the founding Server enrols, publishes the apex records for reachable ingress Servers, renews its lease hourly whether or not a Cluster is paired, replaces a name Hosted DNS reaped or retired with a fresh reservation (clearing the old wildcard from the Cluster), keeps one wildcard certificate for the name and `*.name` (replaced within 30 days of expiry, its key stored encrypted in Cloud) published to the Cluster as Certificate Material, and releases it only when the Organization is deleted. The runtime never holds it; managed hostnames reach the runtime already expanded into explicit hostnames.
+The generated base hostname an Organization holds from Hosted DNS, owned by the Organization rather than by any Cloud Pairing, so it survives teardown and re-pairing. Cloud reserves it on the first deployment that needs a generated hostname; until then the Organization has none. Hosted DNS picks the name and it never changes: no rename, no manual release, and a name Hosted DNS reaps or retires is an operator incident, not a replacement. Cloud publishes the apex records for reachable ingress Servers, renews its lease hourly whether or not a Cluster is paired, keeps one wildcard certificate for the name and `*.name` (replaced within 30 days of expiry, its key stored encrypted in Cloud) published to the Cluster as Certificate Material, and releases it only when the Organization is deleted. The runtime never holds it; managed hostnames reach the runtime already expanded into explicit hostnames.
 _Avoid_: Hosted DNS hostname as runtime state, generated domain as pairing state, observed cluster domain
 
 **Public Domain Variable**:
@@ -168,11 +168,11 @@ _Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" i
 
 **Node Outcome**:
 One Environment Node's result within a Cloud Deployment Attempt: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
-_Avoid_: Applied, Skipped, Succeeded, Live (live mode is the current view, not an outcome)
+_Avoid_: Applied, Skipped, Succeeded, Live (Editor Mode is the current view, not an outcome)
 
 **Deployment Mode**:
-The canvas viewing one Cloud Deployment Attempt: it draws that attempt's Environment Nodes with their Node Outcomes, including nodes since deleted or removed by the attempt, and omits nodes created afterwards. **Live Mode** is the default canvas, drawing the Environment as it is now.
-_Avoid_: Deployment page, deployment detail screen
+The canvas viewing one Cloud Deployment Attempt: it draws that attempt's Environment Nodes with their Node Outcomes, including nodes since deleted or removed by the attempt, and omits nodes created afterwards. **Editor Mode** is the default canvas, drawing the Environment as it is now; it is the only mode that edits.
+_Avoid_: Deployment page, deployment detail screen, Live Mode (for Editor Mode)
 
 **Attempt Target**:
 The immutable complete runtime target frozen when a queued deployment request starts. One compiler materializes Derived Service Configuration from Saved State, then combines it with trigger-specific source revisions and required or opportunistic deployment requirements.
