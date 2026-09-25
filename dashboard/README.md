@@ -1,12 +1,13 @@
 # Ployz Dashboard
 
-The hosted Ployz application: web UI, backend, durable workflows, and marketing.
+Ployz Cloud: web UI, backend, and durable workflows. It authors each Deploy
+Intent and drives Clusters through Machine RPC; it is not runtime authority.
 The deployment engine and SDK live in [core/](../core/README.md).
 
 ## Develop
 
 Run commands from `dashboard/`. Install Node and pnpm versions from `package.json`,
-plus Rust and Go for the locally linked SDK (see [core](../core/README.md)).
+plus Rust (rustup) for the locally linked SDK (see [core](../core/README.md)).
 
 ```sh
 pnpm install --frozen-lockfile
@@ -26,6 +27,24 @@ Compose uses the stable project name `ployz-cloud` so moving the checkout keeps
 the same database volume. If an existing local stack uses another project name,
 retain it with `docker compose -p <existing-name>`.
 
+## Environment
+
+Web and worker read the same variables and exit with a `ConfigError` naming
+what is missing or invalid.
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | yes | Postgres URL |
+| `APP_URL` | yes | public URL of web |
+| `BETTER_AUTH_SECRET` | yes | auth session secret |
+| `APP_ENCRYPTION_SECRET` | yes | 32+ characters; encrypts stored credentials, keep it stable |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes | GitHub OAuth App (sign-in) |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
+| `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | yes | shared with the Inngest server |
+| `INNGEST_BASE_URL`, `INNGEST_CONNECT_GATEWAY_URL` | no | Inngest API and Connect gateway; local dev defaults otherwise |
+| `BETTER_AUTH_TRUSTED_ORIGINS`, `PORT` | no | `PORT` defaults to 3000 |
+| `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID`, `POLAR_SERVER` | no | all or none; none disables billing and every Organization is unlimited |
+
 ## Build and deploy
 
 `pnpm build` compiles the native SDK and config WASM, then builds the web and
@@ -43,11 +62,8 @@ for the Inngest API and, for a self-hosted gateway, set
 The equivalent local dev defaults are ports 8288 and 8289. Use different `PORT`
 values when running both processes directly on the same host.
 
-Connect registers the existing `ployz-cloud` functions automatically. Web no
-longer exposes `/api/inngest` or performs HTTP function sync. Deploy worker code
-independently of web-only changes. Publish the image once and point both services
-at that image; do not rebuild the Railway-specific Dockerfile under another
-service ID (its cache IDs belong to web).
+Connect registers the `ployz-cloud` functions automatically; web exposes no
+`/api/inngest` route. Both processes run the same image.
 
 On SIGTERM/SIGINT, Connect stops accepting new steps and finishes active steps
 before the worker disposes database and SDK resources. Set Railway worker
@@ -56,13 +72,7 @@ on Docker use the corresponding `stop_grace_period`. This is a shutdown grace
 period, not a deployment execution timeout. A crash or forced kill can still
 leave remote effects unknown; interrupted deployment steps are not blindly retried.
 
-For the initial HTTP-to-Connect cutover, pause new deployment admission operationally,
-wait for active workflows to settle, and remove the old HTTP app registration in
-Inngest before starting the Connect worker. Replace web with this version so no
-old replica can re-sync the HTTP registration. Keep existing Inngest storage and
-the `ployz-cloud` app/function IDs. Verify only the Connect registration is active
-before allowing new deployments. Do not run HTTP and Connect registrations side
-by side. Run migrations once before the rollout, not independently on each process.
+Run migrations once before a rollout, not independently on each process.
 
 See [DESIGN.md](DESIGN.md) for product design and [CONTEXT.md](CONTEXT.md) for the
 Dashboard glossary.

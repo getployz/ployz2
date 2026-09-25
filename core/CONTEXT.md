@@ -8,7 +8,7 @@ Architectural bets and their red flags live in [DESIGN.md](DESIGN.md).
 
 **Ployz**:
 The product, CLI, and daemon in this repository.
-_Avoid_: Uncloud, Ployz2
+_Avoid_: Ployz2
 
 **Cluster**:
 The product-level mesh as observed from one entry machine. A Cluster is not a globally authoritative entity or complete view.
@@ -337,7 +337,7 @@ _Avoid_: latest, nightly, dev channel
 
 **Hosted DNS**:
 The Ployz-run service that grants a Cluster Domain and serves its public records. It is shared infrastructure separate from Cloud; a Cluster stores which endpoint granted its reservation and an encrypted reservation token.
-_Avoid_: Uncloud DNS, Cloud DNS, generated domain as Cloud state
+_Avoid_: Cloud DNS, generated domain as Cloud state
 
 **Pairing Credential**:
 The secret identifying the current Cloud Pairing and authenticating the CLI's enrollment callbacks to Cloud for that attempt. It never reaches the daemon and is distinct from a Machine's Management Capability.
