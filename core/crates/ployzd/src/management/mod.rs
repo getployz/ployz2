@@ -297,13 +297,8 @@ where
     // and the bound keeps revocation prompt when a peer never acknowledges.
     let delivered = async {
         drained.await;
-        match acknowledged.await {
-            Ok(None) => {}
-            Ok(Some(code)) => {
-                tracing::debug!(%code, "revoked management client stopped its stream");
-            }
-            Err(error) => tracing::debug!(%error, "revoked management stream was not acknowledged"),
-        }
+        let outcome = acknowledged.await;
+        tracing::debug!(?outcome, "revoked management stream delivery settled");
     };
     if tokio::time::timeout(REVOCATION_DELIVERY_TIMEOUT, delivered)
         .await
