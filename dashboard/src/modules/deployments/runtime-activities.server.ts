@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
-import type { DeployEvent, ImageRemovalOutcome, PreparedDeploy, PruneTarget } from "@ployz/sdk";
+import type { DeployEvent, ImageRemovalOutcome, MachineId, PreparedDeploy, PruneTarget } from "@ployz/sdk";
 import { Cause, Data, Effect, Exit, Redacted, Schema } from "effect";
 import { eq } from "drizzle-orm";
 import { environmentDeployment } from "./tables";
@@ -87,7 +87,7 @@ const requireClusterDomain = (organizationId: string) =>
   );
 
 /** The attempt's whole frozen target; an Image Build compiles the same so its fingerprint matches deploy's. */
-function compileRuntimeIntent(context: DeploymentContext) {
+export function compileRuntimeIntent(context: DeploymentContext) {
   return Effect.gen(function* () {
     const needsClusterDomain = context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
     const clusterDomain = needsClusterDomain ? yield* requireClusterDomain(context.organization.id) : null;
@@ -117,10 +117,11 @@ function compileRuntimeIntent(context: DeploymentContext) {
   });
 }
 
-function connectedRuntime(organizationId: string) {
+/** A session to the Organization's runtime; with `machineId`, through that entry Machine only. */
+export function connectedRuntime(organizationId: string, machineId?: MachineId) {
   return Effect.gen(function* () {
     const runtime = yield* OrganizationRuntime;
-    const session = yield* runtime.open(organizationId);
+    const session = yield* runtime.open(organizationId, machineId);
     switch (session.status) {
       case "connected":
         return session.connected;

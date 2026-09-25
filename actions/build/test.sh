@@ -18,13 +18,14 @@ cat >"$tmp/stubs/curl" <<STUB
 #!/usr/bin/env bash
 out=; url=
 while [ \$# -gt 0 ]; do
-  case "\$1" in -o) out=\$2; shift ;; -H|-X|--retry) shift ;; -*) ;; *) url=\$1 ;; esac
+  case "\$1" in -o) out=\$2; shift ;; --data-binary) cp "\${2#@}" "$tmp/posted.json"; shift ;; -H|-X|--retry) shift ;; -*) ;; *) url=\$1 ;; esac
   shift
 done
 case "\$url" in
   https://ployz.sh) printf '%s\n' 'mkdir -p "\$INSTALL_BIN_DIR"; : > "\$INSTALL_BIN_DIR/ployz"; chmod +x "\$INSTALL_BIN_DIR/ployz"' > "\$out" ;;
   *audience=https%3A%2F%2Fcloud.test) echo '{"value":"oidc-token"}' ;;
   https://cloud.test/api/builds/b-1/check-in) cp "$tmp/check-in.json" "\$out" ;;
+  https://cloud.test/api/builds/b-1/steps) ;;
   *) echo "unexpected curl \$url" >&2; exit 1 ;;
 esac
 STUB
@@ -35,7 +36,9 @@ STUB
 cat >"$tmp/stubs/ployz" <<STUB
 #!/usr/bin/env bash
 [ "\$PLOYZ_BUILD_GRANT" = ployzgrant1:grant-secret ] || { echo "grant not exported" >&2; exit 1; }
-[ "\$*" = "build --deployment $tmp/runner/ployz-build/deployment.json --commit $commit --fingerprint $fingerprint --source $tmp/workspace" ] || { echo "bad args: \$*" >&2; exit 1; }
+[ "\$*" = "build --deployment $tmp/runner/ployz-build/deployment.json --commit $commit --fingerprint $fingerprint --source $tmp/workspace --events $tmp/runner/ployz-build/events.jsonl" ] || { echo "bad args: \$*" >&2; exit 1; }
+echo '{"at":1,"event":{"Build":{"Stage":"Building"}}}' > "$tmp/runner/ployz-build/events.jsonl"
+[ -z "\${PLOYZ_FAIL:-}" ] || exit 3
 echo '{"digest":"sha256:abc","tag":"ployz-sha256-abc","platforms":["linux/amd64"]}'
 STUB
 chmod +x "$tmp/stubs/"*
@@ -55,6 +58,12 @@ jq -e '.snapshots[0].resolvedEnv.TOKEN == "s3cr3t"' "$RUNNER_TEMP/ployz-build/de
 
 "$here/build.sh"
 grep -qxF "digest=sha256:abc" "$GITHUB_OUTPUT" || { echo "FAIL: digest output" >&2; exit 1; }
+jq -e '. == {events: [{at: 1, event: {Build: {Stage: "Building"}}}], platforms: ["linux/amd64"]}' "$tmp/posted.json" >/dev/null ||
+  { echo "FAIL: Build Steps not posted" >&2; exit 1; }
+# A failed build still reports its steps, then fails the job.
+rm "$tmp/posted.json"
+if PLOYZ_FAIL=1 "$here/build.sh" >/dev/null 2>&1; then echo "FAIL: a failed build passed" >&2; exit 1; fi
+jq -e '.platforms == [] and (.events | length) == 1' "$tmp/posted.json" >/dev/null || { echo "FAIL: a failed build did not report" >&2; exit 1; }
 
 if PLOYZ_VERSION=latest "$here/prepare.sh" >/dev/null 2>&1; then echo "FAIL: accepted a floating version" >&2; exit 1; fi
 if PLOYZ_CLOUD=https://evil.test/path "$here/prepare.sh" >/dev/null 2>&1; then echo "FAIL: accepted a Cloud URL with a path" >&2; exit 1; fi

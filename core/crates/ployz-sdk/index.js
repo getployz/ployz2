@@ -315,6 +315,10 @@ module.exports = {
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
+  buildFingerprints: (input) => {
+    try { return native.buildFingerprints(input); } catch (error) { throwRpcError(error); }
+  },
+  ployzVersion: () => native.ployzVersion(),
   connect,
   Client,
   RpcError,

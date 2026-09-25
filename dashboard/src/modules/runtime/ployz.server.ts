@@ -1,6 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type {
+  BuildGrantEnded,
+  BuildGrantId,
+  BuildGrantMinted,
   BuildOutcome,
   Client,
   LogOptions, LogEvent, LogHistoryOptions, LogHistoryPage,
@@ -39,7 +42,10 @@ import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { connect: connectSdk } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect">;
+const { connect: connectSdk, buildFingerprints, ployzVersion } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect" | "buildFingerprints" | "ployzVersion">;
+
+/** Pure SDK computations; they need no Machine. */
+export { buildFingerprints, ployzVersion };
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",
@@ -139,6 +145,10 @@ export interface PloyzSession {
   readonly preview: (
     intent: DeployIntent,
   ) => Effect.Effect<PloyzPreparedDeploy, PloyzSdkError>;
+  /** On the entry Machine. `grant` is secret; the call is not retried. */
+  readonly mintBuildGrant: (repository: string) => Effect.Effect<BuildGrantMinted, PloyzSdkError>;
+  /** Idempotent; `pushed` is the digest the Machine verified. */
+  readonly endBuildGrant: (id: BuildGrantId) => Effect.Effect<BuildGrantEnded, PloyzSdkError>;
   readonly watch: (
     options?: WatchOptions,
   ) => Effect.Effect<AsyncIterable<RuntimeWatchView>, RuntimeConnectionFailure>;
@@ -373,6 +383,8 @@ function wrapClient(client: Client): PloyzSession {
         return running.finished;
       }, secrets);
     }),
+    mintBuildGrant: (repository) => sdkPromise("mint build grant", () => client.mintBuildGrant({ repository })),
+    endBuildGrant: (id) => sdkPromise("end build grant", () => client.endBuildGrant({ id })),
     preview: (intent) =>
       sdkPromise("preview", () => client.preview(intent)).pipe(
         Effect.map(wrapPrepared),

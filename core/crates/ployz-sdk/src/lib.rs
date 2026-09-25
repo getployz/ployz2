@@ -748,6 +748,33 @@ pub fn allocate_enrollment(
     to_json(&assignment)
 }
 
+/// Fingerprints a build of these pinned commits would carry, without a checkout.
+/// Input: `{deployment, source_commits}` as in preparation.
+///
+/// # Errors
+/// Rejects an invalid deployment or a commit for a non-Git Service.
+#[napi]
+pub fn build_fingerprints(input: serde_json::Value) -> Result<serde_json::Value> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        deployment: serde_json::Value,
+        source_commits: std::collections::BTreeMap<ployz_core::ServiceName, String>,
+    }
+    let input: Input = serde_json::from_value(input).map_err(invalid_argument)?;
+    to_json(
+        &sdk::expected_fingerprints(input.deployment, input.source_commits)
+            .map_err(rpc_to_napi)?,
+    )
+}
+
+/// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
+#[napi]
+#[must_use]
+pub fn ployz_version() -> String {
+    sdk::VERSION.to_owned()
+}
+
 /// Cancellable Container log reader.
 #[napi]
 pub struct ContainerLogStream {

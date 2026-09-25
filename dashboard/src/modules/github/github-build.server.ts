@@ -60,6 +60,44 @@ export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
   },
 );
 
+const dispatchedRunSchema = Schema.Struct({ workflow_run_id: githubIdSchema, html_url: Schema.String });
+
+/**
+ * Dispatch the build workflow on the default branch and learn its run. Inputs are visible on
+ * GitHub, so they never carry secrets: the runner fetches those at check-in.
+ */
+export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkflow")(function* (input: {
+  installationId: number; fullName: string; defaultBranch: string;
+  inputs: { build: string; cloud: string; ployz_version: string; runner: string };
+}) {
+  const api = yield* GithubApi;
+  const run = yield* api.json({
+    installationId: input.installationId,
+    url: `https://api.github.com/repos/${input.fullName}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
+    operation: "dispatch_workflow",
+    schema: dispatchedRunSchema,
+    method: "POST",
+    body: { ref: input.defaultBranch, inputs: input.inputs, return_run_details: true },
+  });
+  return {
+    runId: run.workflow_run_id,
+    runUrl: run.html_url,
+    workflowRef: `${input.fullName}/.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}@refs/heads/${input.defaultBranch}`,
+  };
+});
+
+/** Cancel a build run. A run that already finished can't be cancelled; that's fine. */
+export const cancelGithubRun = Effect.fn("Github.cancelRun")(function* (input: { installationId: number; fullName: string; runId: number }) {
+  const api = yield* GithubApi;
+  yield* api.json({
+    installationId: input.installationId,
+    url: `https://api.github.com/repos/${input.fullName}/actions/runs/${input.runId}/cancel`,
+    operation: "cancel_run",
+    schema: Schema.Unknown,
+    method: "POST",
+  }).pipe(Effect.catchIf((error) => error.status === 409, () => Effect.void));
+});
+
 /** GitHub repositories that the latest Saved State of any of the organization's Environments builds from. */
 export const listOrganizationGithubRepositories = Effect.fn("Github.listOrganizationRepositories")(
   function* (organizationId: string) {

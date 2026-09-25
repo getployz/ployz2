@@ -42,7 +42,7 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 /// Cancellable Image Build whose progress is retained until read, within a byte budget.
 pub type RunningBuild = Running<BuildOutcome>;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
-pub use preparation::{BuildReceipt, PreparationInput};
+pub use preparation::{BuildReceipt, PreparationInput, VERSION, expected_fingerprints};
 
 /// The public SDK Watch frame: the RPC frame plus the Services this observer
 /// derives from its Containers. The RPC frame carries only Container observations.

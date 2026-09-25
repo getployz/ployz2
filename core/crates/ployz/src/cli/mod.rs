@@ -171,6 +171,11 @@ fn build() -> Command {
                 .value_hint(ValueHint::DirPath)
                 .help("Repository working tree of the Service"),
         )
+        .arg(
+            value("events", None)
+                .value_hint(ValueHint::FilePath)
+                .help("Also write build progress to this file, one JSON line per event"),
+        )
 }
 
 fn cloud() -> Command {

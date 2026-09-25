@@ -122,8 +122,10 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
   const now = useNow(build.data?.finished === false);
   const steps = imageBuildSteps(build.data?.steps ?? [], image);
   const ids = new Set(steps.map((step) => step.id));
+  const run = build.data?.runs.find((candidate) => candidate.image === image);
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
+    {run?.url ? <p className="mb-2 text-muted-foreground">Built on GitHub Actions · <a className="underline" href={run.url} target="_blank" rel="noreferrer">View run ↗</a></p> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
       {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} now={now} />}
     </BuildLogViewer>

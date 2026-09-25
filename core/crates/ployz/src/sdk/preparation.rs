@@ -7,7 +7,7 @@ use std::{
 use crate::build::{BuildSpec, BuiltService, CapturedBuild, Recipe};
 use ployz_core::{
     DeployIntent, RpcError, RpcErrorCode, ServiceName,
-    config::{BuildMethod, ServiceSource},
+    config::{BuildMethod, ServiceBuildConfig, ServiceSource},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -86,92 +86,41 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             ));
         }
     }
-    let snapshots = input
-        .deployment
-        .get_mut("snapshots")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| invalid("deployment snapshots must be an array"))?;
+    let frozen = freeze(input.deployment, &mut input.source_commits)?;
     let mut builds = BTreeMap::new();
-    let mut identities = BTreeMap::new();
-    for snapshot in snapshots {
-        let config = ployz_core::config::parse_service_config(snapshot["config"].clone())
-            .map_err(invalid)?;
-        if let ServiceSource::Git {
-            repository_id,
-            root_dir,
-            ..
-        } = &config.settings.source
-        {
-            let name = &config.settings.private_dns;
-            if let Some(commit) = input.source_commits.remove(name) {
-                if !lower_hex(&commit, 40) {
-                    return Err(invalid("source commit must be a lowercase Git SHA"));
-                }
-                identities.insert(name.clone(), json!({
-                    "version": 1, "sdk": env!("CARGO_PKG_VERSION"), "buildkit": ployz_build::BUILDKIT_IMAGE,
-                    "repository": repository_id, "commit": commit, "root": root_dir, "build": config.settings.build,
-                }));
-            }
-            let repository = input
-                .sources
-                .remove(name)
-                .ok_or_else(|| invalid(format!("missing checkout for {name}")))?;
-            let repository = repository
-                .canonicalize()
-                .map_err(|_| invalid("checkout directory is unavailable"))?;
-            let context = contained(&repository, &repository, root_dir)?;
-            if !context.is_dir() {
-                return Err(invalid("source root must be a directory"));
-            }
-            let recipe = match config.settings.build.build_method {
-                BuildMethod::Dockerfile => {
-                    let dockerfile = config
-                        .settings
-                        .build
-                        .dockerfile_path
-                        .as_deref()
-                        .unwrap_or("Dockerfile");
-                    let dockerfile = contained(&repository, &context, dockerfile)?;
-                    if !dockerfile.is_file() {
-                        return Err(invalid("Dockerfile must be a file"));
-                    }
-                    Recipe::Dockerfile(dockerfile)
-                }
-                BuildMethod::Railpack => Recipe::Railpack {
-                    command: config.settings.build.command.clone(),
-                },
-            };
-            builds.insert(name.clone(), BuildSpec { context, recipe });
-            // This tag never escapes preparation: binding replaces it with verified content.
-            snapshot
-                .get_mut("config")
-                .and_then(Value::as_object_mut)
-                .expect("validated config object")
-                .insert(
-                    "source".into(),
-                    json!({"type":"image", "version":1,
-                "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}}),
-                );
+    for (name, (root_dir, settings)) in frozen.checkouts {
+        let repository = input
+            .sources
+            .remove(&name)
+            .ok_or_else(|| invalid(format!("missing checkout for {name}")))?;
+        let repository = repository
+            .canonicalize()
+            .map_err(|_| invalid("checkout directory is unavailable"))?;
+        let context = contained(&repository, &repository, &root_dir)?;
+        if !context.is_dir() {
+            return Err(invalid("source root must be a directory"));
         }
+        let recipe = match settings.build_method {
+            BuildMethod::Dockerfile => {
+                let dockerfile = settings.dockerfile_path.as_deref().unwrap_or("Dockerfile");
+                let dockerfile = contained(&repository, &context, dockerfile)?;
+                if !dockerfile.is_file() {
+                    return Err(invalid("Dockerfile must be a file"));
+                }
+                Recipe::Dockerfile(dockerfile)
+            }
+            BuildMethod::Railpack => Recipe::Railpack {
+                command: settings.command,
+            },
+        };
+        builds.insert(name, BuildSpec { context, recipe });
     }
-    if !input.sources.is_empty() || !input.source_commits.is_empty() {
+    if !input.sources.is_empty() {
         return Err(invalid("checkout supplied for a non-Git service"));
     }
-    let intent = ployz_core::config::lower_deployment(
-        serde_json::from_value(input.deployment).map_err(invalid)?,
-    )
-    .map_err(invalid)?;
+    let intent = frozen.intent;
     let build = crate::build::capture(&intent, builds).map_err(invalid)?;
-    let fingerprints: BTreeMap<_, _> = intent
-        .target
-        .iter()
-        .filter_map(|service| {
-            let identity = identities.remove(&service.name)?;
-            let bytes = serde_json::to_vec(&(identity, &service.container.environment))
-                .expect("build identity serializes");
-            Some((service.name.clone(), hex::encode(Sha256::digest(bytes))))
-        })
-        .collect();
+    let fingerprints = fingerprints(&intent, frozen.identities);
     let reusable = intent
         .target
         .iter()
@@ -198,6 +147,107 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         fingerprints,
         reusable,
     })
+}
+
+/// A frozen deployment lowered with each Git Service's source replaced by a pending
+/// image, plus what its checkout and fingerprint need.
+struct Frozen {
+    intent: DeployIntent,
+    /// Root directory and build settings of each Git Service, for its checkout.
+    checkouts: BTreeMap<ServiceName, (String, ServiceBuildConfig)>,
+    identities: BTreeMap<ServiceName, Value>,
+}
+
+fn freeze(
+    mut deployment: Value,
+    source_commits: &mut BTreeMap<ServiceName, String>,
+) -> Result<Frozen, RpcError> {
+    let snapshots = deployment
+        .get_mut("snapshots")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| invalid("deployment snapshots must be an array"))?;
+    let mut checkouts = BTreeMap::new();
+    let mut identities = BTreeMap::new();
+    for snapshot in snapshots {
+        let config = ployz_core::config::parse_service_config(snapshot["config"].clone())
+            .map_err(invalid)?;
+        if let ServiceSource::Git {
+            repository_id,
+            root_dir,
+            ..
+        } = &config.settings.source
+        {
+            let name = &config.settings.private_dns;
+            if let Some(commit) = source_commits.remove(name) {
+                if !lower_hex(&commit, 40) {
+                    return Err(invalid("source commit must be a lowercase Git SHA"));
+                }
+                identities.insert(name.clone(), json!({
+                    "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE,
+                    "repository": repository_id, "commit": commit, "root": root_dir, "build": config.settings.build,
+                }));
+            }
+            checkouts.insert(
+                name.clone(),
+                (root_dir.clone(), config.settings.build.clone()),
+            );
+            // This tag never escapes preparation: binding replaces it with verified content.
+            snapshot
+                .get_mut("config")
+                .and_then(Value::as_object_mut)
+                .expect("validated config object")
+                .insert(
+                    "source".into(),
+                    json!({"type":"image", "version":1,
+                "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}}),
+                );
+        }
+    }
+    if !source_commits.is_empty() {
+        return Err(invalid("checkout supplied for a non-Git service"));
+    }
+    let intent = ployz_core::config::lower_deployment(
+        serde_json::from_value(deployment).map_err(invalid)?,
+    )
+    .map_err(invalid)?;
+    Ok(Frozen {
+        intent,
+        checkouts,
+        identities,
+    })
+}
+
+/// sha256 of each build's identity (source, recipe, ployz version) and the container
+/// environment its build variables come from.
+fn fingerprints(
+    intent: &DeployIntent,
+    mut identities: BTreeMap<ServiceName, Value>,
+) -> BTreeMap<ServiceName, String> {
+    intent
+        .target
+        .iter()
+        .filter_map(|service| {
+            let identity = identities.remove(&service.name)?;
+            let bytes = serde_json::to_vec(&(identity, &service.container.environment))
+                .expect("build identity serializes");
+            Some((service.name.clone(), hex::encode(Sha256::digest(bytes))))
+        })
+        .collect()
+}
+
+/// The ployz version every fingerprint covers; a runner must install exactly this one.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What `capture` would fingerprint for these pinned commits, without any checkout:
+/// the fingerprint Cloud hands a runner to build against.
+/// # Errors
+/// Rejects an invalid deployment or a commit for a non-Git Service.
+pub fn expected_fingerprints(
+    deployment: Value,
+    mut source_commits: BTreeMap<ServiceName, String>,
+) -> Result<BTreeMap<ServiceName, String>, RpcError> {
+    let frozen = freeze(deployment, &mut source_commits)?;
+    Ok(fingerprints(&frozen.intent, frozen.identities))
 }
 
 fn lower_hex(value: &str, length: usize) -> bool {
@@ -278,6 +328,17 @@ mod tests {
                 .fingerprints
         };
         let expected = fingerprint(base.clone());
+        // Cloud computes the same fingerprint without a checkout.
+        let web = ServiceName::parse("web").unwrap();
+        assert_eq!(
+            expected_fingerprints(
+                base["deployment"].clone(),
+                BTreeMap::from([(web.clone(), "a".repeat(40))])
+            )
+            .unwrap()
+            .get(&web),
+            expected.get(&web)
+        );
         for (pointer, value) in [
             ("/deployment/snapshots/0/config/replicas", json!(2)),
             (

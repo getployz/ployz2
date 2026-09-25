@@ -3,6 +3,8 @@ import { createdAt, type EncryptedSecretValue, type JsonValue, updatedAt } from 
 
 import { type DeploymentTriggerOrigin } from "#/modules/deployments/deployment";
 
+import { type BuildOrder } from "#/modules/deployments/build-order";
+
 import { type EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
 
 import { user } from "#/modules/identity/tables";
@@ -265,9 +267,35 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   failureMessage: text("failure_message"),
   inngestRunId: text("inngest_run_id").notNull(),
   finishedAt: timestamp("finished_at", { mode: "date", withTimezone: true }),
+  // The Builder. A GitHub build records its dispatched run, then its one check-in.
+  builder: text("builder").notNull().default("server").$type<ImageBuilder>(),
+  githubRunId: bigint("github_run_id", { mode: "number" }),
+  githubRunUrl: text("github_run_url"),
+  /** The `job_workflow_ref` the run's OIDC token must carry: the build workflow on the default branch. */
+  githubWorkflowRef: text("github_workflow_ref"),
+  checkedInAt: timestamp("checked_in_at", { mode: "date", withTimezone: true }),
+  /** The Build Grant minted at check-in, on the Machine in `machineId`. */
+  grantId: text("grant_id"),
+  /** The fingerprint the runner was told to build; the receipt carries it. */
+  fingerprint: text("fingerprint"),
+  /** Platforms the runner reported building; the Machine's store proves them at reuse. */
+  platforms: text("platforms").array(),
   createdAt,
   updatedAt,
 }, (table) => [
   unique("environment_deployment_image_build_service_unique").on(table.deploymentId, table.serviceId),
   check("environment_deployment_image_build_receipt_check", sql`(${table.status} = 'built') = (${table.encryptedReceipt} is not null)`),
+  check("environment_deployment_image_build_builder_check", sql`${table.builder} in ('server', 'github')`),
+]);
+
+export type ImageBuilder = "server" | "github";
+
+/** Where the Organization's Image Builds run, tried in order. No row means servers only. Never staged. */
+export const organizationBuildOrder = pgTable("organization_build_order", {
+  organizationId: uuid("organization_id").primaryKey().references(() => organization.id, { onDelete: "cascade" }),
+  buildOrder: text("build_order").notNull().$type<BuildOrder>(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  check("organization_build_order_check", sql`${table.buildOrder} in ('servers-only', 'github-then-servers', 'github-only')`),
 ]);

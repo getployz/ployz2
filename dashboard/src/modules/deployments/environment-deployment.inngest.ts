@@ -1,4 +1,4 @@
-import { environmentDeployCancelRequestedEvent } from "#/modules/inngest/events";
+import { environmentDeployCancelRequestedEvent, githubBuildRunCompletedEvent } from "#/modules/inngest/events";
 import { NonRetriableError } from "inngest";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -27,7 +27,13 @@ import {
   executeImageBuild,
   executeLatestEnvironmentDeployment,
 } from "#/modules/deployments/runtime-activities.server";
-import { startImageBuilds } from "#/modules/deployments/image-builds.server";
+import { startImageBuilds, type ImageBuildTarget } from "#/modules/deployments/image-builds.server";
+import {
+  cancelGithubImageBuilds,
+  finishGithubImageBuild,
+  GITHUB_RUN_TIMEOUT,
+  startGithubImageBuild,
+} from "#/modules/deployments/github-image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
 import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.repository.server";
 import {
@@ -124,8 +130,30 @@ function terminalizeDeploymentFailure(
 
 export type EnvironmentDeploymentStepTools = Pick<
   PloyzStepTools,
-  "run" | "sleep" | "sendEvent"
+  "run" | "sleep" | "sendEvent" | "waitForEvent"
 >;
+
+/**
+ * One Image Build on its Builder. GitHub: dispatch, wait for the run to complete (the runner checks
+ * in and pushes meanwhile), then settle from the grant. Otherwise the Cluster builds it.
+ */
+async function runImageBuild(
+  build: ImageBuildTarget,
+  step: EnvironmentDeploymentStepTools,
+  runEffect: DeploymentInngestEffectRunner,
+) {
+  const started = await step.run(`start-github-build-${build.serviceId}`, () => runEffect(startGithubImageBuild(build)));
+  if (started.kind === "settled") return started.result;
+  if (started.kind === "servers") {
+    return step.run(`build-image-${build.serviceId}`, () => runEffect(executeImageBuild(build)));
+  }
+  const completed = await step.waitForEvent(`wait-github-run-${build.serviceId}`, {
+    event: githubBuildRunCompletedEvent,
+    if: `async.data.runId == ${started.runId}`,
+    timeout: GITHUB_RUN_TIMEOUT,
+  });
+  return step.run(`finish-github-build-${build.serviceId}`, () => runEffect(finishGithubImageBuild(build, completed === null)));
+}
 
 export type EnvironmentDeployEventData =
   Partial<EnvironmentDeployRequestedEventData>;
@@ -233,8 +261,7 @@ export async function executeProcessEnvironmentDeployment(
   try {
     // Admission fan-out: every Image Build starts now, in parallel, without holding the Environment slot.
     const builds = await step.run("start-image-builds", () => runEffect(startImageBuilds(context, runId)));
-    const settled = await Promise.all(builds.map((build) =>
-      step.run(`build-image-${build.serviceId}`, () => runEffect(executeImageBuild(build)))));
+    const settled = await Promise.all(builds.map((build) => runImageBuild(build, step, runEffect)));
     // Every build settles first, so the ones that finished keep their receipts for a retry.
     const unbuilt = settled.filter(({ status }) => status !== "built").map(({ image }) => image);
     if (unbuilt.length) {
@@ -366,6 +393,8 @@ export async function executeMarkCancelledRowBackedWorkflow(
     "mark-environment-deployment-cancelled",
     () => runEffect(markCancelledByInngestRunId(runId)),
   );
+  // The attempt's rows are cancelled; its GitHub runs and grants must stop too.
+  await input.step.run("cancel-github-builds", () => runEffect(cancelGithubImageBuilds(runId)));
   return { functionId, runId, marked };
 }
 
