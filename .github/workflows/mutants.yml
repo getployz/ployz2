@@ -1,0 +1,139 @@
+name: Mutation gate
+
+# Proves a test cleanup kept its confidence: every mutant the base branch's
+# tests catch must still be caught on the head branch. Sharded so a batch that
+# takes hours on one machine finishes in well under an hour.
+#
+# Push a `mutation-gate/**` branch whose .github/mutation-gate.json names
+# {"base", "files", "re", "shards"} (head is the pushed commit), or dispatch it.
+on:
+  push:
+    branches: ['mutation-gate/**']
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Ref whose tests define the caught set
+        default: main
+      head:
+        description: Ref with the test cleanup
+        default: ''
+      files:
+        description: Space-separated production files under core/ to mutate
+        default: ''
+      re:
+        description: Optional regex limiting mutants to the covered functions
+        default: ''
+      shards:
+        description: Shards per side (both sides run at once; leave room for PR CI)
+        default: '6'
+
+permissions:
+  contents: read
+
+env:
+  # Read-only compiler cache keys, as in ci.yml; missing credentials fall back to a cold build.
+  KACHE_S3_BUCKET: >-
+    ${{ secrets.KACHE_S3_READ_ACCESS_KEY_ID && secrets.KACHE_S3_READ_SECRET_ACCESS_KEY && vars.KACHE_S3_BUCKET || '' }}
+  KACHE_S3_REGION: ${{ vars.KACHE_S3_REGION || 'auto' }}
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_ACCESS_KEY_ID: ${{ secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
+  KACHE_S3_SECRET_ACCESS_KEY: ${{ secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      base: ${{ steps.plan.outputs.base }}
+      head: ${{ steps.plan.outputs.head }}
+      files: ${{ steps.plan.outputs.files }}
+      re: ${{ steps.plan.outputs.re }}
+      count: ${{ steps.plan.outputs.count }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+      - id: plan
+        env:
+          INPUTS: ${{ toJSON(inputs) }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          if os.environ["GITHUB_EVENT_NAME"] == "push":
+              config = json.load(open(".github/mutation-gate.json"))
+              config["head"] = os.environ["GITHUB_SHA"]
+          else:
+              config = json.loads(os.environ["INPUTS"])
+          count = int(config.get("shards") or 6)
+          print(f"base={config.get('base') or 'main'}")
+          print(f"head={config['head']}")
+          print(f"files={config['files'] if isinstance(config['files'], str) else ' '.join(config['files'])}")
+          print(f"re={config.get('re') or ''}")
+          print(f"count={count}")
+          print(f"shards={json.dumps(list(range(1, count + 1)))}")
+          PY
+
+  mutate:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [base, head]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.side == 'base' && needs.plan.outputs.base || needs.plan.outputs.head }}
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: workspace-tests
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
+        with:
+          tool: cargo-nextest@0.9.143,cargo-mutants@27.1.0
+      - name: Mutate one shard
+        env:
+          FILES: ${{ needs.plan.outputs.files }}
+          RE: ${{ needs.plan.outputs.re }}
+          SHARD: ${{ matrix.shard }}/${{ needs.plan.outputs.count }}
+        run: |
+          args=()
+          for file in $FILES; do args+=(--file "$file"); done
+          if [ -n "$RE" ]; then args+=(--re "$RE"); fi
+          # Node smoke tests load a non-instrumented cdylib; they never count as proof.
+          status=0
+          cargo mutants "${args[@]}" --shard "$SHARD" --test-tool nextest --all-features \
+            --in-place --no-shuffle --output "$RUNNER_TEMP/mutants" -- -E 'not test(/node_/)' || status=$?
+          # 2 = mutants missed, 3 = timeouts: still a complete result to compare.
+          case "$status" in 0|2|3) ;; *) exit "$status" ;; esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutants-${{ matrix.side }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutants/mutants.out/outcomes.json
+          if-no-files-found: error
+          retention-days: 7
+
+  gate:
+    needs: [plan, mutate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.head }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-base-*
+          path: base
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-head-*
+          path: head
+      - run: python3 scripts/test-scoreboard.py mutants-diff base head
