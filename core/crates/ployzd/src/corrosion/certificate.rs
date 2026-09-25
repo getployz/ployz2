@@ -3,7 +3,10 @@
 use std::{collections::BTreeMap, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use ployz_core::{CertificateHost, ClusterRoute, IngressHost, IssuanceClock, IssuanceFailure};
+use ployz_core::{
+    CertificateFailureKind, CertificateHost, ClusterRoute, IngressHost, IssuanceClock,
+    IssuanceFailure,
+};
 use serde::{Deserialize, Serialize};
 
 use super::Error;
@@ -220,9 +223,8 @@ pub struct RecordedRefusal {
 pub enum CertificateRow {
     /// Material, pending challenge and refusal that ACME owns.
     Acme {
-        material: Option<CertificateMaterial>,
-        /// The material was ordered through a proxy in front of this Cluster.
-        via_proxy: bool,
+        /// Issued material and the route its order validated along.
+        material: Option<(CertificateMaterial, ClusterRoute)>,
         challenge: Option<CertificateChallenge>,
         refusal: Option<RecordedRefusal>,
     },
@@ -244,49 +246,28 @@ impl CertificateRow {
         challenge: Option<CertificateChallenge>,
     ) -> Self {
         Self::Acme {
-            material,
-            via_proxy: false,
+            material: material.map(|material| (material, ClusterRoute::Direct)),
             challenge,
             refusal: None,
         }
     }
 
-    /// ACME row that holds newly issued material and no challenge.
+    /// ACME row that holds material newly issued along `route`, and no challenge.
     #[must_use]
-    pub fn issued(material: CertificateMaterial) -> Self {
-        Self::from_parts(Some(material), None)
-    }
-
-    /// ACME material ordered along `route`, replacing any earlier route.
-    /// A published row keeps no route.
-    #[must_use]
-    pub fn via(self, route: ClusterRoute) -> Self {
-        match self {
-            Self::Acme {
-                material,
-                challenge,
-                refusal,
-                ..
-            } => Self::Acme {
-                material,
-                via_proxy: route == ClusterRoute::ViaProxy,
-                challenge,
-                refusal,
-            },
-            published @ Self::Published(_) => published,
+    pub fn issued(material: CertificateMaterial, route: ClusterRoute) -> Self {
+        Self::Acme {
+            material: Some((material, route)),
+            challenge: None,
+            refusal: None,
         }
     }
 
-    /// Whether the served ACME material was ordered through a proxy.
+    /// The route ACME-issued material validated along. `None` without ACME material.
     #[must_use]
-    pub fn via_proxy(&self) -> bool {
+    pub fn route(&self) -> Option<ClusterRoute> {
         match self {
-            Self::Acme {
-                material: Some(_),
-                via_proxy,
-                ..
-            } => *via_proxy,
-            Self::Acme { .. } | Self::Published(_) => false,
+            Self::Acme { material, .. } => material.as_ref().map(|(_, route)| *route),
+            Self::Published(_) => None,
         }
     }
 
@@ -317,7 +298,7 @@ impl CertificateRow {
     #[must_use]
     pub fn material(&self) -> Option<&CertificateMaterial> {
         match self {
-            Self::Acme { material, .. } => material.as_ref(),
+            Self::Acme { material, .. } => material.as_ref().map(|(material, _)| material),
             Self::Published(material) => Some(material),
         }
     }
@@ -354,7 +335,7 @@ impl CertificateRow {
     #[must_use]
     pub fn into_material(self) -> Option<CertificateMaterial> {
         match self {
-            Self::Acme { material, .. } => material,
+            Self::Acme { material, .. } => material.map(|(material, _)| material),
             Self::Published(material) => Some(material),
         }
     }
@@ -364,13 +345,9 @@ impl CertificateRow {
     pub fn with_challenge(self, challenge: CertificateChallenge) -> Self {
         match self {
             Self::Acme {
-                material,
-                via_proxy,
-                refusal,
-                ..
+                material, refusal, ..
             } => Self::Acme {
                 material,
-                via_proxy,
                 challenge: Some(challenge),
                 refusal,
             },
@@ -392,12 +369,10 @@ impl CertificateRow {
         match self {
             Self::Acme {
                 material,
-                via_proxy,
                 challenge,
                 ..
             } => Self::Acme {
                 material,
-                via_proxy,
                 challenge,
                 refusal: Some(refusal),
             },
@@ -437,9 +412,13 @@ impl CertificateRow {
                 Error::Protocol("published certificate row has no valid material".into())
             });
         }
+        let route = if body.route == VIA_PROXY {
+            ClusterRoute::ViaProxy
+        } else {
+            ClusterRoute::Direct
+        };
         Ok(Self::Acme {
-            material,
-            via_proxy: body.via_proxy,
+            material: material.map(|material| (material, route)),
             challenge,
             refusal: (!last_error.is_empty()).then_some(RecordedRefusal {
                 reason: last_error,
@@ -472,9 +451,13 @@ impl CertificateRow {
                 .map(|clock| encode_attempt(clock.next_attempt_at()))
                 .unwrap_or_default(),
             failures: clock.map_or(0, |clock| clock.failures()),
-            last_failure: encode_failure(clock.map(|clock| clock.last_failure())).into(),
+            last_failure: encode_failure(clock.map(|clock| clock.last_failure())),
             published: self.published().is_some(),
-            via_proxy: self.via_proxy(),
+            route: match self.route() {
+                Some(ClusterRoute::ViaProxy) => VIA_PROXY,
+                Some(ClusterRoute::Direct) | None => "",
+            }
+            .into(),
         })?)
     }
 }
@@ -508,8 +491,11 @@ struct CertificateBody {
     failures: u32,
     last_failure: String,
     published: bool,
-    via_proxy: bool,
+    /// `via_proxy` when the ACME material validated through a proxy; empty means direct.
+    route: String,
 }
+
+const VIA_PROXY: &str = "via_proxy";
 
 fn encode_attempt(time: SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -530,26 +516,16 @@ fn decode_clock(next_attempt_at: &str, failures: u32, last_failure: &str) -> Opt
     Some(IssuanceClock::new(failures, next_attempt_at, last_failure))
 }
 
-fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {
-    match failure {
-        Some(IssuanceFailure::DoesNotResolve) => "does_not_resolve",
-        Some(IssuanceFailure::Unreachable) => "unreachable",
-        Some(IssuanceFailure::RedirectsToHttps) => "redirects_to_https",
-        Some(IssuanceFailure::ReachesElsewhere) => "reaches_elsewhere",
-        Some(IssuanceFailure::Authority) => "authority",
-        None => "",
-    }
+fn encode_failure(failure: Option<IssuanceFailure>) -> String {
+    failure
+        .map(|failure| CertificateFailureKind::from(failure).as_str().to_owned())
+        .unwrap_or_default()
 }
 
 fn decode_failure(text: &str) -> Option<IssuanceFailure> {
-    match text {
-        "does_not_resolve" => Some(IssuanceFailure::DoesNotResolve),
-        "unreachable" => Some(IssuanceFailure::Unreachable),
-        "redirects_to_https" => Some(IssuanceFailure::RedirectsToHttps),
-        "reaches_elsewhere" => Some(IssuanceFailure::ReachesElsewhere),
-        "authority" => Some(IssuanceFailure::Authority),
-        _ => None,
-    }
+    serde_json::from_value::<CertificateFailureKind>(text.into())
+        .ok()?
+        .issuance_failure()
 }
 
 #[cfg(test)]
@@ -733,16 +709,17 @@ mod tests {
     }
 
     #[test]
-    fn proxy_route_round_trips_and_needs_material() {
-        let row = CertificateRow::issued(issued_material()).via(ClusterRoute::ViaProxy);
-        let decoded = CertificateRow::decode(&row.encode().unwrap()).unwrap();
-        assert!(decoded.via_proxy());
-        assert!(!decoded.via(ClusterRoute::Direct).via_proxy());
-        assert!(
-            !CertificateRow::default()
-                .via(ClusterRoute::ViaProxy)
-                .via_proxy()
-        );
+    fn issued_route_round_trips_and_needs_material() {
+        for route in [ClusterRoute::Direct, ClusterRoute::ViaProxy] {
+            let row = CertificateRow::issued(issued_material(), route);
+            assert_eq!(
+                CertificateRow::decode(&row.encode().unwrap())
+                    .unwrap()
+                    .route(),
+                Some(route)
+            );
+        }
+        assert_eq!(CertificateRow::default().route(), None);
     }
 
     #[test]
@@ -819,7 +796,11 @@ mod tests {
     #[test]
     fn certificate_row_round_trips_refusal_clock() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let clock = IssuanceClock::new(3, at, IssuanceFailure::DoesNotResolve);
+        let clock = IssuanceClock::new(
+            3,
+            at,
+            IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
+        );
         let row = CertificateRow::from_parts(None, None).with_backoff(
             "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
             clock,
@@ -835,7 +816,7 @@ mod tests {
             .unwrap()
             .clock()
             .map(|clock| clock.last_failure()),
-            Some(IssuanceFailure::ReachesElsewhere)
+            Some(IssuanceFailure::Refused(ployz_core::Refusal::ReachesElsewhere))
         );
         assert_eq!(
             CertificateRow::decode(r#"{"last_failure":"authority"}"#)
@@ -861,9 +842,10 @@ mod tests {
         let clock = IssuanceClock::new(
             3,
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
-            IssuanceFailure::DoesNotResolve,
+            IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
         );
-        let row = CertificateRow::issued(material.clone()).with_backoff("authority refused", clock);
+        let row = CertificateRow::issued(material.clone(), ployz_core::ClusterRoute::Direct)
+            .with_backoff("authority refused", clock);
         let mut body: serde_json::Value = serde_json::from_str(&row.encode().unwrap()).unwrap();
         let fields = body.as_object_mut().unwrap();
         fields.insert("challenge_token".to_owned(), "../escape".into());
@@ -881,7 +863,8 @@ mod tests {
     #[test]
     fn error_write_keeps_issued_material() {
         let issued = issued_material();
-        let row = CertificateRow::issued(issued.clone()).with_error("refused");
+        let row = CertificateRow::issued(issued.clone(), ployz_core::ClusterRoute::Direct)
+            .with_error("refused");
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.last_error(), Some("refused"));
         assert_eq!(row.clock(), None);
@@ -890,7 +873,11 @@ mod tests {
     #[test]
     fn error_write_clears_a_previous_clock() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let clock = IssuanceClock::new(3, at, IssuanceFailure::DoesNotResolve);
+        let clock = IssuanceClock::new(
+            3,
+            at,
+            IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
+        );
         let row = CertificateRow::from_parts(None, None)
             .with_backoff("does not resolve", clock)
             .with_error("policy refused");

@@ -121,7 +121,7 @@ fn published_material_and_published_wildcards_are_not_wanted() {
         ),
         (
             certificate_host("acme.example.com"),
-            CertificateRow::issued(acme),
+            CertificateRow::issued(acme, ployz_core::ClusterRoute::Direct),
         ),
     ]);
     assert_eq!(
@@ -192,15 +192,16 @@ fn only_rank_zero_orders_immediately() {
 }
 
 #[test]
-fn renew_does_not_contact_the_authority_when_dns_refuses() {
-    let clock = IssuanceClock::new(1, UNIX_EPOCH, IssuanceFailure::ReachesElsewhere);
+fn renew_does_not_contact_the_authority_when_the_hostname_is_refused() {
+    let refusal = ployz_core::Refusal::ReachesElsewhere;
+    let clock = IssuanceClock::new(1, UNIX_EPOCH, IssuanceFailure::Refused(refusal));
     assert!(!contacts_authority(
         IssuanceAction::Renew,
-        IssuanceGate::Refuse(clock)
+        IssuanceGate::Refuse { refusal, clock }
     ));
     assert!(!contacts_authority(
         IssuanceAction::Order,
-        IssuanceGate::Refuse(clock)
+        IssuanceGate::Refuse { refusal, clock }
     ));
     assert!(!contacts_authority(
         IssuanceAction::Renew,
@@ -208,15 +209,15 @@ fn renew_does_not_contact_the_authority_when_dns_refuses() {
     ));
     assert!(contacts_authority(
         IssuanceAction::Renew,
-        IssuanceGate::Order
+        IssuanceGate::Order(ployz_core::ClusterRoute::Direct)
     ));
     assert!(contacts_authority(
         IssuanceAction::Order,
-        IssuanceGate::Order
+        IssuanceGate::Order(ployz_core::ClusterRoute::Direct)
     ));
     assert!(!contacts_authority(
         IssuanceAction::Nothing,
-        IssuanceGate::Order
+        IssuanceGate::Order(ployz_core::ClusterRoute::Direct)
     ));
 }
 
@@ -490,6 +491,7 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
             SocketAddr::from(([127, 0, 0, 1], first_port)),
             SocketAddr::from(([127, 0, 0, 1], second_port)),
         ],
+        ployz_core::ClusterRoute::Direct,
         CHALLENGE_WAIT,
     )
     .await
@@ -498,7 +500,41 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
 }
 
 #[tokio::test]
-async fn verify_answers_report_the_body_the_redirect_or_no_answer() {
+async fn a_proxied_challenge_needs_one_serving_address_and_a_direct_one_needs_all() {
+    let token = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
+    let response = format!("{token}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    let challenge = CertificateChallenge::parse(token, &response).unwrap();
+    let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::from([(
+        token.to_owned(),
+        response.clone(),
+    )])));
+    let (serving, port) = ployz_testkit::fake_acme::serve_http01(answers);
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let addresses = [SocketAddr::from(([127, 0, 0, 1], port)), closed];
+    let hostname = host("app.example.com");
+    let probe = |route| {
+        wait_for_http01(
+            &hostname,
+            &challenge,
+            &addresses,
+            route,
+            Duration::from_millis(300),
+        )
+    };
+
+    assert!(probe(ployz_core::ClusterRoute::ViaProxy).await.is_ok());
+    assert!(matches!(
+        probe(ployz_core::ClusterRoute::Direct).await,
+        Err(super::Error::ChallengeNotServed)
+    ));
+    drop(serving);
+}
+
+#[tokio::test]
+async fn verify_answers_report_status_location_and_body_or_no_answer() {
     let body = serve_once("200 OK", "", "0123456789abcdef0123456789abcdef");
     let redirect = serve_once(
         "301 Moved Permanently",
@@ -520,15 +556,18 @@ async fn verify_answers_report_the_body_the_redirect_or_no_answer() {
         vec![
             (
                 loopback,
-                ployz_core::VerifyAnswer::Response {
-                    success: true,
+                ployz_core::VerifyAnswer::Answered {
+                    status: 200,
+                    location: String::new(),
                     body: "0123456789abcdef0123456789abcdef".into(),
                 }
             ),
             (
                 loopback,
-                ployz_core::VerifyAnswer::Redirect {
+                ployz_core::VerifyAnswer::Answered {
+                    status: 301,
                     location: "https://app.example.com/.ployz-verify".into(),
+                    body: String::new(),
                 }
             ),
             (loopback, ployz_core::VerifyAnswer::NoAnswer),
@@ -564,7 +603,13 @@ async fn empty_probe_addresses_fail_without_waiting() {
     .unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(1),
-        wait_for_http01(&hostname, &challenge, &[], CHALLENGE_WAIT),
+        wait_for_http01(
+            &hostname,
+            &challenge,
+            &[],
+            ployz_core::ClusterRoute::ViaProxy,
+            CHALLENGE_WAIT,
+        ),
     )
     .await
     .unwrap()

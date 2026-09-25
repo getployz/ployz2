@@ -2,30 +2,13 @@
 
 use std::time::{Duration, SystemTime};
 
-use super::HostnameVerdict;
+use super::{ClusterRoute, HostnameVerdict, Refusal};
 
 /// Which failure earned the shared backoff clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceFailure {
-    DoesNotResolve,
-    Unreachable,
-    RedirectsToHttps,
-    ReachesElsewhere,
+    Refused(Refusal),
     Authority,
-}
-
-impl IssuanceFailure {
-    /// The refusal a Hostname Verdict earns. `None` when it reaches this Cluster.
-    #[must_use]
-    pub fn from_verdict(verdict: HostnameVerdict) -> Option<Self> {
-        match verdict {
-            HostnameVerdict::ReachesCluster(_) => None,
-            HostnameVerdict::DoesNotResolve => Some(Self::DoesNotResolve),
-            HostnameVerdict::Unreachable => Some(Self::Unreachable),
-            HostnameVerdict::RedirectsToHttps => Some(Self::RedirectsToHttps),
-            HostnameVerdict::ReachesElsewhere => Some(Self::ReachesElsewhere),
-        }
-    }
 }
 
 /// Shared backoff clock after a refusal or an authority failure.
@@ -72,8 +55,11 @@ impl IssuanceClock {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceGate {
     Nothing,
-    Refuse(IssuanceClock),
-    Order,
+    Refuse {
+        refusal: Refusal,
+        clock: IssuanceClock,
+    },
+    Order(ClusterRoute),
 }
 
 /// Decide whether to wait, refuse, or proceed. A verdict change drops refusal backoff.
@@ -87,24 +73,27 @@ pub fn issuance_gate(
     backoff_base: Duration,
     backoff_cap: Duration,
 ) -> IssuanceGate {
-    let refusal = IssuanceFailure::from_verdict(verdict);
     let waiting = clock.is_some_and(|clock| clock.next_attempt_at() > now);
     let verdict_changed = clock.is_some_and(|clock| {
-        clock.last_failure() != IssuanceFailure::Authority && Some(clock.last_failure()) != refusal
+        matches!(clock.last_failure(), IssuanceFailure::Refused(last)
+            if verdict != HostnameVerdict::Refused(last))
     });
     if waiting && !verdict_changed {
         return IssuanceGate::Nothing;
     }
-    let Some(refusal) = refusal else {
-        return IssuanceGate::Order;
-    };
-    IssuanceGate::Refuse(issuance_failure_clock(
-        clock,
-        refusal,
-        now,
-        backoff_base,
-        backoff_cap,
-    ))
+    match verdict {
+        HostnameVerdict::ReachesCluster(route) => IssuanceGate::Order(route),
+        HostnameVerdict::Refused(refusal) => IssuanceGate::Refuse {
+            refusal,
+            clock: issuance_failure_clock(
+                clock,
+                IssuanceFailure::Refused(refusal),
+                now,
+                backoff_base,
+                backoff_cap,
+            ),
+        },
+    }
 }
 
 /// Delay after `failures` recorded attempts. `failures == 0` uses the base delay.
@@ -143,14 +132,16 @@ mod tests {
         IssuanceClock, IssuanceFailure, IssuanceGate, issuance_backoff, issuance_failure_clock,
         issuance_gate,
     };
-    use crate::{ClusterRoute, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP, HostnameVerdict};
+    use crate::{
+        ClusterRoute, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP, HostnameVerdict, Refusal,
+    };
 
     #[test]
     fn empty_row_orders_when_the_hostname_reaches_the_cluster() {
         for route in [ClusterRoute::Direct, ClusterRoute::ViaProxy] {
             assert_eq!(
                 decide(None, HostnameVerdict::ReachesCluster(route), now()),
-                IssuanceGate::Order
+                IssuanceGate::Order(route)
             );
         }
     }
@@ -158,20 +149,32 @@ mod tests {
     #[test]
     fn empty_row_refuses_when_the_hostname_misses_the_cluster() {
         assert_eq!(
-            decide(None, HostnameVerdict::Unreachable, now()),
-            refuse(IssuanceFailure::Unreachable, 1)
+            decide(None, HostnameVerdict::Refused(Refusal::Unreachable), now()),
+            refuse(Refusal::Unreachable, 1)
         );
         assert_eq!(
-            decide(None, HostnameVerdict::RedirectsToHttps, now()),
-            refuse(IssuanceFailure::RedirectsToHttps, 1)
+            decide(
+                None,
+                HostnameVerdict::Refused(Refusal::RedirectsToHttps),
+                now()
+            ),
+            refuse(Refusal::RedirectsToHttps, 1)
         );
         assert_eq!(
-            decide(None, HostnameVerdict::DoesNotResolve, now()),
-            refuse(IssuanceFailure::DoesNotResolve, 1)
+            decide(
+                None,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
+            refuse(Refusal::DoesNotResolve, 1)
         );
         assert_eq!(
-            decide(None, HostnameVerdict::ReachesElsewhere, now()),
-            refuse(IssuanceFailure::ReachesElsewhere, 1)
+            decide(
+                None,
+                HostnameVerdict::Refused(Refusal::ReachesElsewhere),
+                now()
+            ),
+            refuse(Refusal::ReachesElsewhere, 1)
         );
     }
 
@@ -191,7 +194,11 @@ mod tests {
             IssuanceGate::Nothing
         );
         assert_eq!(
-            decide(clock, HostnameVerdict::DoesNotResolve, now()),
+            decide(
+                clock,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
             IssuanceGate::Nothing
         );
     }
@@ -201,11 +208,11 @@ mod tests {
         assert_eq!(
             decide(
                 Some(clock(
-                    IssuanceFailure::DoesNotResolve,
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
                     1,
                     now() + Duration::from_secs(3600),
                 )),
-                HostnameVerdict::DoesNotResolve,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 now(),
             ),
             IssuanceGate::Nothing
@@ -217,19 +224,27 @@ mod tests {
         let later = now() + Duration::from_secs(6 * 60 * 60);
         assert_eq!(
             decide(
-                Some(clock(IssuanceFailure::DoesNotResolve, 1, later)),
+                Some(clock(
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                    1,
+                    later
+                )),
                 HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
                 now(),
             ),
-            IssuanceGate::Order
+            IssuanceGate::Order(ClusterRoute::Direct)
         );
         assert_eq!(
             decide(
-                Some(clock(IssuanceFailure::ReachesElsewhere, 1, later)),
+                Some(clock(
+                    IssuanceFailure::Refused(Refusal::ReachesElsewhere),
+                    1,
+                    later
+                )),
                 HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
                 now(),
             ),
-            IssuanceGate::Order
+            IssuanceGate::Order(ClusterRoute::Direct)
         );
     }
 
@@ -238,14 +253,14 @@ mod tests {
         assert_eq!(
             decide(
                 Some(clock(
-                    IssuanceFailure::DoesNotResolve,
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
                     1,
                     now() + Duration::from_secs(6 * 60 * 60),
                 )),
-                HostnameVerdict::ReachesElsewhere,
+                HostnameVerdict::Refused(Refusal::ReachesElsewhere),
                 now(),
             ),
-            refuse(IssuanceFailure::ReachesElsewhere, 1)
+            refuse(Refusal::ReachesElsewhere, 1)
         );
     }
 
@@ -261,19 +276,19 @@ mod tests {
                 HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
                 now(),
             ),
-            IssuanceGate::Order
+            IssuanceGate::Order(ClusterRoute::Direct)
         );
         assert_eq!(
             decide(
                 Some(clock(
-                    IssuanceFailure::DoesNotResolve,
+                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
                     4,
                     now() - Duration::from_secs(1),
                 )),
-                HostnameVerdict::DoesNotResolve,
+                HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 now(),
             ),
-            refuse(IssuanceFailure::DoesNotResolve, 5)
+            refuse(Refusal::DoesNotResolve, 5)
         );
     }
 
@@ -295,15 +310,31 @@ mod tests {
 
     #[test]
     fn failure_clock_resets_resolve_and_keeps_authority() {
-        let resolve = clock(IssuanceFailure::DoesNotResolve, 4, now());
-        let elsewhere = IssuanceFailure::ReachesElsewhere;
+        let resolve = clock(IssuanceFailure::Refused(Refusal::DoesNotResolve), 4, now());
+        let elsewhere = IssuanceFailure::Refused(Refusal::ReachesElsewhere);
         assert_eq!(
-            next_clock(None, IssuanceFailure::DoesNotResolve, now()),
-            clock(IssuanceFailure::DoesNotResolve, 1, now() + delay(1))
+            next_clock(
+                None,
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
+            clock(
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                1,
+                now() + delay(1)
+            )
         );
         assert_eq!(
-            next_clock(Some(resolve), IssuanceFailure::DoesNotResolve, now()),
-            clock(IssuanceFailure::DoesNotResolve, 5, now() + delay(5))
+            next_clock(
+                Some(resolve),
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                now()
+            ),
+            clock(
+                IssuanceFailure::Refused(Refusal::DoesNotResolve),
+                5,
+                now() + delay(5)
+            )
         );
         assert_eq!(
             next_clock(Some(resolve), elsewhere, now()),
@@ -355,8 +386,15 @@ mod tests {
         issuance_backoff(failures, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP)
     }
 
-    fn refuse(last_failure: IssuanceFailure, failures: u32) -> IssuanceGate {
-        IssuanceGate::Refuse(clock(last_failure, failures, now() + delay(failures)))
+    fn refuse(refusal: Refusal, failures: u32) -> IssuanceGate {
+        IssuanceGate::Refuse {
+            refusal,
+            clock: clock(
+                IssuanceFailure::Refused(refusal),
+                failures,
+                now() + delay(failures),
+            ),
+        }
     }
 
     fn clock(

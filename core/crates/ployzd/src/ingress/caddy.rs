@@ -1,7 +1,7 @@
 //! Deterministic Caddy configuration rendering and application.
 
 use chrono::{SecondsFormat, Utc};
-use ployz_core::{HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, Machine};
+use ployz_core::{HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, Machine};
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
 use std::{
@@ -183,6 +183,9 @@ http:// {{\n\
 \thandle {INGRESS_VERIFY_PATH} {{\n\
 \t\trespond \"{local_machine}\" 200\n\
 \t}}\n\
+\thandle {HOSTNAME_VERIFY_PATH} {{\n\
+\t\trespond \"{local_machine}\" 200\n\
+\t}}\n\
 \trespond \"Not Found\" 404\n\
 \tlog\n\
 }}\n\
@@ -206,7 +209,7 @@ http:// {{\n\
         if http.is_some() || site.challenge().is_some() {
             // The hostname's own site shadows the catch-all, so it answers the verify probe too.
             let verify = format!(
-                "\thandle {INGRESS_VERIFY_PATH} {{\n\t\trespond \"{local_machine}\" 200\n\t}}\n"
+                "\thandle {HOSTNAME_VERIFY_PATH} {{\n\t\trespond \"{local_machine}\" 200\n\t}}\n"
             );
             write_site(
                 &mut output,

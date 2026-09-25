@@ -409,8 +409,12 @@ mod tests {
         let preview = DeployPreview::new(
             Vec::new(),
             ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
-                "app.example.com" => ployz_core::HostnameVerdict::ReachesElsewhere,
-                "plain.example.com" => ployz_core::HostnameVerdict::DoesNotResolve,
+                "app.example.com" => {
+                    ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::ReachesElsewhere)
+                }
+                "plain.example.com" => {
+                    ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::DoesNotResolve)
+                }
                 other => panic!("unexpected {other}"),
             })
             .into_iter()

@@ -1,107 +1,139 @@
-//! Whether an Ingress Hostname reaches this Cluster, judged by fetching `/.ployz-verify` through it.
+//! Whether an Ingress Hostname reaches this Cluster, judged by fetching a verify path through it.
 
 use std::net::IpAddr;
 
 use crate::{IngressHost, MachineId};
 
-/// What a `GET http://<hostname>/.ployz-verify` returned, without following redirects.
+/// Path every ingress Machine answers with its Machine id, probed through an Ingress Hostname.
+///
+/// It sits under the ACME challenge prefix so the one proxy exemption HTTP-01 needs also lets
+/// the probe through. Challenge tokens are at least 22 characters, so it never shadows one.
+pub const HOSTNAME_VERIFY_PATH: &str = "/.well-known/acme-challenge/ployz-verify";
+
+/// What a `GET http://<hostname>` + [`HOSTNAME_VERIFY_PATH`] returned, without following redirects.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VerifyAnswer {
     /// No HTTP response: refused, reset, or timed out.
     NoAnswer,
-    /// A 3xx response. `location` is empty when the header is missing.
-    Redirect { location: String },
-    /// Any other HTTP response.
-    Response { success: bool, body: String },
+    /// Any HTTP response. `location` is empty when the header is missing.
+    Answered {
+        status: u16,
+        location: String,
+        body: String,
+    },
 }
 
 /// How a hostname that reaches this Cluster gets here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClusterRoute {
-    /// A resolved address is a Machine public address.
+    /// A resolved address that answered is a Machine public address.
     Direct,
-    /// A Machine answered, but no resolved address is a Machine public address.
+    /// A Machine answered, but only through addresses that are not Machine public addresses.
     ViaProxy,
 }
 
-/// What one Machine saw fetching `/.ployz-verify` through an Ingress Hostname.
+/// Why a hostname does not reach this Cluster.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HostnameVerdict {
+pub enum Refusal {
     DoesNotResolve,
     Unreachable,
     RedirectsToHttps,
     ReachesElsewhere,
+}
+
+/// What one Machine saw fetching [`HOSTNAME_VERIFY_PATH`] through an Ingress Hostname.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostnameVerdict {
+    Refused(Refusal),
     ReachesCluster(ClusterRoute),
 }
 
 /// Judge the verify answer from each resolved address against this Cluster's Machines.
 ///
-/// Any address that reaches this Cluster is enough; otherwise the first address decides.
-/// No addresses is "does not resolve", including lookup failure.
+/// Any address that reaches this Cluster is enough, directly before via a proxy; otherwise
+/// the first address decides. No addresses is "does not resolve", including lookup failure.
 #[must_use]
 pub fn hostname_verdict(
     answers: &[(IpAddr, VerifyAnswer)],
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
 ) -> HostnameVerdict {
-    let verdicts = answers.iter().map(|(address, answer)| match answer {
-        VerifyAnswer::NoAnswer => HostnameVerdict::Unreachable,
-        VerifyAnswer::Redirect { location } if location.starts_with("https://") => {
-            HostnameVerdict::RedirectsToHttps
-        }
-        VerifyAnswer::Response {
-            success: true,
-            body,
-        } if MachineId::parse(body.trim()).is_ok_and(|id| machine_ids.contains(&id)) => {
-            HostnameVerdict::ReachesCluster(if cluster_addresses.contains(address) {
-                ClusterRoute::Direct
-            } else {
-                ClusterRoute::ViaProxy
-            })
-        }
-        VerifyAnswer::Redirect { .. } | VerifyAnswer::Response { .. } => {
-            HostnameVerdict::ReachesElsewhere
-        }
-    });
-    let mut first = None;
-    for verdict in verdicts {
-        if matches!(verdict, HostnameVerdict::ReachesCluster(_)) {
-            return verdict;
-        }
-        first.get_or_insert(verdict);
-    }
-    first.unwrap_or(HostnameVerdict::DoesNotResolve)
+    let verdicts: Vec<_> = answers
+        .iter()
+        .map(|(address, answer)| judge(*address, answer, machine_ids, cluster_addresses))
+        .collect();
+    [ClusterRoute::Direct, ClusterRoute::ViaProxy]
+        .map(HostnameVerdict::ReachesCluster)
+        .into_iter()
+        .find(|best| verdicts.contains(best))
+        .or(verdicts.first().copied())
+        .unwrap_or(HostnameVerdict::Refused(Refusal::DoesNotResolve))
 }
 
-/// Why a hostname that does not reach this Cluster has no certificate, with one fix.
-/// `None` when it reaches this Cluster.
-#[must_use]
-pub fn hostname_verdict_reason(
-    hostname: &IngressHost,
-    verdict: HostnameVerdict,
+fn judge(
+    address: IpAddr,
+    answer: &VerifyAnswer,
+    machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
-) -> Option<String> {
-    Some(match verdict {
-        HostnameVerdict::ReachesCluster(_) => return None,
-        HostnameVerdict::DoesNotResolve => format!(
+) -> HostnameVerdict {
+    let VerifyAnswer::Answered {
+        status,
+        location,
+        body,
+    } = answer
+    else {
+        return HostnameVerdict::Refused(Refusal::Unreachable);
+    };
+    if (300..400).contains(status) && location.starts_with("https://") {
+        return HostnameVerdict::Refused(Refusal::RedirectsToHttps);
+    }
+    let ours = (200..300).contains(status)
+        && MachineId::parse(body.trim()).is_ok_and(|id| machine_ids.contains(&id));
+    if !ours {
+        return HostnameVerdict::Refused(Refusal::ReachesElsewhere);
+    }
+    HostnameVerdict::ReachesCluster(if cluster_addresses.contains(&address) {
+        ClusterRoute::Direct
+    } else {
+        ClusterRoute::ViaProxy
+    })
+}
+
+/// Why a hostname does not reach this Cluster, with one fix.
+#[must_use]
+pub fn refusal_reason(
+    hostname: &IngressHost,
+    refusal: Refusal,
+    cluster_addresses: &[IpAddr],
+) -> String {
+    match refusal {
+        Refusal::DoesNotResolve => format!(
             "{hostname} does not resolve. Add a DNS record pointing at {}.",
             join_addresses(cluster_addresses)
         ),
-        HostnameVerdict::Unreachable => {
+        Refusal::Unreachable => {
             format!("{hostname} did not answer on port 80. Open port 80 to this Cluster.")
         }
-        // TODO: write a docs page on custom domains behind a proxy (Cloudflare
-        // "Always Use HTTPS", exempting the ACME path, or uploading an origin
-        // certificate) and link it from this message and the dashboard row.
-        HostnameVerdict::RedirectsToHttps => format!(
+        // ============================================================================
+        // TODO: DOCS PAGE NEEDED — custom domains behind a proxy (Cloudflare and other
+        // CDNs). Nothing documents this yet. When docs are written, cover:
+        //   - why "Always Use HTTPS" blocks the first certificate (the edge redirects
+        //     HTTP-01 to HTTPS before this Cluster has a certificate to answer with);
+        //   - the fix: a proxy rule exempting /.well-known/acme-challenge/* from HTTPS
+        //     redirects (Cloudflare: a Configuration Rule);
+        //   - the alternative: upload a proxy origin certificate as Certificate Material;
+        //   - SSL mode: use Full (strict) once issued, never Flexible.
+        // Then link the page from this message and from the dashboard domain row.
+        // ============================================================================
+        Refusal::RedirectsToHttps => format!(
             "{hostname} redirects HTTP to HTTPS before reaching this Cluster. \
              Exempt /.well-known/acme-challenge/* from HTTPS redirects in your proxy."
         ),
-        HostnameVerdict::ReachesElsewhere => format!(
+        Refusal::ReachesElsewhere => format!(
             "{hostname} answers from another server. Point it at {}.",
             join_addresses(cluster_addresses)
         ),
-    })
+    }
 }
 
 fn join_addresses(addresses: &[IpAddr]) -> String {
@@ -120,58 +152,61 @@ mod tests {
     use std::net::IpAddr;
 
     use super::{
-        ClusterRoute, HostnameVerdict, VerifyAnswer, hostname_verdict, hostname_verdict_reason,
+        ClusterRoute, HostnameVerdict, Refusal, VerifyAnswer, hostname_verdict, refusal_reason,
     };
     use crate::{IngressHost, MachineId};
 
     const OURS: &str = "0123456789abcdef0123456789abcdef";
     const THEIRS: &str = "fedcba9876543210fedcba9876543210";
     const PROXY: &str = "198.51.100.10";
+    const MACHINE: &str = "192.0.2.1";
 
     #[test]
     fn verdict_covers_every_answer() {
         let ids = [MachineId::parse(OURS).unwrap()];
-        let judge = |answer: VerifyAnswer| {
-            hostname_verdict(&[(ip(PROXY), answer)], &ids, &addrs(["192.0.2.1"]))
-        };
+        let judge =
+            |answer: VerifyAnswer| hostname_verdict(&[(ip(PROXY), answer)], &ids, &[ip(MACHINE)]);
 
         assert_eq!(
-            hostname_verdict(&[], &ids, &addrs(["192.0.2.1"])),
-            HostnameVerdict::DoesNotResolve
-        );
-        assert_eq!(judge(VerifyAnswer::NoAnswer), HostnameVerdict::Unreachable);
-        assert_eq!(
-            judge(redirect("https://app.example.com/.ployz-verify")),
-            HostnameVerdict::RedirectsToHttps
+            hostname_verdict(&[], &ids, &[ip(MACHINE)]),
+            HostnameVerdict::Refused(Refusal::DoesNotResolve)
         );
         assert_eq!(
-            judge(redirect("http://elsewhere.example.com/")),
-            HostnameVerdict::ReachesElsewhere
-        );
-        assert_eq!(judge(answered(THEIRS)), HostnameVerdict::ReachesElsewhere);
-        assert_eq!(
-            judge(VerifyAnswer::Response {
-                success: false,
-                body: OURS.into()
-            }),
-            HostnameVerdict::ReachesElsewhere
+            judge(VerifyAnswer::NoAnswer),
+            HostnameVerdict::Refused(Refusal::Unreachable)
         );
         assert_eq!(
-            judge(answered(&format!("{OURS}\n"))),
+            judge(answered(301, "https://app.example.com/", "")),
+            HostnameVerdict::Refused(Refusal::RedirectsToHttps)
+        );
+        assert_eq!(
+            judge(answered(302, "http://elsewhere.example.com/", "")),
+            HostnameVerdict::Refused(Refusal::ReachesElsewhere)
+        );
+        assert_eq!(
+            judge(answered(200, "", THEIRS)),
+            HostnameVerdict::Refused(Refusal::ReachesElsewhere)
+        );
+        assert_eq!(
+            judge(answered(404, "", OURS)),
+            HostnameVerdict::Refused(Refusal::ReachesElsewhere)
+        );
+        assert_eq!(
+            judge(answered(200, "", &format!("{OURS}\n"))),
             HostnameVerdict::ReachesCluster(ClusterRoute::ViaProxy)
         );
     }
 
     #[test]
-    fn any_address_reaching_the_cluster_wins_otherwise_the_first_decides() {
+    fn a_direct_answer_beats_a_proxied_one_and_otherwise_the_first_address_decides() {
         let ids = [MachineId::parse(OURS).unwrap()];
-        let cluster = addrs(["192.0.2.1"]);
+        let cluster = [ip(MACHINE)];
 
         assert_eq!(
             hostname_verdict(
                 &[
-                    (ip(PROXY), VerifyAnswer::NoAnswer),
-                    (ip("192.0.2.1"), answered(OURS)),
+                    (ip(PROXY), answered(200, "", OURS)),
+                    (ip(MACHINE), answered(200, "", OURS)),
                 ],
                 &ids,
                 &cluster
@@ -181,78 +216,54 @@ mod tests {
         assert_eq!(
             hostname_verdict(
                 &[
-                    (ip(PROXY), answered(THEIRS)),
-                    (ip("192.0.2.1"), VerifyAnswer::NoAnswer),
+                    (ip(PROXY), answered(200, "", THEIRS)),
+                    (ip(MACHINE), VerifyAnswer::NoAnswer),
                 ],
                 &ids,
                 &cluster
             ),
-            HostnameVerdict::ReachesElsewhere
+            HostnameVerdict::Refused(Refusal::ReachesElsewhere)
         );
     }
 
     #[test]
-    fn reason_names_one_fix_per_verdict() {
+    fn reason_names_one_fix_per_refusal() {
         let hostname = IngressHost::parse("app.example.com").unwrap();
-        let cluster = addrs(["192.0.2.1", "192.0.2.2"]);
-        let reason = |verdict| hostname_verdict_reason(&hostname, verdict, &cluster);
+        let cluster = [ip(MACHINE), ip("192.0.2.2")];
+        let reason = |refusal| refusal_reason(&hostname, refusal, &cluster);
 
         assert_eq!(
-            reason(HostnameVerdict::DoesNotResolve).as_deref(),
-            Some(
-                "app.example.com does not resolve. Add a DNS record pointing at 192.0.2.1 or 192.0.2.2."
-            )
+            reason(Refusal::DoesNotResolve),
+            "app.example.com does not resolve. Add a DNS record pointing at 192.0.2.1 or 192.0.2.2."
         );
         assert_eq!(
-            reason(HostnameVerdict::Unreachable).as_deref(),
-            Some("app.example.com did not answer on port 80. Open port 80 to this Cluster.")
+            reason(Refusal::Unreachable),
+            "app.example.com did not answer on port 80. Open port 80 to this Cluster."
         );
         assert_eq!(
-            reason(HostnameVerdict::RedirectsToHttps).as_deref(),
-            Some(
-                "app.example.com redirects HTTP to HTTPS before reaching this Cluster. \
-                 Exempt /.well-known/acme-challenge/* from HTTPS redirects in your proxy."
-            )
+            reason(Refusal::RedirectsToHttps),
+            "app.example.com redirects HTTP to HTTPS before reaching this Cluster. \
+             Exempt /.well-known/acme-challenge/* from HTTPS redirects in your proxy."
         );
         assert_eq!(
-            reason(HostnameVerdict::ReachesElsewhere).as_deref(),
-            Some(
-                "app.example.com answers from another server. Point it at 192.0.2.1 or 192.0.2.2."
-            )
+            reason(Refusal::ReachesElsewhere),
+            "app.example.com answers from another server. Point it at 192.0.2.1 or 192.0.2.2."
         );
         assert_eq!(
-            reason(HostnameVerdict::ReachesCluster(ClusterRoute::ViaProxy)),
-            None
-        );
-        assert_eq!(
-            hostname_verdict_reason(&hostname, HostnameVerdict::ReachesElsewhere, &[]).as_deref(),
-            Some(
-                "app.example.com answers from another server. Point it at this Cluster's Machine addresses (none are published)."
-            )
+            refusal_reason(&hostname, Refusal::ReachesElsewhere, &[]),
+            "app.example.com answers from another server. Point it at this Cluster's Machine addresses (none are published)."
         );
     }
 
-    fn answered(body: &str) -> VerifyAnswer {
-        VerifyAnswer::Response {
-            success: true,
-            body: body.into(),
-        }
-    }
-
-    fn redirect(location: &str) -> VerifyAnswer {
-        VerifyAnswer::Redirect {
+    fn answered(status: u16, location: &str, body: &str) -> VerifyAnswer {
+        VerifyAnswer::Answered {
+            status,
             location: location.into(),
+            body: body.into(),
         }
     }
 
     fn ip(value: &str) -> IpAddr {
         value.parse().unwrap()
-    }
-
-    fn addrs<const N: usize>(values: [&str; N]) -> Vec<IpAddr> {
-        values
-            .into_iter()
-            .map(|value| value.parse().unwrap())
-            .collect()
     }
 }

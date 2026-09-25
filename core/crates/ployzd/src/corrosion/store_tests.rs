@@ -192,7 +192,11 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
             .record_certificate_failure(
                 &hostname,
                 "does not resolve",
-                IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::DoesNotResolve,),
+                IssuanceClock::new(
+                    1,
+                    SystemTime::UNIX_EPOCH,
+                    IssuanceFailure::Refused(ployz_core::Refusal::DoesNotResolve),
+                ),
             )
             .await
             .is_err()

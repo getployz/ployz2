@@ -7,9 +7,10 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::join_all;
 use ployz_core::{
-    HostnameVerdict, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, MachineId, PortPublication,
-    RequestedServiceSpec, VerifyAnswer, hostname_verdict, hostname_verdict_reason,
+    HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
+    RequestedServiceSpec, VerifyAnswer, hostname_verdict, refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 
@@ -53,7 +54,10 @@ fn warnings_from_targets(
     targets
         .into_iter()
         .filter_map(|(hostname, mentions_certificates)| {
-            let body = hostname_verdict_reason(hostname, verdict(hostname), cluster_addresses)?;
+            let HostnameVerdict::Refused(refusal) = verdict(hostname) else {
+                return None;
+            };
+            let body = refusal_reason(hostname, refusal, cluster_addresses);
             Some(IngressDnsWarning(if mentions_certificates {
                 format!("{body} A certificate cannot be issued until then.")
             } else {
@@ -88,48 +92,46 @@ pub async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
     }
 }
 
-// ponytail: mirrors ployzd's `verify_answers`; the two crates share only ployz-core, which has no HTTP client.
+// ponytail: mirrors ployzd's `verify_answer`; the two crates share only ployz-core, which has no HTTP client.
 async fn verify_answer(
     client: &Client,
     hostname: &IngressHost,
     address: SocketAddr,
 ) -> VerifyAnswer {
     let Ok(response) = client
-        .get(format!("http://{address}{INGRESS_VERIFY_PATH}"))
+        .get(format!("http://{address}{HOSTNAME_VERIFY_PATH}"))
         .header(reqwest::header::HOST, hostname.as_str())
         .send()
         .await
     else {
         return VerifyAnswer::NoAnswer;
     };
-    if response.status().is_redirection() {
-        let location = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|location| location.to_str().ok())
-            .unwrap_or_default();
-        return VerifyAnswer::Redirect {
-            location: location.to_owned(),
-        };
-    }
-    VerifyAnswer::Response {
-        success: response.status().is_success(),
+    let status = response.status().as_u16();
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|location| location.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    VerifyAnswer::Answered {
+        status,
+        location,
         body: response.text().await.unwrap_or_default(),
     }
 }
 
-/// Fetch `/.ployz-verify` through an Ingress Hostname and judge the answers.
-pub async fn probe_ingress_hostname(
+async fn probe_ingress_hostname(
     client: &Client,
     hostname: &IngressHost,
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
 ) -> HostnameVerdict {
-    let mut answers = Vec::new();
-    for address in resolve_ingress_addresses(hostname).await {
+    let addresses = resolve_ingress_addresses(hostname).await;
+    let answers = join_all(addresses.into_iter().map(|address| async move {
         let answer = verify_answer(client, hostname, SocketAddr::new(address, 80)).await;
-        answers.push((address, answer));
-    }
+        (address, answer)
+    }))
+    .await;
     hostname_verdict(&answers, machine_ids, cluster_addresses)
 }
 
@@ -163,7 +165,7 @@ mod tests {
     use std::num::NonZeroU16;
 
     use ployz_core::{
-        ClusterRoute, HostnameVerdict, HttpProtocol, IngressHost, PortPublication,
+        ClusterRoute, HostnameVerdict, HttpProtocol, IngressHost, PortPublication, Refusal,
         RequestedServiceSpec,
     };
 
@@ -211,10 +213,10 @@ mod tests {
 
         let warnings =
             ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
-                "app.example.com" => HostnameVerdict::RedirectsToHttps,
-                "plain.example.com" => HostnameVerdict::ReachesElsewhere,
+                "app.example.com" => HostnameVerdict::Refused(Refusal::RedirectsToHttps),
+                "plain.example.com" => HostnameVerdict::Refused(Refusal::ReachesElsewhere),
                 "proxied.example.com" => HostnameVerdict::ReachesCluster(ClusterRoute::ViaProxy),
-                "mix.example.com" => HostnameVerdict::DoesNotResolve,
+                "mix.example.com" => HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 other => panic!("unexpected {other}"),
             });
 

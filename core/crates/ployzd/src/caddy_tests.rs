@@ -8,10 +8,10 @@ use crate::{
 };
 use ployz_core::{
     AdvertisedEndpoint, CertificateHost, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
-    INGRESS_VERIFY_PATH, IngressHost, MACHINE_API_PORT, Machine, MachineId, MachineName,
-    PortPublication, ProjectName, ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceName,
-    TransportProtocol, WireGuardPublicKey, service_containers,
+    ContainerObservation, ContainerRuntimeObservation, HOSTNAME_VERIFY_PATH, HealthObservation,
+    HostBind, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, MACHINE_API_PORT, Machine, MachineId,
+    MachineName, PortPublication, ProjectName, ResolvedServiceSpec, ServiceContainer, ServiceId,
+    ServiceName, TransportProtocol, WireGuardPublicKey, service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -112,9 +112,11 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     assert!(handler.contains(&format!("respond \"{local}\" 200")));
     let site = automatic_site_block(&caddyfile, "http://example.com");
     assert!(site.contains("reverse_proxy 10.210.1.2:80 10.210.2.2:80 { import common_proxy }"));
-    // A hostname's own site still answers the verify probe, ahead of the app.
-    let verify = automatic_site_block(&site, INGRESS_VERIFY_PATH);
-    assert!(verify.contains(&format!("respond \"{local}\" 200")));
+    // Both the catch-all and a hostname's own site answer the hostname verify probe, ahead of the app.
+    for block in [&health, &site] {
+        let verify = automatic_site_block(block, HOSTNAME_VERIFY_PATH);
+        assert!(verify.contains(&format!("respond \"{local}\" 200")));
+    }
 }
 #[test]
 fn shared_renderer_projection_drives_caddy() {
@@ -400,7 +402,7 @@ fn published_wildcard_serves_covered_https_sites_over_acme_material() {
         ),
         (
             CertificateHost::parse("web.apps.example.com").unwrap(),
-            CertificateRow::issued(test_material()),
+            CertificateRow::issued(test_material(), ployz_core::ClusterRoute::Direct),
         ),
     ]);
     let projection = projection(

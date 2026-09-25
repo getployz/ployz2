@@ -495,7 +495,7 @@ impl ReplicatedStore {
         let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
-        let issued = CertificateRow::issued(material.clone()).via(route);
+        let issued = CertificateRow::issued(material.clone(), route);
         if latest == issued {
             return Ok(());
         }

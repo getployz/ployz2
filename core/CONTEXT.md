@@ -308,7 +308,7 @@ The cluster-state values that steer certificate issuance: authority directory, e
 _Avoid_: ACME config, daemon certificate constants, CA settings
 
 **Hostname Verdict**:
-What one Machine saw when it fetched `/.ployz-verify` through an Ingress Hostname, where every ingress Machine answers with its Machine id: does not resolve, unreachable, redirects to HTTPS, reaches elsewhere, or reaches this Cluster — directly, or via a proxy when the probe answered with a Cluster Machine id but no resolved address is a Machine public address. It gates certificate issuance and is observed only while issuance is due, so it can be old. It is not Caddy health, certificate readiness, or a Deploy failure.
+What one Machine saw when it reached for this Cluster through an Ingress Hostname: the hostname does not resolve, is unreachable, redirects to HTTPS, reaches elsewhere, or reaches this Cluster — directly, or via a proxy. A proxy here is a third-party front the user runs, such as a CDN; it is never the Ingress Proxy. It gates certificate issuance and can be older than the latest DNS change. It is not Caddy health, certificate readiness, or a Deploy failure.
 _Avoid_: Cluster DNS Verdict, DNS health, certificate gate
 
 **Nearest DNS Selector**:

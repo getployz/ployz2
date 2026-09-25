@@ -19,7 +19,8 @@ export type DomainCertificateEvidence = {
 const USER_FIXES = {
   does_not_resolve: "No DNS record yet.",
   unreachable: "Port 80 is closed.",
-  // TODO: link a docs page on custom domains behind a proxy once it exists.
+  // TODO: DOCS PAGE NEEDED on custom domains behind a proxy (see refusal_reason in
+  // core/crates/ployz-core/src/domain/hostname_verdict.rs); link it from this line.
   redirects_to_https:
     "Your proxy redirects to HTTPS. Exempt /.well-known/acme-challenge/* from HTTPS redirects.",
   reaches_elsewhere: "Points to another server.",
@@ -71,9 +72,12 @@ export function CertificateEvidence({
   evidence: DomainCertificateEvidence;
 }) {
   if (!evidence) return null;
+  // SAFETY: Object.hasOwn proves failureKind is a USER_FIXES key before the cast.
   const fix =
-    evidence.status === "failure" && evidence.failureKind
-      ? Object.entries(USER_FIXES).find(([kind]) => kind === evidence.failureKind)?.[1]
+    evidence.status === "failure" &&
+    evidence.failureKind &&
+    Object.hasOwn(USER_FIXES, evidence.failureKind)
+      ? USER_FIXES[evidence.failureKind as keyof typeof USER_FIXES]
       : undefined;
   if (fix) return <FieldDescription>{fix}</FieldDescription>;
   return (
