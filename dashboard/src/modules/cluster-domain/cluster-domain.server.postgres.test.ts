@@ -99,7 +99,7 @@ describe("Organization Cluster Domain", () => {
     expect((await read()).rows).toEqual([]);
     await run(reserveClusterDomain(organizationId));
     const [row] = (await read()).rows;
-    expect(row).toMatchObject({ id: organizationId, name: "acme.ployz.test", recordsSyncedAt: null, published: [], certificateNotAfter: null });
+    expect(row).toMatchObject({ id: organizationId, name: "acme.ployz.test", recordsSyncedAt: null, recordAddresses: [], certificateNotAfter: null });
     expect(JSON.stringify(row)).not.toContain("token");
   });
 

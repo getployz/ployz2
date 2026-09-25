@@ -75,13 +75,13 @@ describe("sync-cluster-domain", () => {
     events: [{ name: "cluster-domain/sync.requested", data: { organizationId: id } }],
   }).execute();
   const row = async () => (await harness.pool.query(
-    `select name, records_synced_at, lease_renewed_at, published, unreachable,
+    `select name, records_synced_at, lease_renewed_at, record_addresses, unreachable,
             encrypted_certificate_private_key, certificate_chain, certificate_not_after from organization_cluster_domain`,
   )).rows[0] as {
     name: string;
     records_synced_at: Date | null;
     lease_renewed_at: Date;
-    published: unknown;
+    record_addresses: unknown;
     unreachable: unknown;
     encrypted_certificate_private_key: Parameters<typeof encryption.decrypt>[0] | null;
     certificate_chain: string | null;
@@ -128,7 +128,7 @@ describe("sync-cluster-domain", () => {
     `);
   });
 
-  it("reserves a missing name, publishes the ingress Servers that answer, and renews the lease", async () => {
+  it("reserves a missing name and publishes the ingress Servers that answer, which renews the lease", async () => {
     frame = runtimeWatchFrameFixture({
       machines: [
         machine("a", "203.0.113.1"),
@@ -157,18 +157,17 @@ describe("sync-cluster-domain", () => {
     expect(calls()).toEqual([
       "POST /domains",
       "PUT /domains/acme.ployz.test/records",
-      "POST /domains/acme.ployz.test/lease",
       "POST /domains/acme.ployz.test/certificate",
     ]);
     expect(hostedDns.requests[1]).toMatchObject({ authorization: "Bearer token-1", body: { a: ["203.0.113.1"], aaaa: ["2001:db8::1"] } });
     expect(await row()).toMatchObject({
       records_synced_at: expect.any(Date),
-      published: [{ machineId: idOf("a"), address: "203.0.113.1" }, { machineId: idOf("b"), address: "2001:db8::1" }],
+      record_addresses: [{ machineId: idOf("a"), address: "203.0.113.1" }, { machineId: idOf("b"), address: "2001:db8::1" }],
       unreachable: [{ machineId: idOf("c"), address: "198.51.100.7" }],
     });
   });
 
-  it("writes no records without a runtime frame or with nothing reachable, and still renews the lease", async () => {
+  it("writes no records without a Cluster or with nothing reachable, and still renews the lease", async () => {
     const first = await sync();
     expect(first.result).toMatchObject({ observed: false, published: false });
 
@@ -184,7 +183,7 @@ describe("sync-cluster-domain", () => {
     ]);
     expect(await row()).toMatchObject({
       records_synced_at: null,
-      published: [],
+      record_addresses: [],
       unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }],
     });
   });
@@ -203,7 +202,6 @@ describe("sync-cluster-domain", () => {
       "PUT /domains/acme.ployz.test/records",
       "POST /domains",
       "PUT /domains/acme.ployz.test/records",
-      "POST /domains/acme.ployz.test/lease",
       // The re-reserved row starts without a certificate.
       "POST /domains/acme.ployz.test/certificate",
     ]);
@@ -211,10 +209,43 @@ describe("sync-cluster-domain", () => {
     expect(await row()).toMatchObject({ name: "acme.ployz.test", records_synced_at: expect.any(Date) });
   });
 
-  it.each([410, 401])("fails without retrying when Hosted DNS answers %i", async (status) => {
+  it("replaces a retired name with a fresh one even with no Cluster", async () => {
     await sync();
     hostedDns.requests.length = 0;
-    hostedDns.state.gone.set("acme.ployz.test", status);
+    hostedDns.state.gone.set("acme.ployz.test", 410);
+
+    const output = await sync();
+
+    expect(output.error).toBeUndefined();
+    expect(output.result).toMatchObject({ observed: false, certificateIssued: true, certificatePublished: false });
+    expect(calls()).toEqual([
+      "POST /domains/acme.ployz.test/lease",
+      "POST /domains",
+      "POST /domains/acme-x7k2.ployz.test/lease",
+      "POST /domains/acme-x7k2.ployz.test/certificate",
+    ]);
+    expect(await row()).toMatchObject({ name: "acme-x7k2.ployz.test" });
+  });
+
+  it("clears the replaced name's wildcard from a connected Cluster", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [] });
+    await sync();
+    publishedMaterial.length = 0;
+    hostedDns.state.gone.set("acme.ployz.test", 410);
+
+    expect((await sync()).error).toBeUndefined();
+
+    expect(await row()).toMatchObject({ name: "acme-x7k2.ployz.test" });
+    expect(publishedMaterial.map(({ hostname, change }) => [hostname, change.action])).toEqual([
+      ["*.acme.ployz.test", "clear"],
+      ["*.acme-x7k2.ployz.test", "set"],
+    ]);
+  });
+
+  it("fails without retrying when Hosted DNS rejects the token", async () => {
+    await sync();
+    hostedDns.requests.length = 0;
+    hostedDns.state.gone.set("acme.ployz.test", 401);
 
     const output = await sync();
 
@@ -267,11 +298,11 @@ describe("sync-cluster-domain", () => {
     expect(calls().filter((call) => call.endsWith("/certificate"))).toHaveLength(3);
   });
 
-  it("the hourly cron requests a sync for each founded, unremoved pairing", async () => {
+  it("the hourly cron requests a sync for every Organization with a Cluster Domain, paired or not", async () => {
+    await sync(organizationId);
     await harness.pool.query(`
       insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id, founder_machine_id)
-      values ('${organizationId}', '{}', null, '${idOf("a")}', '${idOf("a")}'),
-             ('${otherOrganizationId}', '{}', 'pending-founder-key', '${idOf("b")}', null);
+      values ('${otherOrganizationId}', '{}', null, '${idOf("b")}', '${idOf("b")}');
     `);
     const fn = createScheduleClusterDomainSync(new Inngest({ id: "test" }), runEffect);
     expect(fn.opts.triggers).toEqual([{ cron: "TZ=UTC 0 * * * *" }]);

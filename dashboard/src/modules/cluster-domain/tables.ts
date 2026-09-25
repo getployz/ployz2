@@ -5,8 +5,8 @@ import { organization } from "#/modules/organization/tables";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
-/** An ingress Server the last records PUT pointed the apex at. */
-export type ClusterDomainPublishedAddress = { machineId: MachineId; address: string };
+/** An ingress Server's Machine id and public address. */
+export type IngressServerAddress = { machineId: MachineId; address: string };
 
 /**
  * The Organization's Cluster Domain, granted by Hosted DNS. Owned by the Organization, not a pairing:
@@ -25,9 +25,10 @@ export const organizationClusterDomain = pgTable(
     leaseRenewedAt: timestamptz("lease_renewed_at").notNull(),
     /** Null until the first successful records PUT. */
     recordsSyncedAt: timestamptz("records_synced_at"),
-    published: jsonb("published").notNull().default([]).$type<ClusterDomainPublishedAddress[]>(),
+    /** The ingress Servers the last records PUT pointed the apex at. */
+    recordAddresses: jsonb("record_addresses").notNull().default([]).$type<IngressServerAddress[]>(),
     /** Ingress Servers with a public IP that the last sync could not reach on port 80. */
-    unreachable: jsonb("unreachable").notNull().default([]).$type<ClusterDomainPublishedAddress[]>(),
+    unreachable: jsonb("unreachable").notNull().default([]).$type<IngressServerAddress[]>(),
     /** The wildcard certificate for `*.name`: all three set together, or none. */
     encryptedCertificatePrivateKey: jsonb("encrypted_certificate_private_key").$type<EncryptedSecretValue>(),
     certificateChain: text("certificate_chain"),
@@ -36,7 +37,7 @@ export const organizationClusterDomain = pgTable(
     updatedAt,
   },
   (table) => [
-    check("organization_cluster_domain_published_check", sql`jsonb_typeof(${table.published}) = 'array'`),
+    check("organization_cluster_domain_record_addresses_check", sql`jsonb_typeof(${table.recordAddresses}) = 'array'`),
     check(
       "organization_cluster_domain_certificate_check",
       sql`num_nulls(${table.encryptedCertificatePrivateKey}, ${table.certificateChain}, ${table.certificateNotAfter}) in (0, 3)`,

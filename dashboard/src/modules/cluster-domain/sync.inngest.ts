@@ -2,7 +2,7 @@ import { Effect, Option, Schema } from "effect";
 import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import {
   ensureClusterDomainCertificate,
-  listPairedOrganizationIds,
+  listClusterDomainOrganizationIds,
   probeIngressServers,
   publishClusterDomainCertificate,
   publishClusterDomainRecords,
@@ -22,8 +22,9 @@ const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Sc
 
 /**
  * Keeps the Organization's Cluster Domain correct: reserve if missing → probe ingress Servers →
- * full-set records PUT when a frame was read and something answered → renew the lease →
- * replace the wildcard certificate when missing or near expiry → republish it to the Cluster.
+ * full-set records PUT when a frame was read and something answered (which renews the lease) →
+ * otherwise renew the lease → replace the wildcard certificate when missing or near expiry →
+ * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
  */
 export async function executeSyncClusterDomain(
   { event, step }: { event: { data: unknown }; step: StepTools },
@@ -41,7 +42,7 @@ export async function executeSyncClusterDomain(
   const published = probe === null
     ? false
     : await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, probe)));
-  await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
+  if (!published) await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
   // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
   const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
   const certificatePublished = await step.run("publish-certificate", () => runEffect(publishClusterDomainCertificate(organizationId)));
@@ -49,7 +50,7 @@ export async function executeSyncClusterDomain(
 }
 
 export async function executeScheduleClusterDomainSync({ step }: { step: StepTools }, runEffect: EffectRunner) {
-  const organizationIds = await step.run("list-paired-organization-ids", () => runEffect(listPairedOrganizationIds()));
+  const organizationIds = await step.run("list-cluster-domain-organization-ids", () => runEffect(listClusterDomainOrganizationIds()));
   if (organizationIds.length > 0) {
     await step.sendEvent(
       "request-cluster-domain-syncs",

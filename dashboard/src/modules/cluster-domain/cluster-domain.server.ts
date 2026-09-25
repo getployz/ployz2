@@ -13,6 +13,8 @@ import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
+const organizationNotFound = () => new NotFound({ message: "The organization was not found." });
+
 /** The Organization's Cluster Domain row, or null when no name is reserved yet. */
 export const loadClusterDomain = Effect.fn("ClusterDomain.load")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
@@ -32,7 +34,7 @@ export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function*
   const { drizzle } = yield* Database;
   const [owner] = yield* drizzle.select({ slug: schemaOrganization.slug }).from(schemaOrganization)
     .where(eq(schemaOrganization.id, organizationId)).limit(1);
-  if (!owner) return yield* new NotFound({ message: "The organization was not found." });
+  if (!owner) return yield* organizationNotFound();
   const { hostedDnsUrl, hostedDnsMintKey } = (yield* AppConfig).ployz;
   const endpoint = hostedDnsUrl.href;
   const granted = yield* reserveHostedDomain({
@@ -52,9 +54,7 @@ export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function*
   if (inserted) return inserted;
   // A concurrent reserve won; hand our name back rather than let it wait for the reaper.
   yield* releaseHostedDomain({ endpoint, name: granted.name, token: granted.token }).pipe(Effect.ignore);
-  const winner = yield* loadClusterDomain(organizationId);
-  if (!winner) return yield* new NotFound({ message: "The organization was not found." });
-  return winner;
+  return (yield* loadClusterDomain(organizationId)) ?? (yield* organizationNotFound());
 });
 
 /** Retires the name at the endpoint that granted it. Try-once: a failure is logged, and the lease reaps the name. */

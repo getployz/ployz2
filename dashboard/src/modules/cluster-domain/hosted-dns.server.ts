@@ -14,6 +14,13 @@ export class HostedDnsError extends Data.TaggedError("HostedDnsError")<{
   readonly cause?: unknown;
 }> {}
 
+/** One reserved name and where and how to call Hosted DNS for it. */
+export type HostedDomainTarget = {
+  readonly endpoint: string;
+  readonly name: string;
+  readonly token: string;
+};
+
 const REQUEST_TIMEOUT_MS = 10_000;
 /** Issuance waits on Route 53 sync and CA validation: up to about ten minutes on the Hosted DNS side. */
 const CERTIFICATE_TIMEOUT_MS = 15 * 60_000;
@@ -60,19 +67,12 @@ export const reserveHostedDomain = Effect.fn("HostedDns.reserve")(function* (inp
 });
 
 /** Retires the name forever. */
-export const releaseHostedDomain = Effect.fn("HostedDns.release")(function* (input: {
-  readonly endpoint: string;
-  readonly name: string;
-  readonly token: string;
-}) {
+export const releaseHostedDomain = Effect.fn("HostedDns.release")(function* (input: HostedDomainTarget) {
   yield* request("release", "DELETE", domainsUrl(input.endpoint, input.name), { token: input.token });
 });
 
 /** Replaces the apex A/AAAA set. Hosted DNS refuses an empty set, so callers skip the call instead. */
-export const putHostedDomainRecords = Effect.fn("HostedDns.putRecords")(function* (input: {
-  readonly endpoint: string;
-  readonly name: string;
-  readonly token: string;
+export const putHostedDomainRecords = Effect.fn("HostedDns.putRecords")(function* (input: HostedDomainTarget & {
   readonly a: readonly string[];
   readonly aaaa: readonly string[];
 }) {
@@ -82,24 +82,15 @@ export const putHostedDomainRecords = Effect.fn("HostedDns.putRecords")(function
   });
 });
 
-/** Extends the lease by seven days; a name whose lease runs out is retired. */
-export const renewHostedDomainLease = Effect.fn("HostedDns.renewLease")(function* (input: {
-  readonly endpoint: string;
-  readonly name: string;
-  readonly token: string;
-}) {
+/** Extends the lease by seven days; a name whose lease runs out is retired. Any other bearer call renews it too. */
+export const renewHostedDomainLease = Effect.fn("HostedDns.renewLease")(function* (input: HostedDomainTarget) {
   yield* request("renew lease", "POST", domainsUrl(input.endpoint, input.name, "lease"), { token: input.token });
 });
 
 const IssuedCertificate = Schema.Struct({ certificate_chain_pem: Schema.NonEmptyString });
 
 /** Obtains the PEM chain for a CSR naming exactly `name` and `*.name`. Synchronous on the Hosted DNS side; can take minutes. */
-export const requestHostedDomainCertificate = Effect.fn("HostedDns.requestCertificate")(function* (input: {
-  readonly endpoint: string;
-  readonly name: string;
-  readonly token: string;
-  readonly csr: string;
-}) {
+export const requestHostedDomainCertificate = Effect.fn("HostedDns.requestCertificate")(function* (input: HostedDomainTarget & { readonly csr: string }) {
   const body = yield* request("request certificate", "POST", domainsUrl(input.endpoint, input.name, "certificate"), {
     token: input.token,
     body: { csr: input.csr },

@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "8303d493-ddd8-4925-8e97-9067387c2bb1",
+  "id": "14fe1271-6fca-4a65-8f27-a7c199e4869c",
   "prevIds": [
-    "5d922c32-9aee-4bb3-ba7b-0fa8644c67de"
+    "8e727755-ea1f-48ce-b6fc-8a0efffb508d"
   ],
   "ddl": [
     {
@@ -5895,7 +5895,7 @@
       "default": "'[]'",
       "generated": null,
       "identity": null,
-      "name": "published",
+      "name": "record_addresses",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_cluster_domain"
@@ -10575,8 +10575,8 @@
       "table": "organization_billing_state"
     },
     {
-      "value": "jsonb_typeof(\"published\") = 'array'",
-      "name": "organization_cluster_domain_published_check",
+      "value": "jsonb_typeof(\"record_addresses\") = 'array'",
+      "name": "organization_cluster_domain_record_addresses_check",
       "entityType": "checks",
       "schema": "public",
       "table": "organization_cluster_domain"

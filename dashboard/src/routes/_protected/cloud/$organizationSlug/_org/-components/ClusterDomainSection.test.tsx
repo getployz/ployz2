@@ -16,7 +16,7 @@ describe("ClusterDomainSection", () => {
         domain={{
           name: "acme.ployz.app",
           recordsSyncedAt: new Date(Date.now() - 5 * 60_000),
-          published: [{ machineId: "a", address: "203.0.113.1" }],
+          recordAddresses: [{ machineId: "a", address: "203.0.113.1" }],
           unreachable: [{ machineId: "b", address: "198.51.100.7" }],
           certificateNotAfter: new Date(Date.now() + 60 * 86_400_000),
         }}
@@ -35,7 +35,7 @@ describe("ClusterDomainSection", () => {
   it("says when nothing is published yet", () => {
     render(
       <ClusterDomainSection
-        domain={{ name: "acme.ployz.app", recordsSyncedAt: null, published: [], unreachable: [], certificateNotAfter: null }}
+        domain={{ name: "acme.ployz.app", recordsSyncedAt: null, recordAddresses: [], unreachable: [], certificateNotAfter: null }}
         onPublish={vi.fn()}
       />,
     );
