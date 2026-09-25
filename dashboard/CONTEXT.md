@@ -48,6 +48,20 @@ _Avoid_: Server settings draft, machine config, cluster-wide roles
 The explicit, user-chosen kind of a Cloud Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local; the kind is chosen at creation and shown with its trade-offs, never inferred from whether a size was typed.
 _Avoid_: Storage class, volume type dropdown, managed volume toggle
 
+**Dedicated Volume**:
+A Volume mounted by exactly one Service, presented as part of that Service rather than as its own element. Usage, not storage: a Dedicated Volume may be of either Volume Kind.
+_Avoid_: Attached volume (attachment is the mount relationship, whatever the count)
+
+**Shared Volume**:
+A Volume mounted by two or more Services, presented as its own element linked to each of them.
+
+**Unmounted Volume**:
+A Volume no Service mounts, presented as its own element with no Links.
+
+**Link**:
+A variable reference or a Volume mount between two Environment Nodes, read as one node using another. Links arrange the canvas; they do not order deployment.
+_Avoid_: Dependency (deployment ordering, references only), edge, connection
+
 **Cloud Bootstrap Token**:
 The single-redemption bearer secret embedded in a copied Cloud Bootstrap Invite command. The token is not the org, cluster, machine identity, join token, or callback credential.
 _Avoid_: Bootstrap token, server bootstrap token, callback token
@@ -125,7 +139,7 @@ The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into run
 _Avoid_: Prepared snapshot, build workflow, Core Deploy
 
 **Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity, Node Introduction, and canvas position when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Cluster Domain**:
@@ -185,7 +199,7 @@ One command restoring a field, node, or the whole Environment to the Environment
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **Cloud Deployment Stage**:
-The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Source acquisition, builder selection, building, and image delivery are progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
+The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start at admission and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
 _Avoid_: Phase, prepared, build status
 
 **Deploy Preview**:
@@ -193,7 +207,7 @@ The read-only Core projection Cloud persists after preparation and image deliver
 _Avoid_: Deploy Plan, reservation, dry run
 
 **Build Receipt**:
-Private evidence retained from a completed image preparation so a later Cloud Deployment Attempt can reuse matching build output. Core rechecks content availability and required platforms; receipt retention does not advance Applied State.
+Private evidence retained from a completed Image Build so deployment in the same or a later Cloud Deployment Attempt can reuse matching build output. Core rechecks content availability and required platforms; receipt retention does not advance Applied State.
 _Avoid_: Applied image, deployment success
 
 **Build Platform Requirement**:
@@ -206,8 +220,20 @@ The user-facing output for a Cloud Deployment Attempt: its lifecycle events toge
 _Avoid_: Deploy Progress alone, Build Logs
 
 **Image Build**:
-The build of one Service image within a Cloud Deployment Attempt, with its own Build Steps, output, and outcome. An attempt's Image Builds share one builder Server and run one at a time; shared steps show as cached in later Image Builds.
+The build of one Service image within a Cloud Deployment Attempt, with its own Build Steps, output, and outcome. An attempt's Image Builds may run on different Builders at the same time; when one fails, the others still finish and leave Build Receipts before the attempt fails.
 _Avoid_: Build batch, combined build log, Bake run
+
+**Builder**:
+A place that runs Image Builds: the Organization Cluster, which chooses one of its Servers, or GitHub Actions in the Service's own repository.
+_Avoid_: Build host, build runner, builder Server; Builder for Dockerfile or Railpack
+
+**Build Order**:
+The Organization's ordered list of Builders that an Image Build tries, moving to the next only when the current one does not start the build in time. The last Builder in the order waits instead. A Service may replace it with one Builder. A build that has started never moves.
+_Avoid_: Build pool, build preference, fallback builder
+
+**Build Method**:
+How a Service's image is described for building: a Dockerfile or Railpack.
+_Avoid_: Builder, builder type
 
 **Build Step**:
 One unit of an Image Build as the Engine reports it: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload or image delivery. A Build Step is keyed stably within its attempt, changes state until it completes, and owns the output attributed to it. Build Steps are retained with the attempt, separately from lifecycle history.
