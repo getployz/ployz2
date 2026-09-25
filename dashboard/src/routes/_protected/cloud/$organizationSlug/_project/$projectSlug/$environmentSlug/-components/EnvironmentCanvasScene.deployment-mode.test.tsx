@@ -201,7 +201,7 @@ describe("the deploy bar", () => {
       environment_deployment: [deployment(failedId, 3, null, "failed"), deployment(runningId, 4, null, "deploying")],
       environment_node_config_snapshot: [snapshot(runningId, api, "api"), snapshot(runningId, worker, "worker")],
     } });
-    await click(bar().getByRole("link", { name: /Deploying 0\/1/ }));
+    await click(bar().getByRole("link", { name: /Deploying 0\/3/ }));
     expect(router.state.location.search).toEqual({ deployment: runningId });
     expect(await bar().findByRole("button", { name: "Cancel" })).toBeTruthy();
     expect(bar().queryByRole("button", { name: "Retry" })).toBeNull();
