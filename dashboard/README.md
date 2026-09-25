@@ -102,9 +102,9 @@ One-time setup:
 - Disable scheduled image auto updates: CI runs `railway redeploy --from-source`
   for both services after the image push.
 
-Each release tag also attaches `ployz-cloud-compose.yml` (pinned to that tag) and
-`ployz-cloud.env.example` to the draft GitHub release. Publishing the release
-pushes `ghcr.io/getployz/ployz-cloud:<tag>`.
+Each release tag also publishes `ghcr.io/getployz/ployz-cloud:<tag>` from the
+same build, and attaches `ployz-cloud-compose.yml` (pinned to that tag) and
+`ployz-cloud.env.example` to the GitHub release.
 
 ## Self-host
 

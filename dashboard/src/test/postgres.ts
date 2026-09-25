@@ -163,6 +163,10 @@ export async function startPostgresTestHarness() {
         Layer.provide(Reactivity.layer),
       ),
     );
+    // Finalizers run in reverse: the runtime closes before the pool.
+    await Effect.runPromise(
+      Scope.addFinalizer(scope, Effect.promise(() => databaseRuntime.dispose())),
+    );
     const database = await databaseRuntime.runPromise(Database);
     return {
       databaseUrl,
@@ -188,10 +192,7 @@ export async function startPostgresTestHarness() {
           ),
         );
       },
-      async stop() {
-        await databaseRuntime.dispose();
-        await closeScope();
-      },
+      stop: closeScope,
     };
   } catch (error) {
     await closeScope();

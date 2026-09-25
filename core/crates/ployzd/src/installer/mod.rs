@@ -22,7 +22,7 @@ use self::{
         create_user_and_directories, install_docker, install_prerequisites, install_systemd,
         verify_running_daemon, verify_software_prerequisites,
     },
-    release::{ReleaseSource, install_binaries, installed_release, resolve_release_from},
+    release::{ReleaseSource, install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
 };
 
@@ -193,20 +193,10 @@ async fn install_at(
     upgrade::reconcile_for_install(&admission, &paths.data_dir)
         .await
         .map_err(map_upgrade_reconciliation)?;
-    install_locked_from(source, request, paths, lock, |_| Ok(())).await
+    install_locked(source, request, paths, lock, |_| Ok(())).await
 }
 
-/// Install from the published releases while holding the installation lock.
 async fn install_locked(
-    request: InstallRequest,
-    paths: InstallPaths,
-    lock: mutation::InstallationGuard,
-    progress: impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
-) -> Result<InstallOutcome, Error> {
-    install_locked_from(&ReleaseSource::Published, request, paths, lock, progress).await
-}
-
-async fn install_locked_from(
     source: &ReleaseSource,
     request: InstallRequest,
     paths: InstallPaths,
@@ -216,7 +206,7 @@ async fn install_locked_from(
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
     verify_system(installation_only)?;
     let installed = installed_release(&paths.daemon()).await?;
-    let target = resolve_release_from(&request.release, source, installed.as_ref()).await?;
+    let target = resolve_release(&request.release, source, installed.as_ref()).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
     match &request.mode {

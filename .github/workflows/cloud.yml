@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       release-tag:
-        description: Build this release tag; a published release also pushes ghcr.io/getployz/ployz-cloud:<tag>
+        description: Build this release tag and publish ghcr.io/getployz/ployz-cloud:<tag>
         type: string
         default: ''
     secrets:
@@ -151,8 +151,7 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: bash scripts/publish-cloud-image.sh
       - name: Publish release image
-        # The draft run only verifies; the image goes public with the Publish click.
-        if: inputs.release-tag != '' && github.event_name == 'release'
+        if: inputs.release-tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/getployz/ployz-cloud:${{ inputs.release-tag }}

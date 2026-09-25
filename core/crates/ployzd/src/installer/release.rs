@@ -80,18 +80,10 @@ impl ReleaseSource {
     }
 }
 
-/// Resolve `request` against the published releases; see [`resolve_release_from`].
-pub(super) async fn resolve_release(
-    request: &MachineRelease,
-    installed: Option<&MachineVersion>,
-) -> Result<MachineVersion, Error> {
-    resolve_release_from(request, &ReleaseSource::Published, installed).await
-}
-
 /// Resolve `request` to one exact target. A channel stays on this daemon's release line, both for
 /// its pointer and for the `installed` daemon, and never selects a release older than `installed`;
 /// only an exact version crosses a line or moves a Machine backwards.
-pub(super) async fn resolve_release_from(
+pub(super) async fn resolve_release(
     request: &MachineRelease,
     source: &ReleaseSource,
     installed: Option<&MachineVersion>,
@@ -446,7 +438,7 @@ mod tests {
         fs::write(line.join("beta"), format!("v{}\n", version("3.0-beta.2"))).unwrap();
         let resolve = async |request: &MachineRelease, installed: Option<&str>| {
             let installed = installed.map(|version| MachineVersion::parse(version).unwrap());
-            resolve_release_from(request, &source, installed.as_ref())
+            resolve_release(request, &source, installed.as_ref())
                 .await
                 .map(|version| version.to_string())
         };
