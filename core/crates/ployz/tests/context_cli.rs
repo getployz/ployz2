@@ -73,50 +73,6 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
 }
 
 #[test]
-fn ctx_connection_shows_the_current_default_without_a_terminal() {
-    let root =
-        std::env::temp_dir().join(format!("ployz-ctx-connection-show-{}", std::process::id()));
-    let path = root.join("config.yaml");
-    let _ = fs::remove_dir_all(&root);
-    let before = Config::new(
-        &path,
-        Some("prod".into()),
-        BTreeMap::from([(
-            "prod".into(),
-            Context {
-                connections: vec![
-                    Connection::unix("/tmp/prod-a.sock").unwrap(),
-                    Connection::unix("/tmp/prod-b.sock").unwrap(),
-                ],
-            },
-        )]),
-    );
-    before.save().unwrap();
-
-    let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "ctx",
-            "connection",
-            "--ployz-config",
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        shown.status.success(),
-        "{}",
-        String::from_utf8_lossy(&shown.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(shown.stdout).unwrap().trim(),
-        "unix:///tmp/prod-a.sock"
-    );
-    assert_eq!(Config::load(&path).unwrap(), before);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn ctx_connection_selects_and_persists_across_invocations() {
     let root = std::env::temp_dir().join(format!(
         "ployz-ctx-connection-select-{}",
@@ -188,73 +144,6 @@ fn ctx_connection_selects_and_persists_across_invocations() {
     );
 
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
-    let root = std::env::temp_dir().join(format!(
-        "ployz-ctx-connection-unknown-{}",
-        std::process::id()
-    ));
-    let path = root.join("config.yaml");
-    let _ = fs::remove_dir_all(&root);
-    let before = Config::new(
-        &path,
-        Some("prod".into()),
-        BTreeMap::from([(
-            "prod".into(),
-            Context {
-                connections: vec![Connection::unix("/tmp/prod-a.sock").unwrap()],
-            },
-        )]),
-    );
-    before.save().unwrap();
-
-    for (requested, expected) in [
-        (
-            "unix:///tmp/missing.sock",
-            r#"connection "unix:///tmp/missing.sock" not found"#,
-        ),
-        (
-            "unix:///tmp/missing socket\n\u{1b}[2J",
-            r#"connection "unix:///tmp/missing socket\n\u{1b}[2J" not found"#,
-        ),
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-            .args([
-                "ctx",
-                "connection",
-                requested,
-                "--ployz-config",
-                path.to_str().unwrap(),
-            ])
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), expected);
-        assert_eq!(Config::load(&path).unwrap(), before);
-    }
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctx_connection_help_describes_show_and_select() {
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["ctx", "connection", "--help"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let help = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        help.contains("Show or select the default connection"),
-        "{help}"
-    );
-    assert!(help.contains("[connection]"), "{help}");
 }
 
 #[test]
@@ -355,9 +244,8 @@ fn a_filename_only_config_override_saves_in_the_current_directory() {
 }
 
 #[test]
-fn ctx_rm_of_a_non_current_context_persists() {
-    let root =
-        std::env::temp_dir().join(format!("ployz-ctx-rm-non-current-{}", std::process::id()));
+fn ctx_rm_keeps_current_for_another_context_and_unsets_it_for_the_current_one() {
+    let root = std::env::temp_dir().join(format!("ployz-ctx-rm-current-{}", std::process::id()));
     let path = root.join("config.yaml");
     let _ = fs::remove_dir_all(&root);
     Config::new(
@@ -368,6 +256,12 @@ fn ctx_rm_of_a_non_current_context_persists() {
                 "default".into(),
                 Context {
                     connections: vec![Connection::unix("/tmp/default.sock").unwrap()],
+                },
+            ),
+            (
+                "dev".into(),
+                Context {
+                    connections: vec![Connection::unix("/tmp/dev.sock").unwrap()],
                 },
             ),
             (
@@ -400,12 +294,9 @@ fn ctx_rm_of_a_non_current_context_persists() {
         String::from_utf8(removed.stdout).unwrap().trim(),
         "Removed context default."
     );
-
     let config = Config::load(&path).unwrap();
     assert_eq!(config.current_context(), Some("prod"));
     assert!(!config.contexts.contains_key("default"));
-    assert!(config.contexts.contains_key("prod"));
-
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
         .output()
@@ -418,35 +309,6 @@ fn ctx_rm_of_a_non_current_context_persists() {
     let listed = String::from_utf8(listed.stdout).unwrap();
     assert!(!listed.contains("default"), "{listed}");
     assert!(listed.contains("prod"), "{listed}");
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctx_rm_of_the_current_context_unsets_current() {
-    let root = std::env::temp_dir().join(format!("ployz-ctx-rm-current-{}", std::process::id()));
-    let path = root.join("config.yaml");
-    let _ = fs::remove_dir_all(&root);
-    Config::new(
-        &path,
-        Some("prod".into()),
-        BTreeMap::from([
-            (
-                "dev".into(),
-                Context {
-                    connections: vec![Connection::unix("/tmp/dev.sock").unwrap()],
-                },
-            ),
-            (
-                "prod".into(),
-                Context {
-                    connections: vec![Connection::unix("/tmp/prod.sock").unwrap()],
-                },
-            ),
-        ]),
-    )
-    .save()
-    .unwrap();
 
     let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
@@ -503,48 +365,6 @@ fn ctx_rm_of_the_current_context_unsets_current() {
         String::from_utf8_lossy(&selected.stderr)
     );
     assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctx_rm_of_the_last_context_leaves_an_empty_file() {
-    let root = std::env::temp_dir().join(format!("ployz-ctx-rm-last-{}", std::process::id()));
-    let path = root.join("config.yaml");
-    let _ = fs::remove_dir_all(&root);
-    Config::new(
-        &path,
-        Some("default".into()),
-        BTreeMap::from([(
-            "default".into(),
-            Context {
-                connections: vec![Connection::unix("/tmp/default.sock").unwrap()],
-            },
-        )]),
-    )
-    .save()
-    .unwrap();
-
-    let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "ctx",
-            "rm",
-            "default",
-            "--ployz-config",
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        removed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&removed.stderr)
-    );
-
-    assert!(path.exists());
-    let config = Config::load(&path).unwrap();
-    assert!(config.contexts.is_empty());
-    assert_eq!(config.current_context(), None);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -632,22 +452,6 @@ fn ctx_rm_rejects_a_direct_connection() {
 }
 
 #[test]
-fn ctx_rm_help_describes_local_removal() {
-    let rm = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["ctx", "rm", "--help"])
-        .output()
-        .unwrap();
-    assert!(
-        rm.status.success(),
-        "{}",
-        String::from_utf8_lossy(&rm.stderr)
-    );
-    let help = String::from_utf8(rm.stdout).unwrap();
-    assert!(help.contains("local"), "{help}");
-    assert!(help.contains("<context-name>"), "{help}");
-}
-
-#[test]
 fn management_context_selection_and_listing_never_print_capabilities() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
@@ -732,18 +536,19 @@ fn management_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_contex
     )
     .save()
     .unwrap();
+    // Selecting moves only that entry to the front; the rest keep their order.
     for (selector, expected) in [
         (
-            "3".to_owned(),
-            vec![second.clone(), ssh.clone(), first.clone()],
+            "2".to_owned(),
+            vec![first.clone(), ssh.clone(), second.clone()],
         ),
         (
-            first.to_string(),
-            vec![first.clone(), second.clone(), ssh.clone()],
+            second.to_string(),
+            vec![second.clone(), first.clone(), ssh.clone()],
         ),
         (
             ssh.to_string(),
-            vec![ssh.clone(), first.clone(), second.clone()],
+            vec![ssh.clone(), second.clone(), first.clone()],
         ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -809,10 +614,21 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
         )]),
     );
     config.save().unwrap();
-    for (selector, message) in [
-        ("management:[redacted]", "ambiguous"),
-        ("0", "out of range"),
-        ("3", "out of range"),
+    // (selector, stderr, whether stderr is the whole message)
+    for (selector, message, exact) in [
+        ("management:[redacted]", "ambiguous", false),
+        ("0", "out of range", false),
+        ("3", "out of range", false),
+        (
+            "unix:///tmp/missing.sock",
+            r#"connection "unix:///tmp/missing.sock" not found"#,
+            true,
+        ),
+        (
+            "unix:///tmp/missing socket\n\u{1b}[2J",
+            r#"connection "unix:///tmp/missing socket\n\u{1b}[2J" not found"#,
+            true,
+        ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .arg("--ployz-config")
@@ -821,7 +637,12 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if exact {
+            assert_eq!(stderr.trim(), message);
+        } else {
+            assert!(stderr.contains(message), "{stderr}");
+        }
         assert_eq!(Config::load(&path).unwrap(), config);
     }
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))

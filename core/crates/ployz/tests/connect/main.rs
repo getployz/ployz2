@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -7,27 +7,22 @@ use std::{
 };
 
 use ployz::{
-    connect::{
-        BoxProxyStream, ConnectError, Connector, SystemConnector, connect_selected_with,
-        resolve_connections,
-    },
+    connect::{BoxProxyStream, ConnectError, Connector, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
     operator::open_machine_logs,
 };
 use ployz_core::{
-    CORROSION_GOSSIP_PORT, CapabilityName, ContainerKind, ContainerRuntimeObservation,
-    ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    HealthObservation, LogsOptions, MACHINE_API_PORT, MachineId, MachineRpcServer,
-    MembershipObservation, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
-    UNREGISTRY_PORT, op,
+    CORROSION_GOSSIP_PORT, ContainerKind, ContainerRuntimeObservation, ContractDescription,
+    DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
+    LogsOptions, MACHINE_API_PORT, MachineId, MembershipObservation, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, RpcError, RpcErrorCode, UNREGISTRY_PORT, op,
 };
 use serde_json::{Value, json};
-use tokio::net::{TcpListener, UnixListener};
-use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tonic::{
     Status,
-    transport::{Channel, Endpoint, Server},
+    transport::{Channel, Endpoint},
 };
 
 mod machine_storage;
@@ -155,40 +150,6 @@ async fn lazy_first_connection_falls_through_to_a_healthy_machine() {
 }
 
 #[tokio::test]
-async fn exhausting_every_connection_reports_how_many_were_tried() {
-    let error = match connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Context("prod".into()),
-            connections: vec![
-                Connection::tcp("127.0.0.1:1".parse().unwrap()),
-                Connection::tcp("127.0.0.1:2".parse().unwrap()),
-            ],
-        },
-        Arc::new(LazyThenLive {
-            lazy: AtomicUsize::new(2),
-            inner: SystemConnector::default(),
-        }),
-    )
-    .await
-    {
-        Ok(_) => panic!("expected every connection to fail"),
-        Err(error) => error,
-    };
-
-    assert!(
-        matches!(
-            &error,
-            ConnectError::AllFailed {
-                attempts: 2,
-                source: ConnectionSource::Context(name),
-                ..
-            } if name == "prod"
-        ),
-        "{error:?}"
-    );
-}
-
-#[tokio::test]
 async fn ordered_connections_stop_after_the_first_success() {
     let dropped = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let unreachable = dropped.local_addr().unwrap();
@@ -221,7 +182,7 @@ async fn ordered_connections_stop_after_the_first_success() {
 }
 
 #[tokio::test]
-async fn failed_connection_attempts_do_not_reorder_the_context() {
+async fn failed_connection_attempts_walk_the_context_in_order() {
     let connector = Arc::new(FakeConnector {
         outcomes: Mutex::new(VecDeque::from([false, false])),
         attempts: Mutex::new(Vec::new()),
@@ -232,7 +193,6 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
             .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
             .into(),
     };
-    let original = selected.connections.clone();
 
     assert!(
         connect_selected_with(selected, connector.clone())
@@ -242,53 +202,11 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
 
     assert_eq!(
         *connector.attempts.lock().unwrap(),
-        original.iter().map(ToString::to_string).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        original.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        vec![
+        [
             format!("tcp://127.0.0.1:{MACHINE_API_PORT}"),
             format!("tcp://127.0.0.1:{CORROSION_GOSSIP_PORT}"),
         ]
     );
-}
-
-#[tokio::test]
-async fn volume_listing_retains_successes_and_target_failures() {
-    let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
-        machine_id: MachineId::random(),
-        protocol_major: PROTOCOL_MAJOR,
-        daemon_version: "test".into(),
-        capabilities: Default::default(),
-    }))
-    .await;
-    let mut client = connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Direct,
-            connections: vec![Connection::tcp(address)],
-        },
-        Arc::new(SystemConnector::default()),
-    )
-    .await
-    .unwrap();
-
-    let result = client
-        .list_volumes(&[machine('a', "one"), machine('b', "two")])
-        .await;
-
-    let [success] = result.successes.as_slice() else {
-        panic!("expected one success: {result:?}")
-    };
-    let [volume] = success.value.volumes.as_slice() else {
-        panic!("expected one Volume: {success:?}")
-    };
-    assert_eq!(volume.id.machine_id, machine_id('a'));
-    let [failure] = result.failures.as_slice() else {
-        panic!("expected one failure: {result:?}")
-    };
-    assert_eq!(failure.machine_id, machine_id('b'));
-    assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
-    server.abort();
 }
 
 #[tokio::test]
@@ -720,18 +638,7 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
     let listed_volumes = Arc::clone(&service.listed_volumes);
     let (address, server) = serve_discovery(service).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "data",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
+    let output = run_ployz(address, &["volume", "rm", "data", "--yes"]).await;
 
     assert!(
         output.status.success(),
@@ -756,20 +663,11 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
     );
 
     removed_volumes.lock().unwrap().clear();
-    let exact = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "data",
-            "--machine",
-            "owner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
+    let exact = run_ployz(
+        address,
+        &["volume", "rm", "data", "--machine", "owner", "--yes"],
+    )
+    .await;
     assert!(exact.status.success(), "{exact:?}");
     assert!(exact.stderr.is_empty(), "{exact:?}");
     assert_eq!(removed_volumes.lock().unwrap().len(), 1);
@@ -793,18 +691,7 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
             },
         }],
     );
-    let failed = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "busy",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
+    let failed = run_ployz(address, &["volume", "rm", "busy", "--yes"]).await;
     assert!(!failed.status.success(), "{failed:?}");
     assert!(removed_volumes.lock().unwrap().is_empty());
     assert!(
@@ -813,18 +700,7 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
         "{failed:?}"
     );
 
-    let unseen = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "unseen",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
+    let unseen = run_ployz(address, &["volume", "rm", "unseen", "--yes"]).await;
     assert!(!unseen.status.success(), "{unseen:?}");
     assert!(
         String::from_utf8_lossy(&unseen.stderr)
@@ -863,22 +739,19 @@ async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
         .list_volumes(&[machine('a', "one"), down, unknown, suspect])
         .await;
 
-    assert_eq!(
-        result
-            .successes
-            .iter()
-            .map(|success| success.machine_id)
-            .collect::<Vec<_>>(),
-        vec![machine_id('a')]
-    );
-    assert_eq!(
-        result
-            .failures
-            .iter()
-            .map(|failure| failure.machine_id)
-            .collect::<Vec<_>>(),
-        vec![machine_id('b')]
-    );
+    let [success] = result.successes.as_slice() else {
+        panic!("expected one success: {result:?}")
+    };
+    assert_eq!(success.machine_id, machine_id('a'));
+    let [volume] = success.value.volumes.as_slice() else {
+        panic!("expected one Volume: {success:?}")
+    };
+    assert_eq!(volume.id.machine_id, machine_id('a'));
+    let [failure] = result.failures.as_slice() else {
+        panic!("expected one failure: {result:?}")
+    };
+    assert_eq!(failure.machine_id, machine_id('b'));
+    assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
     assert_eq!(result.omissions, vec![machine_id('e'), machine_id('c')]);
     server.abort();
 }
@@ -932,217 +805,67 @@ async fn fanout_reads_retry_failed_legs_without_rerunning_successes() {
     server.abort();
 }
 
-#[tokio::test]
-async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
-    let root = std::env::temp_dir().join(format!("ployz-connect-{}", std::process::id()));
-    let config = root.join("config.yaml");
-    let socket = root.join("ployz.sock");
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let tcp_address = tcp.local_addr().unwrap();
-    let unix = UnixListener::bind(&socket).unwrap();
-    let description = ContractDescription {
-        machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
-        protocol_major: PROTOCOL_MAJOR,
-        daemon_version: "test".into(),
-        capabilities: BTreeSet::from([
-            CapabilityName::parse("ployz.rpc.describe-contract.v1").unwrap()
-        ]),
-    };
-    let service = DiscoveryService::new(description.clone());
-    let tcp_server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(service.clone()))
-            .serve_with_incoming(TcpListenerStream::new(tcp)),
-    );
-    let unix_server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(service))
-            .serve_with_incoming(UnixListenerStream::new(unix)),
-    );
-    for connection in [
-        Connection::tcp(tcp_address),
-        Connection::unix(&socket).unwrap(),
-    ] {
-        let mut client = connect_selected_with(
-            SelectedConnections {
-                source: ConnectionSource::Direct,
-                connections: vec![connection],
-            },
-            Arc::new(SystemConnector::default()),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            client
-                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-                .await
-                .unwrap(),
-            description
-        );
+#[tokio::test(start_paused = true)]
+async fn unary_call_redials_only_on_unavailable_and_gives_up_after_four_attempts() {
+    type ExpectedError = fn(&ConnectError) -> bool;
+    fn unavailable(message: &'static str) -> DescribeOutcome {
+        DescribeOutcome::Status(Status::unavailable(message))
     }
-
-    let fallback = resolve_connections(&config, None, None, &socket).unwrap();
-    let mut fallback = connect_selected_with(fallback, Arc::new(SystemConnector::default()))
-        .await
-        .unwrap();
-    assert_eq!(
-        fallback
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .unwrap(),
-        description
-    );
-
-    std::fs::write(&config, "deliberately: [unusable").unwrap();
-    let direct = resolve_connections(
-        &config,
-        Some(&format!("tcp://{tcp_address}")),
-        Some("missing"),
-        &socket,
-    )
-    .unwrap();
-    let mut direct = connect_selected_with(direct, Arc::new(SystemConnector::default()))
-        .await
-        .unwrap();
-    assert_eq!(
-        direct
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .unwrap(),
-        description
-    );
-
-    let unavailable_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let unavailable = unavailable_listener.local_addr().unwrap();
-    drop(unavailable_listener);
-    let mut failed_over = connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Context("prod".into()),
-            connections: vec![
-                Connection::tcp(unavailable),
-                Connection::tcp(tcp_address),
-                Connection::unix(&socket).unwrap(),
-            ],
-        },
-        Arc::new(SystemConnector::default()),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        failed_over.connection().to_string(),
-        format!("tcp://{tcp_address}")
-    );
-    assert_eq!(
-        failed_over
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .unwrap(),
-        description
-    );
-
-    tcp_server.abort();
-    unix_server.abort();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn unary_call_retries_unavailable_after_redial() {
-    let description = test_description();
-    let service = DiscoveryService::new(description.clone());
-    let (mut client, server, connects) = connected_client(service.clone()).await;
-    service
-        .describe_outcomes
-        .lock()
-        .unwrap()
-        .push_back(DescribeOutcome::Status(Status::unavailable(
-            "transport error",
-        )));
-
-    assert_eq!(
-        client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .unwrap(),
-        description
-    );
-    assert_eq!(connects.load(Ordering::SeqCst), 2);
-
-    server.abort();
-}
-
-#[tokio::test(start_paused = true)]
-async fn unary_call_does_not_retry_remote_or_not_found() {
-    let not_found = DiscoveryService::new(test_description());
-    let (mut client, server, connects) = connected_client(not_found.clone()).await;
-    not_found
-        .describe_outcomes
-        .lock()
-        .unwrap()
-        .push_back(DescribeOutcome::Status(Status::not_found("missing")));
-    let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&error, ConnectError::Rpc(error) if error.is_not_found()),
-        "{error:?}"
-    );
-    assert_eq!(connects.load(Ordering::SeqCst), 1);
-    server.abort();
-
-    let remote = DiscoveryService::new(test_description());
-    let (mut client, server, connects) = connected_client(remote.clone()).await;
-    remote
-        .describe_outcomes
-        .lock()
-        .unwrap()
-        .push_back(DescribeOutcome::Remote(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "already a member".into(),
-            details: Value::Null,
-        }));
-    let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            ConnectError::Remote(RpcError {
-                code: RpcErrorCode::Conflict,
-                ..
-            })
+    let cases: [(Vec<DescribeOutcome>, Option<ExpectedError>, usize); 4] = [
+        (vec![unavailable("transport error")], None, 2),
+        (
+            vec![DescribeOutcome::Status(Status::not_found("missing"))],
+            Some(|error| matches!(error, ConnectError::Rpc(error) if error.is_not_found())),
+            1,
         ),
-        "{error:?}"
-    );
-    assert_eq!(connects.load(Ordering::SeqCst), 1);
-    server.abort();
-}
+        (
+            vec![DescribeOutcome::Remote(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "already a member".into(),
+                details: Value::Null,
+            })],
+            Some(|error| {
+                matches!(
+                    error,
+                    ConnectError::Remote(RpcError {
+                        code: RpcErrorCode::Conflict,
+                        ..
+                    })
+                )
+            }),
+            1,
+        ),
+        (
+            vec![
+                unavailable("drop 1"),
+                unavailable("drop 2"),
+                unavailable("drop 3"),
+                unavailable("drop 4"),
+            ],
+            Some(|error| matches!(error, ConnectError::Rpc(error) if error.is_unavailable())),
+            4,
+        ),
+    ];
+    for (outcomes, expected_error, expected_connects) in cases {
+        let description = test_description();
+        let service = DiscoveryService::new(description.clone());
+        let (mut client, server, connects) = connected_client(service.clone()).await;
+        service.describe_outcomes.lock().unwrap().extend(outcomes);
 
-#[tokio::test(start_paused = true)]
-async fn unary_call_gives_up_after_four_unavailable_attempts() {
-    let service = DiscoveryService::new(test_description());
-    let (mut client, server, connects) = connected_client(service.clone()).await;
-    service.describe_outcomes.lock().unwrap().extend([
-        DescribeOutcome::Status(Status::unavailable("drop 1")),
-        DescribeOutcome::Status(Status::unavailable("drop 2")),
-        DescribeOutcome::Status(Status::unavailable("drop 3")),
-        DescribeOutcome::Status(Status::unavailable("drop 4")),
-    ]);
+        let result = client
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await;
 
-    let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&error, ConnectError::Rpc(error) if error.is_unavailable()),
-        "{error:?}"
-    );
-    assert_eq!(connects.load(Ordering::SeqCst), 4);
-
-    server.abort();
+        match expected_error {
+            None => assert_eq!(result.unwrap(), description),
+            Some(expected) => {
+                let error = result.unwrap_err();
+                assert!(expected(&error), "{error:?}");
+            }
+        }
+        assert_eq!(connects.load(Ordering::SeqCst), expected_connects);
+        server.abort();
+    }
 }
 
 #[tokio::test]

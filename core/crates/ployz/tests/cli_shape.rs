@@ -250,14 +250,10 @@ fn completion_exits_on_sigpipe_when_the_reader_closes_after_one_line() {
 }
 
 #[test]
-fn compose_workflows_and_inputs_are_not_accepted() {
+fn compose_inputs_are_not_accepted() {
+    // The command tree test owns the absent compose subcommands.
     for args in [
-        &["ployz", "deploy"][..],
-        &["ployz", "changes"],
-        &["ployz", "build"],
-        &["ployz", "run", "nginx"],
-        &["ployz", "service", "run", "nginx"],
-        &["ployz", "service", "logs", "--file", "compose.yaml", "api"],
+        &["ployz", "service", "logs", "--file", "compose.yaml", "api"][..],
         &["ployz", "service", "scale", "-p", "shop", "api", "2"],
     ] {
         assert!(

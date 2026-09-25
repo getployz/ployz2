@@ -16,17 +16,10 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn version_flags_print_the_package_version() {
-    for args in [["--version"].as_slice(), ["-V"].as_slice()] {
-        let output = ployz(args);
+fn version_flags_and_command_print_the_bare_package_version() {
+    for args in [["--version"], ["-V"], ["version"]] {
+        let output = ployz(&args);
         assert!(output.status.success(), "{args:?}: {}", stderr(&output));
         assert_eq!(stdout(&output), format!("{}\n", env!("CARGO_PKG_VERSION")));
     }
-}
-
-#[test]
-fn version_command_prints_the_bare_package_version() {
-    let output = ployz(&["version"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(stdout(&output), format!("{}\n", env!("CARGO_PKG_VERSION")));
 }

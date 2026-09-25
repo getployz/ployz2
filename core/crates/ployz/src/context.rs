@@ -358,12 +358,12 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn select_connection(&mut self, index: usize) -> bool {
-        let Some(prefix) = self.connections.get_mut(..=index) else {
-            return false;
-        };
-        prefix.rotate_right(1);
-        true
+    /// Move the connection at `index` to the front; the rest keep their order.
+    /// An out-of-range index changes nothing.
+    pub fn select_connection(&mut self, index: usize) {
+        if let Some(prefix) = self.connections.get_mut(..=index) {
+            prefix.rotate_right(1);
+        }
     }
 
     /// Drop the connection that names `machine_id`, if any.

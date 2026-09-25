@@ -5,7 +5,8 @@ use std::{collections::BTreeMap, time::Duration};
 use ployz::deploy::VolumeFate;
 use ployz::sdk;
 use ployz_core::{
-    ContractDescription, DataLoss, DockerVolumeId, MachineName, RpcErrorCode, UnconfirmedDataLoss,
+    ContractDescription, DataLoss, DockerVolumeId, MachineName, ProjectName, RpcErrorCode,
+    UnconfirmedDataLoss,
 };
 use tokio::time::timeout;
 
@@ -77,10 +78,11 @@ async fn destroy_project_refuses_unconfirmed_data_loss_and_names_what_was_missin
 #[tokio::test]
 async fn destroy_project_destroys_named_volumes_after_confirmation() {
     let (client, volumes, service, _session, _machine) = project_session().await;
-    let confirmation = confirmation(volumes.shop_loss());
+    // One reviewed union confirmation covers every Project it names.
+    let union = confirmation(volumes.union_loss());
 
     let outcome = client
-        .destroy_project("shop", &confirmation, VolumeFate::Destroy)
+        .destroy_project("shop", &union, VolumeFate::Destroy)
         .await
         .unwrap();
     assert!(
@@ -99,27 +101,13 @@ async fn destroy_project_destroys_named_volumes_after_confirmation() {
             id: volumes.staging_data.clone()
         }]
     );
-}
-
-#[tokio::test]
-async fn one_confirmation_covers_several_projects() {
-    let (client, volumes, service, _session, _machine) = project_session().await;
-    let union = confirmation(volumes.union_loss());
-
-    client
-        .destroy_project("shop", &union, VolumeFate::Destroy)
-        .await
-        .unwrap();
     client
         .destroy_project("staging", &union, VolumeFate::Destroy)
         .await
         .unwrap();
-    let mut removed = service.removed_volumes.lock().unwrap().clone();
-    removed.sort_by(|left, right| left.name.cmp(&right.name));
     let mut expected = volumes.shop_ids();
     expected.push(volumes.staging_data.clone());
-    expected.sort_by(|left, right| left.name.cmp(&right.name));
-    assert_eq!(removed, expected);
+    assert_eq!(*service.removed_volumes.lock().unwrap(), expected);
 }
 
 #[tokio::test]
@@ -139,42 +127,47 @@ async fn destroy_project_preserves_volumes_with_an_empty_confirmation() {
 }
 
 #[tokio::test]
-async fn data_loss_if_project_destroyed_refuses_the_reserved_project() {
+async fn project_removal_refuses_the_reserved_and_invalid_project_names() {
     let (client, _volumes, _service, _session, _machine) = project_session().await;
-    let error = client
-        .data_loss_if_project_destroyed("ployz-system", VolumeFate::Preserve)
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert_eq!(
-        error.message,
-        "Project 'ployz-system' is reserved for Ployz infrastructure"
-    );
-}
+    let reserved = "Project 'ployz-system' is reserved for Ployz infrastructure";
+    let empty = confirmation(Vec::<DataLoss>::new());
 
-#[tokio::test]
-async fn data_loss_if_project_destroyed_rejects_an_invalid_project_name() {
-    let (client, _volumes, _service, _session, _machine) = project_session().await;
-    let error = client
-        .data_loss_if_project_destroyed("BAD NAME", VolumeFate::Preserve)
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-}
-
-#[tokio::test]
-async fn destroy_project_refuses_the_reserved_project() {
-    let (client, _volumes, _service, _session, _machine) = project_session().await;
-    let confirmation = confirmation(Vec::<DataLoss>::new());
-    let error = client
-        .destroy_project("ployz-system", &confirmation, VolumeFate::Preserve)
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert_eq!(
-        error.message,
-        "Project 'ployz-system' is reserved for Ployz infrastructure"
-    );
+    let cases = [
+        (
+            client
+                .preview_project_removal(ProjectName::system(), VolumeFate::Preserve)
+                .await
+                .unwrap_err(),
+            Some(reserved),
+        ),
+        (
+            client
+                .data_loss_if_project_destroyed("ployz-system", VolumeFate::Preserve)
+                .await
+                .unwrap_err(),
+            Some(reserved),
+        ),
+        (
+            client
+                .destroy_project("ployz-system", &empty, VolumeFate::Preserve)
+                .await
+                .unwrap_err(),
+            Some(reserved),
+        ),
+        (
+            client
+                .data_loss_if_project_destroyed("BAD NAME", VolumeFate::Preserve)
+                .await
+                .unwrap_err(),
+            None,
+        ),
+    ];
+    for (error, message) in cases {
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+        if let Some(message) = message {
+            assert_eq!(error.message, message);
+        }
+    }
 }
 
 #[tokio::test]

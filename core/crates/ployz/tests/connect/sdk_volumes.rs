@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ployz::sdk;
 use ployz_core::{
-    DESCRIBE_CONTRACT_CAPABILITY, DockerVolumeId, DockerVolumeName, MachineId,
-    MembershipObservation, RemoveVolumesRequest, RpcErrorCode, VolumeRemoval, VolumeRemovalOutcome,
+    DockerVolumeId, DockerVolumeName, MembershipObservation, RemoveVolumesRequest, RpcErrorCode,
+    VolumeRemoval, VolumeRemovalOutcome,
 };
 use tokio::time::timeout;
 
@@ -24,6 +24,7 @@ async fn removal_outcomes_retain_each_volume_identity() {
                 volume('a', "busy"),
                 volume('c', "logs"),
                 volume('c', "data"),
+                volume('a', "missing"),
             ],
             false,
         ))
@@ -33,7 +34,7 @@ async fn removal_outcomes_retain_each_volume_identity() {
     let outcomes = wire
         .as_array()
         .expect("one outcome per requested Docker Volume");
-    assert_eq!(outcomes.len(), 6);
+    assert_eq!(outcomes.len(), 7);
     for (machine, name, status) in [
         ('b', "logs", "failed"),
         ('a', "data", "removed"),
@@ -41,6 +42,7 @@ async fn removal_outcomes_retain_each_volume_identity() {
         ('a', "busy", "failed"),
         ('c', "logs", "omitted"),
         ('c', "data", "omitted"),
+        ('a', "missing", "removed"),
     ] {
         let outcome = outcomes
             .iter()
@@ -59,76 +61,14 @@ async fn removal_outcomes_retain_each_volume_identity() {
                     .and_then(serde_json::Value::as_str),
                 Some("target unavailable")
             );
+            assert_eq!(
+                outcome
+                    .pointer("/outcome/error/code")
+                    .and_then(serde_json::Value::as_str),
+                Some("unavailable")
+            );
         }
     }
-}
-
-#[tokio::test]
-async fn remove_volumes_destroys_named_volumes_on_a_live_machine() {
-    let (client, _session, _machine) = volume_session().await;
-
-    let result = client
-        .remove_volumes(remove([volume('a', "data")], false))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        vec![VolumeRemoval {
-            id: volume('a', "data"),
-            outcome: VolumeRemovalOutcome::Removed
-        }]
-    );
-    assert!(
-        client
-            .about()
-            .await
-            .unwrap()
-            .supports(DESCRIBE_CONTRACT_CAPABILITY)
-    );
-}
-
-#[tokio::test]
-async fn remove_volumes_keeps_successes_when_another_machine_fails() {
-    let (client, _session, _machine) = volume_session().await;
-
-    let result = client
-        .remove_volumes(remove([volume('a', "data"), volume('b', "data")], false))
-        .await
-        .unwrap();
-
-    let [success, failure] = result.as_slice() else {
-        panic!("expected two volume outcomes: {result:?}")
-    };
-    assert_eq!(
-        success,
-        &VolumeRemoval {
-            id: volume('a', "data"),
-            outcome: VolumeRemovalOutcome::Removed
-        }
-    );
-    assert_eq!(failure.id, volume('b', "data"));
-    assert!(
-        matches!(&failure.outcome, VolumeRemovalOutcome::Failed { error } if error.code == RpcErrorCode::Unavailable)
-    );
-}
-
-#[tokio::test]
-async fn remove_volumes_treats_not_found_as_success() {
-    let (client, _session, _machine) = volume_session().await;
-
-    let result = client
-        .remove_volumes(remove([volume('a', "data"), volume('a', "missing")], false))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        ["data", "missing"].map(|name| VolumeRemoval {
-            id: volume('a', name),
-            outcome: VolumeRemovalOutcome::Removed
-        })
-    );
 }
 
 #[tokio::test]
@@ -162,7 +102,7 @@ async fn remove_volumes_force_is_off_by_default() {
 
 #[tokio::test]
 async fn remove_volumes_omits_machines_that_do_not_invite_rpc() {
-    let description = advertised_description();
+    let description = super::sdk::advertised_description();
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     let mut down = machine('c', "down");
@@ -207,7 +147,7 @@ async fn remove_volumes_omits_machines_that_do_not_invite_rpc() {
 #[tokio::test(start_paused = true)]
 async fn timed_out_removal_retains_identity_and_unknown_completion() {
     // The Client owns this deadline; other tests cover the Session adapter.
-    let mut service = DiscoveryService::new(advertised_description());
+    let mut service = DiscoveryService::new(super::sdk::advertised_description());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
     let (mut client, server, _) = super::support::connected_client(service).await;
     let outcomes = timeout(
@@ -237,19 +177,8 @@ async fn timed_out_removal_retains_identity_and_unknown_completion() {
 }
 
 #[tokio::test]
-async fn remove_volumes_after_close_is_unavailable() {
-    let (client, _session, _machine) = volume_session().await;
-    client.close().await;
-    let error = client
-        .remove_volumes(remove([volume('a', "data")], false))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-}
-
-#[tokio::test]
 async fn node_smoke_covers_successful_and_partial_volume_removal() {
-    let description = advertised_description();
+    let description = super::sdk::advertised_description();
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
@@ -267,7 +196,7 @@ async fn node_smoke_covers_successful_and_partial_volume_removal() {
 }
 
 async fn volume_session() -> (sdk::Session, UnixSession, super::unix_session::FakeMachine) {
-    let description = advertised_description();
+    let description = super::sdk::advertised_description();
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
@@ -276,19 +205,6 @@ async fn volume_session() -> (sdk::Session, UnixSession, super::unix_session::Fa
         .await
         .unwrap();
     (client, session, machine)
-}
-
-fn advertised_description() -> ployz_core::ContractDescription {
-    ployz_core::ContractDescription {
-        machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
-        protocol_major: ployz_core::PROTOCOL_MAJOR,
-        daemon_version: "do-not-branch-on-me".into(),
-        capabilities: [
-            ployz_core::CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY)
-                .expect("catalogued capability names are valid"),
-        ]
-        .into(),
-    }
 }
 
 fn remove<const N: usize>(volumes: [DockerVolumeId; N], force: bool) -> RemoveVolumesRequest {

@@ -21,10 +21,9 @@ use ployz_core::{
     LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
     MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
     MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
-    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
-    WireGuardPublicKey, encode_runtime_watch_frame, op,
+    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RuntimeWatchFrame, VolumeInventory, VolumeObservationFailure,
+    VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -32,7 +31,6 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{
     Request, Response, Status, Streaming,
-    codec::CompressionEncoding,
     transport::{Channel, Server},
 };
 
@@ -49,11 +47,7 @@ pub(super) async fn serve_discovery(
     let address = tcp.local_addr().unwrap();
     let server = tokio::spawn(
         Server::builder()
-            .add_service(
-                MachineRpcServer::new(service)
-                    .send_compressed(CompressionEncoding::Gzip)
-                    .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
-            )
+            .add_service(MachineRpcServer::new(service))
             .serve_with_incoming(TcpListenerStream::new(tcp)),
     );
     (address, server)
@@ -143,8 +137,6 @@ pub(super) struct DiscoveryService {
     pub(super) advertises_enrollment: bool,
     pub(super) builds: Option<Arc<BuildRecorder>>,
     description: ContractDescription,
-    /// Contracts answered per routed Machine. Absent Machines answer `description`.
-    pub(super) descriptions: BTreeMap<MachineId, ContractDescription>,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
     pub(super) watch_opens: Arc<AtomicUsize>,
@@ -156,7 +148,6 @@ pub(super) struct DiscoveryService {
     pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
-    pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     pub(super) watch_accepts_gzip: Arc<AtomicBool>,
     watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
@@ -168,7 +159,6 @@ pub(super) struct DiscoveryService {
     pub(super) existing_created_volume: Option<DockerVolume>,
     pub(super) created_volume_verification_error: Option<RpcError>,
     pub(super) inspect_container_result: Option<ployz_core::ContainerDetails>,
-    pub(super) create_container_error: Option<RpcError>,
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) list_machines_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
@@ -189,7 +179,6 @@ impl DiscoveryService {
             advertises_enrollment: false,
             builds: None,
             description,
-            descriptions: BTreeMap::new(),
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
             watch_opens: Arc::new(AtomicUsize::new(0)),
@@ -201,7 +190,6 @@ impl DiscoveryService {
             recover_volume_on_storage_inspect: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
-            watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch_accepts_gzip: Arc::new(AtomicBool::new(false)),
             watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
@@ -212,7 +200,6 @@ impl DiscoveryService {
             existing_created_volume: None,
             created_volume_verification_error: None,
             inspect_container_result: None,
-            create_container_error: None,
             create_container_blocked: None,
             list_machines_blocked: None,
             created_volumes: Arc::new(Mutex::new(Vec::new())),
@@ -325,35 +312,12 @@ impl MachineRpc for DiscoveryService {
             let mut request = request.into_inner();
             let first = request.message().await.unwrap().unwrap();
             let frame = remote::decode(&first).unwrap();
-            let targets = match &frame {
-                Input::Start(definition) => &definition.targets,
-                Input::Check(targets) => targets,
+            match &frame {
+                Input::Start(_) => recorder.routes.lock().unwrap().push(route),
+                Input::Check(_) => {}
                 Input::Entry { .. } | Input::Data(_) | Input::Finish | Input::Cancel => {
                     panic!("expected Build start or capability check")
                 }
-            };
-            if matches!(frame, Input::Start(_)) {
-                recorder.routes.lock().unwrap().push(route);
-                recorder
-                    .targets
-                    .lock()
-                    .unwrap()
-                    .push(targets.iter().map(|target| target.name.clone()).collect());
-            }
-            if recorder.queued {
-                sender
-                    .send(Ok(remote::encode(&Event::Progress(
-                        ployz_build::Progress::Stage(ployz_build::Stage::Queued),
-                    ))
-                    .unwrap()))
-                    .await
-                    .unwrap();
-                assert!(
-                    tokio::time::timeout(std::time::Duration::from_millis(50), request.message())
-                        .await
-                        .is_err(),
-                    "client uploaded before admission"
-                );
             }
             if matches!(frame, Input::Start(_))
                 && let Some(outcome) = &recorder.admission_outcome
@@ -470,7 +434,6 @@ impl MachineRpc for DiscoveryService {
             }
             None => {}
         }
-        let metadata = request.metadata().clone();
         let request = request
             .into_inner()
             .decode_request()
@@ -478,18 +441,8 @@ impl MachineRpc for DiscoveryService {
         if !matches!(request.body, RpcRequestBody::DescribeContract(_)) {
             return Err(Status::invalid_argument("expected discovery request"));
         }
-        let routed = match ployz_core::routing_from_metadata(&metadata) {
-            Ok(ployz_core::RoutingRequest::One(target)) => self
-                .machines
-                .iter()
-                .find(|observation| {
-                    ployz_core::machine_matches_target(&observation.machine, &target)
-                })
-                .and_then(|observation| self.descriptions.get(&observation.machine.id)),
-            _ => None,
-        };
         Ok(Response::new(
-            RpcResponse::from(routed.unwrap_or(&self.description).clone())
+            RpcResponse::from(self.description.clone())
                 .encode()
                 .unwrap(),
         ))
@@ -873,11 +826,6 @@ impl MachineRpc for DiscoveryService {
             received.notify_one();
             std::future::pending::<()>().await;
         }
-        if let Some(error) = &self.create_container_error {
-            return Ok(Response::new(
-                RpcResponse::from(error.clone()).encode().unwrap(),
-            ));
-        }
         Ok(Response::new(
             RpcResponse::from(ContainerCreated {
                 container_id: created_container_id(),
@@ -1002,9 +950,8 @@ impl MachineRpc for DiscoveryService {
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let watch_request = op::RuntimeWatch::from_request_body(decoded.body)
+        op::RuntimeWatch::from_request_body(decoded.body)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        self.watch_requests.lock().unwrap().push(watch_request);
         Ok(Response::new(ReceiverStream::new(self.watch.subscribe())))
     }
 
@@ -1366,9 +1313,7 @@ pub(super) async fn connected_client(
 #[derive(Default)]
 pub(super) struct BuildRecorder {
     pub(super) routes: Mutex<Vec<ployz_core::RoutingRequest>>,
-    pub(super) targets: Mutex<Vec<Vec<String>>>,
     pub(super) uploads: AtomicUsize,
-    pub(super) queued: bool,
     pub(super) retain_images: bool,
     pub(super) quiet_until_cancel: bool,
     pub(super) blocked_transfer_marker: Option<std::path::PathBuf>,

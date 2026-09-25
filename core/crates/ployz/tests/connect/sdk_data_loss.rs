@@ -15,7 +15,7 @@ use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
 async fn data_loss_if_machine_removed_lists_volumes_and_empty_without_mutating() {
-    let (client, loaded, empty, _session, _machine) = session_with_two_machines().await;
+    let (client, loaded, empty, service, _session, _machine) = session_with_two_machines().await;
 
     let with_volumes = client
         .data_loss_if_machine_removed(loaded.name.as_str())
@@ -54,11 +54,14 @@ async fn data_loss_if_machine_removed_lists_volumes_and_empty_without_mutating()
         client.about().await.is_ok(),
         "the read must leave the session usable"
     );
+    assert!(service.removed_volumes.lock().unwrap().is_empty());
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert!(service.removed_machines.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn data_loss_if_machine_removed_is_observer_relative() {
-    let (client, _loaded, _empty, _session, _machine) = session_with_two_machines().await;
+    let (client, _loaded, _empty, _service, _session, _machine) = session_with_two_machines().await;
 
     let error = client
         .data_loss_if_machine_removed("missing")
@@ -72,90 +75,50 @@ async fn data_loss_if_machine_removed_is_observer_relative() {
 }
 
 #[tokio::test]
-async fn failed_volume_listing_is_not_empty_data_loss() {
-    let description = super::sdk::advertised_description();
-    let failed = machine('b', "broken");
-    let machine_id = failed.machine.id;
-    let session = UnixSession::start().await;
-    let mut service = DiscoveryService::new(description.clone());
-    service.machines = vec![failed];
-    let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = timeout(
-        Duration::from_secs(5),
-        unix_session::connect(&session.directory, description.machine_id.as_str()),
-    )
-    .await
-    .expect("connect must not hang")
-    .unwrap();
-
-    let error = client
-        .data_loss_if_machine_removed("broken")
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(
-        error.message,
-        format!("Machine {machine_id}: target unavailable")
-    );
-}
-
-#[tokio::test]
-async fn omitted_volume_listing_is_not_empty_data_loss() {
-    let description = super::sdk::advertised_description();
+async fn unreadable_machine_is_not_empty_data_loss() {
     let mut down = machine('c', "gone");
     down.membership = MembershipObservation::Down;
-    let machine_id = down.machine.id;
-    let session = UnixSession::start().await;
-    let mut service = DiscoveryService::new(description.clone());
-    service.machines = vec![down];
-    let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = timeout(
-        Duration::from_secs(5),
-        unix_session::connect(&session.directory, description.machine_id.as_str()),
-    )
-    .await
-    .expect("connect must not hang")
-    .unwrap();
-
-    let error = client
-        .data_loss_if_machine_removed("gone")
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(
-        error.message,
-        format!("Machine {machine_id} did not respond")
-    );
-}
-
-#[tokio::test]
-async fn node_data_loss_reads_a_machine_with_volumes_and_one_with_none() {
-    let (description, loaded, empty, service) = two_machine_cluster();
-    let session = UnixSession::start().await;
-    let _machine = session.spawn_machine(description.machine_id, service).await;
-    session
-        .assert_sdk_script(
-            "node_data_loss.js",
-            description.machine_id,
-            &[
-                ("PLOYZ_LOADED_MACHINE", "loaded"),
-                ("PLOYZ_LOADED_MACHINE_ID", loaded.machine.id.as_str()),
-                ("PLOYZ_EMPTY_MACHINE", empty.machine.name.as_str()),
-            ],
+    for (target, expected) in [
+        (machine('b', "broken"), ": target unavailable"),
+        (down, " did not respond"),
+    ] {
+        let description = super::sdk::advertised_description();
+        let name = target.machine.name.clone();
+        let machine_id = target.machine.id;
+        let session = UnixSession::start().await;
+        let mut service = DiscoveryService::new(description.clone());
+        service.machines = vec![target];
+        let _machine = session.spawn_machine(description.machine_id, service).await;
+        let client = timeout(
+            Duration::from_secs(5),
+            unix_session::connect(&session.directory, description.machine_id.as_str()),
         )
-        .await;
+        .await
+        .expect("connect must not hang")
+        .unwrap();
+
+        let error = client
+            .data_loss_if_machine_removed(name.as_str())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.message, format!("Machine {machine_id}{expected}"));
+    }
 }
 
 async fn session_with_two_machines() -> (
     sdk::Session,
     ployz_core::Machine,
     ployz_core::Machine,
+    DiscoveryService,
     UnixSession,
     super::unix_session::FakeMachine,
 ) {
     let (description, loaded, empty, service) = two_machine_cluster();
     let session = UnixSession::start().await;
-    let spawned = session.spawn_machine(description.machine_id, service).await;
+    let spawned = session
+        .spawn_machine(description.machine_id, service.clone())
+        .await;
     let client = timeout(
         Duration::from_secs(5),
         unix_session::connect(&session.directory, description.machine_id.as_str()),
@@ -163,7 +126,14 @@ async fn session_with_two_machines() -> (
     .await
     .expect("connect must not hang")
     .unwrap();
-    (client, loaded.machine, empty.machine, session, spawned)
+    (
+        client,
+        loaded.machine,
+        empty.machine,
+        service,
+        session,
+        spawned,
+    )
 }
 
 fn two_machine_cluster() -> (

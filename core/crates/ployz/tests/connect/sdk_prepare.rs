@@ -8,58 +8,95 @@ use ployz_core::BUILD_CAPABILITY;
 use super::{support, unix_session::UnixSession};
 
 #[tokio::test]
-async fn node_preparation_preserves_failed_and_unknown_work_evidence() {
-    for kind in ["failed", "unknown"] {
+async fn node_preparation_refusal_and_cancellation_preserve_work_evidence() {
+    for kind in [
+        "failed",
+        "unknown",
+        "cancel",
+        "selection",
+        "cancel-transfer",
+    ] {
         let session = UnixSession::start().await;
+        let marker_directory = tempfile::tempdir().unwrap();
+        let marker = marker_directory.path().join("transfer-started");
         let mut description = support::test_description();
         description.machine_id = support::machine_id('a');
-        description
-            .capabilities
-            .insert(BUILD_CAPABILITY.parse().unwrap());
+        if kind != "selection" {
+            description
+                .capabilities
+                .insert(BUILD_CAPABILITY.parse().unwrap());
+        }
         let work = WorkEvidence(std::collections::BTreeMap::from([(
             "api".into(),
             TargetEvidence::Unattempted,
         )]));
-        let outcome = if kind == "failed" {
-            Outcome::Failed {
-                stage: Stage::Admission,
-                message: "admission rejected".into(),
-                work,
-            }
-        } else {
-            Outcome::Unknown {
-                stage: Stage::Admission,
-                message: "connection lost".into(),
-                work,
-            }
-        };
-        let recorder = Arc::new(support::BuildRecorder {
-            admission_outcome: Some(outcome),
-            ..Default::default()
+        let recorder = Arc::new(match kind {
+            "failed" => support::BuildRecorder {
+                admission_outcome: Some(Outcome::Failed {
+                    stage: Stage::Admission,
+                    message: "admission rejected".into(),
+                    work,
+                }),
+                ..Default::default()
+            },
+            "unknown" => support::BuildRecorder {
+                admission_outcome: Some(Outcome::Unknown {
+                    stage: Stage::Admission,
+                    message: "connection lost".into(),
+                    work,
+                }),
+                ..Default::default()
+            },
+            "cancel" => support::BuildRecorder {
+                quiet_until_cancel: true,
+                ..Default::default()
+            },
+            "cancel-transfer" => support::BuildRecorder {
+                retain_images: true,
+                blocked_transfer_marker: Some(marker.clone()),
+                ..Default::default()
+            },
+            _ => support::BuildRecorder::default(),
         });
         let mut service = support::DiscoveryService::new(description.clone());
         let mut machine = support::machine('a', "builder");
         machine.machine.runtime.architecture = "x86_64".into();
+        machine.machine.accepts_builds = kind != "selection";
         service.machines = vec![machine];
         service.builds = Some(recorder.clone());
         let _machine = session.spawn_machine(description.machine_id, service).await;
+        let mut environment = vec![("PLOYZ_PREPARATION_OUTCOME", kind)];
+        if kind == "cancel-transfer" {
+            environment.push(("PLOYZ_TRANSFER_STARTED", marker.to_str().unwrap()));
+        }
+
         session
-            .assert_sdk_script(
-                "node_prepare.js",
-                description.machine_id,
-                &[("PLOYZ_PREPARATION_OUTCOME", kind)],
-            )
+            .assert_sdk_script("node_prepare.js", description.machine_id, &environment)
             .await;
-        assert_eq!(
-            recorder.uploads.load(Ordering::SeqCst),
-            0,
-            "source must not be uploaded after admission refusal"
-        );
-        assert_eq!(
-            recorder.routes.lock().unwrap().len(),
-            1,
-            "an unknown build must not be replayed automatically"
-        );
+
+        let uploads = recorder.uploads.load(Ordering::SeqCst);
+        let routes = recorder.routes.lock().unwrap().len();
+        let created = recorder.created.load(Ordering::SeqCst);
+        match kind {
+            "failed" | "unknown" => {
+                assert_eq!(uploads, 0, "{kind}: no upload after admission refusal");
+                assert_eq!(routes, 1, "{kind}: a refused build is not replayed");
+            }
+            "cancel" => {
+                assert!(recorder.cancelled.load(Ordering::SeqCst));
+                assert_eq!(uploads, 1);
+                assert!(!created);
+            }
+            "selection" => {
+                assert_eq!(uploads, 0);
+                assert_eq!(routes, 0);
+            }
+            _ => {
+                assert_eq!(recorder.deliveries.lock().unwrap().len(), 1);
+                assert!(!recorder.delivered.load(Ordering::SeqCst));
+                assert!(!created);
+            }
+        }
     }
 }
 
@@ -129,94 +166,4 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
                 .ends_with(&format!("@sha256:{}", "1".repeat(64)))
         );
     }
-}
-
-#[tokio::test]
-async fn node_preparation_cancels_a_quiet_build_and_awaits_its_terminal_evidence() {
-    let session = UnixSession::start().await;
-    let mut description = support::test_description();
-    description.machine_id = support::machine_id('a');
-    description
-        .capabilities
-        .insert(BUILD_CAPABILITY.parse().unwrap());
-    let recorder = Arc::new(support::BuildRecorder {
-        quiet_until_cancel: true,
-        ..Default::default()
-    });
-    let mut service = support::DiscoveryService::new(description.clone());
-    let mut machine = support::machine('a', "builder");
-    machine.machine.runtime.architecture = "x86_64".into();
-    service.machines = vec![machine];
-    service.builds = Some(recorder.clone());
-    let _machine = session.spawn_machine(description.machine_id, service).await;
-    session
-        .assert_sdk_script(
-            "node_prepare.js",
-            description.machine_id,
-            &[("PLOYZ_PREPARATION_OUTCOME", "cancel")],
-        )
-        .await;
-    assert!(recorder.cancelled.load(Ordering::SeqCst));
-    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 1);
-    assert!(!recorder.created.load(Ordering::SeqCst));
-}
-
-#[tokio::test]
-async fn node_preparation_reports_no_eligible_builder_as_known_failure() {
-    let session = UnixSession::start().await;
-    let mut description = support::test_description();
-    description.machine_id = support::machine_id('a');
-    let recorder = Arc::new(support::BuildRecorder::default());
-    let mut service = support::DiscoveryService::new(description.clone());
-    let mut machine = support::machine('a', "disabled-builder");
-    machine.machine.runtime.architecture = "x86_64".into();
-    machine.machine.accepts_builds = false;
-    service.machines = vec![machine];
-    service.builds = Some(recorder.clone());
-    let _machine = session.spawn_machine(description.machine_id, service).await;
-    session
-        .assert_sdk_script(
-            "node_prepare.js",
-            description.machine_id,
-            &[("PLOYZ_PREPARATION_OUTCOME", "selection")],
-        )
-        .await;
-    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 0);
-    assert!(recorder.routes.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn node_preparation_cancels_an_in_flight_image_transfer_without_creating_containers() {
-    let session = UnixSession::start().await;
-    let marker_directory = tempfile::tempdir().unwrap();
-    let marker = marker_directory.path().join("transfer-started");
-    let mut description = support::test_description();
-    description.machine_id = support::machine_id('a');
-    description
-        .capabilities
-        .insert(BUILD_CAPABILITY.parse().unwrap());
-    let recorder = Arc::new(support::BuildRecorder {
-        retain_images: true,
-        blocked_transfer_marker: Some(marker.clone()),
-        ..Default::default()
-    });
-    let mut service = support::DiscoveryService::new(description.clone());
-    let mut machine = support::machine('a', "builder");
-    machine.machine.runtime.architecture = "x86_64".into();
-    service.machines = vec![machine];
-    service.builds = Some(recorder.clone());
-    let _machine = session.spawn_machine(description.machine_id, service).await;
-    session
-        .assert_sdk_script(
-            "node_prepare.js",
-            description.machine_id,
-            &[
-                ("PLOYZ_PREPARATION_OUTCOME", "cancel-transfer"),
-                ("PLOYZ_TRANSFER_STARTED", marker.to_str().unwrap()),
-            ],
-        )
-        .await;
-    assert_eq!(recorder.deliveries.lock().unwrap().len(), 1);
-    assert!(!recorder.delivered.load(Ordering::SeqCst));
-    assert!(!recorder.created.load(Ordering::SeqCst));
 }

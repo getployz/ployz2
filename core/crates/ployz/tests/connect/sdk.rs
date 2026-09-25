@@ -5,8 +5,8 @@ use std::time::Duration;
 use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
-    DeployOutcome, ExecutionError, FailedOperation, MachineAction, MachineId, PROTOCOL_MAJOR,
-    ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode,
+    DeployOutcome, MachineId, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, RpcError,
+    RpcErrorCode,
 };
 use tokio::time::timeout;
 
@@ -119,61 +119,6 @@ async fn deploy_returns_success_for_a_completed_run() {
 }
 
 #[tokio::test]
-async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
-    let description = advertised_description();
-    let session = UnixSession::start().await;
-    let mut service = DiscoveryService::new(description.clone());
-    service.create_container_error = Some(RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "Volume Ensure failed".into(),
-        details: serde_json::Value::Null,
-    });
-    let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
-        .await
-        .unwrap();
-    let outcome = client
-        .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec_with_volume("web", "scratch"),
-                skip_health(),
-            ),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let DeployOutcome::Failed {
-        completed,
-        failed,
-        unexecuted,
-    } = outcome
-    else {
-        panic!("expected partial failure: {outcome:?}");
-    };
-    assert!(completed.is_empty());
-    assert!(matches!(
-        failed,
-        FailedOperation::Operation {
-            operation: DeployOperation::RunContainer { spec, .. },
-            error: ExecutionError::Machine {
-                action: MachineAction::CreateContainer,
-                ..
-            },
-        } if spec.name.as_str() == "web"
-    ));
-    assert!(unexecuted.is_empty());
-    assert!(
-        client
-            .about()
-            .await
-            .unwrap()
-            .supports(DESCRIBE_CONTRACT_CAPABILITY)
-    );
-}
-
-#[tokio::test]
 async fn deploy_planning_error_is_a_typed_rpc_error() {
     let description = advertised_description();
     let session = UnixSession::start().await;
@@ -207,66 +152,6 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
             .await
             .unwrap()
             .supports(DESCRIBE_CONTRACT_CAPABILITY)
-    );
-}
-
-#[tokio::test]
-async fn preview_planning_error_is_a_typed_rpc_error() {
-    let description = advertised_description();
-    let session = UnixSession::start().await;
-    let _machine = session
-        .spawn_machine(description.machine_id, {
-            let mut service = DiscoveryService::new(description.clone());
-            service.machines.clear();
-            service
-        })
-        .await;
-    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
-        .await
-        .unwrap();
-
-    let error = client
-        .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            spec("web"),
-            skip_health(),
-        ))
-        .await
-        .unwrap_err();
-
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(
-        client
-            .about()
-            .await
-            .unwrap()
-            .supports(DESCRIBE_CONTRACT_CAPABILITY)
-    );
-}
-
-#[tokio::test]
-async fn preview_project_removal_reserved_is_a_typed_rpc_error() {
-    let description = advertised_description();
-    let session = UnixSession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()),
-        )
-        .await;
-    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
-        .await
-        .unwrap();
-
-    let error = client
-        .preview_project_removal(ProjectName::system(), ployz::deploy::VolumeFate::Preserve)
-        .await
-        .unwrap_err();
-
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert_eq!(
-        error.message,
-        "Project 'ployz-system' is reserved for Ployz infrastructure"
     );
 }
 

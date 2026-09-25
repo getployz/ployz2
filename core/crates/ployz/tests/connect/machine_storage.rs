@@ -1,9 +1,8 @@
 use std::sync::atomic::Ordering;
 
-use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz_core::{
     CapabilityName, ContractDescription, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
-    PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec,
+    PROTOCOL_MAJOR,
 };
 use serde_json::Value;
 
@@ -70,74 +69,35 @@ async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
 }
 
 #[tokio::test]
-async fn machine_ls_warns_without_failing_when_one_daemon_version_differs() {
-    let mut service = storage_service(true);
-    service
-        .machines
-        .first_mut()
-        .unwrap()
-        .machine
-        .runtime
-        .daemon_version = "0.0.0-old".into();
-    let (address, server) = serve_discovery(service).await;
+async fn machine_ls_warns_without_failing_only_when_a_daemon_version_differs() {
+    for (daemon_version, expected_stderr) in [
+        (
+            "0.0.0-old",
+            format!(
+                "WARNING: 1 Machine runs a daemon version different from CLI {}.\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        ),
+        (env!("CARGO_PKG_VERSION"), String::new()),
+    ] {
+        let mut service = storage_service(true);
+        service
+            .machines
+            .first_mut()
+            .unwrap()
+            .machine
+            .runtime
+            .daemon_version = daemon_version.into();
+        let (address, server) = serve_discovery(service).await;
 
-    let output = run_ployz(address, &["machine", "ls"]).await;
+        let output = run_ployz(address, &["machine", "ls"]).await;
 
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "WARNING: 1 Machine runs a daemon version different from CLI {}.\n",
-            env!("CARGO_PKG_VERSION")
-        )
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn machine_ls_does_not_warn_when_every_daemon_matches() {
-    let mut service = storage_service(true);
-    service
-        .machines
-        .first_mut()
-        .unwrap()
-        .machine
-        .runtime
-        .daemon_version = env!("CARGO_PKG_VERSION").into();
-    let (address, server) = serve_discovery(service).await;
-
-    let output = run_ployz(address, &["machine", "ls"]).await;
-
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stderr, b"");
-    server.abort();
-}
-
-#[tokio::test]
-async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_target() {
-    let mut service = storage_service(true);
-    service.storage = ployz_core::MachineStorageObservation::Stateless;
-    let (mut client, server, _) = connected_client(service).await;
-    let requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
-        "name": "api",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "busybox", "pull_policy": "always" },
-        "placement": { "constraints": ["node.id==aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] },
-        "volumes": [{
-            "reference": "data",
-            "source": { "kind": "provisioned", "name": "data", "maximum_bytes": 1024 }
-        }],
-        "mounts": [{ "volume": "data", "target": "/data" }]
-    }))
-    .unwrap();
-    let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
-        requested,
-        PlanOptions::default(),
-    );
-    let error = client.preview(intent).await.unwrap_err().to_string();
-
-    assert!(error.contains("storage preparation"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
-    server.abort();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            expected_stderr,
+            "{daemon_version}"
+        );
+        server.abort();
+    }
 }

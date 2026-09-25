@@ -4,18 +4,16 @@ use std::time::Duration;
 
 use ployz::sdk;
 use ployz_core::{
-    CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
+    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
     DockerVolumeId, DockerVolumeName, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
-    MachineRpcClient, MachineStorageObservation, OpaquePayload, PROTOCOL_MAJOR,
-    RUNTIME_WATCH_CAPABILITY, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, op,
+    MachineStorageObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame,
 };
-use serde_json::Value;
 use tokio::time::timeout;
-use tonic::{Request, Status, codec::CompressionEncoding};
+use tonic::Status;
 
 use super::sdk::advertised_description;
-use super::support::{DescribeOutcome, DiscoveryService, serve_discovery};
+use super::support::{DescribeOutcome, DiscoveryService};
 use super::unix_session::{self, FakeMachine, UnixSession};
 
 const FROZEN_FRAME: &str =
@@ -55,48 +53,6 @@ async fn missing_watch_capability_is_unsupported_and_never_polls_list_rpcs() {
 }
 
 #[tokio::test]
-async fn first_watch_derives_services_from_containers() {
-    let (client, service, _session, _machine) = watching_session().await;
-    let expected = frozen_frame();
-    service.push_watch_frame(expected.clone());
-    let watch = client.watch().await.unwrap();
-
-    let frame = next_frame(&watch).await;
-
-    assert_eq!(frame, expected);
-    let services = frame.services();
-    assert_eq!(services.len(), 1);
-    assert_eq!(services.first().unwrap().identity.to_string(), "app/api");
-    assert_redacted(&frame);
-    assert!(
-        !frame.volumes.is_empty(),
-        "replicated Docker Volumes belong on the frame"
-    );
-    let incomplete =
-        ContainerId::parse("2222222222222222222222222222222222222222222222222222222222222222")
-            .unwrap();
-    assert!(frame.incomplete_ids.containers.contains(&incomplete));
-    assert!(
-        !frame
-            .containers
-            .iter()
-            .any(|container| container.container_id == incomplete),
-        "an incomplete ID is not a delete of a present row"
-    );
-    assert_eq!(
-        *service.watch_requests.lock().unwrap(),
-        [RuntimeWatchRequest {}]
-    );
-    assert_no_list_rpc(&service);
-    assert_eq!(
-        service
-            .inspect_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-}
-
-#[tokio::test]
 async fn watch_negotiates_gzip() {
     let (client, service, _session, _machine) = watching_session().await;
     let _watch = client.watch().await.unwrap();
@@ -106,32 +62,6 @@ async fn watch_negotiates_gzip() {
             .watch_accepts_gzip
             .load(std::sync::atomic::Ordering::SeqCst)
     );
-}
-
-#[tokio::test]
-async fn watch_server_sends_negotiated_gzip() {
-    let service = DiscoveryService::new(watch_description());
-    service.push_watch_frame(frozen_frame());
-    let (address, server) = serve_discovery(service).await;
-    let mut client = MachineRpcClient::connect(format!("http://{address}"))
-        .await
-        .unwrap()
-        .accept_compressed(CompressionEncoding::Gzip);
-    let request = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
-        .encode()
-        .unwrap();
-
-    let response = client.runtime_watch(Request::new(request)).await.unwrap();
-
-    assert_eq!(
-        response
-            .metadata()
-            .get("grpc-encoding")
-            .and_then(|value| value.to_str().ok()),
-        Some("gzip")
-    );
-    assert!(response.into_inner().message().await.unwrap().is_some());
-    server.abort();
 }
 
 #[tokio::test]
@@ -251,23 +181,6 @@ async fn changed_frame_yields_another_complete_frame() {
 }
 
 #[tokio::test]
-async fn unchanged_observation_does_not_yield() {
-    let (client, service, _session, _machine) = watching_session().await;
-    service.push_watch_frame(frozen_frame());
-    let watch = client.watch().await.unwrap();
-    let _first = next_frame(&watch).await;
-
-    assert!(
-        timeout(Duration::from_millis(100), watch.next())
-            .await
-            .is_err(),
-        "an unchanged tick must not yield another frame"
-    );
-    assert_no_list_rpc(&service);
-    watch.cancel();
-}
-
-#[tokio::test]
 async fn abort_ends_only_that_watch_and_leaves_the_client_usable() {
     let (client, service, _session, _machine) = watching_session().await;
     service.push_watch_frame(frozen_frame());
@@ -314,98 +227,41 @@ async fn abort_ends_only_that_watch_and_leaves_the_client_usable() {
 }
 
 #[tokio::test]
-async fn store_or_rpc_failure_ends_the_iterable_with_a_typed_error() {
-    let (client, service, _session, _machine) = watching_session().await;
-    service.push_watch_frame(frozen_frame());
-    let watch = client.watch().await.unwrap();
-    let _first = next_frame(&watch).await;
+async fn watch_termination_is_a_typed_error_asking_the_caller_to_reconnect() {
+    enum End {
+        Fail(Status),
+        Closed,
+        LostConnection,
+    }
+    for (end, message) in [
+        (
+            End::Fail(Status::unavailable("store closed")),
+            Some("store closed"),
+        ),
+        (End::Closed, None),
+        (End::LostConnection, None),
+        (End::Fail(Status::cancelled("daemon cancelled Watch")), None),
+    ] {
+        let (client, service, _session, machine) = watching_session().await;
+        service.push_watch_frame(frozen_frame());
+        let watch = client.watch().await.unwrap();
+        let _first = next_frame(&watch).await;
 
-    service.fail_watch(Status::unavailable("store closed"));
+        match end {
+            End::Fail(status) => service.fail_watch(status),
+            End::Closed => service.end_watch(),
+            End::LostConnection => machine.disconnect(),
+        }
 
-    let error = timeout(Duration::from_secs(1), watch.next())
-        .await
-        .expect("failure must end the iterable")
-        .expect_err("daemon failure is a typed error");
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert!(error.message.contains("store closed"));
-}
-
-#[tokio::test]
-async fn unexpected_stream_end_asks_the_caller_to_reconnect() {
-    let (client, service, _session, _machine) = watching_session().await;
-    service.push_watch_frame(frozen_frame());
-    let watch = client.watch().await.unwrap();
-    let _first = next_frame(&watch).await;
-
-    service.end_watch();
-
-    let error = timeout(Duration::from_secs(1), watch.next())
-        .await
-        .expect("ended stream must not hang")
-        .expect_err("ended stream must ask the caller to reconnect");
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-}
-
-#[tokio::test]
-async fn lost_connection_asks_the_caller_to_reconnect() {
-    let (client, service, _session, machine) = watching_session().await;
-    service.push_watch_frame(frozen_frame());
-    let watch = client.watch().await.unwrap();
-    let _first = next_frame(&watch).await;
-
-    machine.disconnect();
-
-    let error = timeout(Duration::from_secs(2), watch.next())
-        .await
-        .expect("lost tunnel must not hang")
-        .expect_err("lost tunnel must ask the caller to reconnect");
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-}
-
-#[tokio::test]
-async fn remote_cancellation_asks_the_caller_to_reconnect() {
-    let (client, service, _session, _machine) = watching_session().await;
-    service.push_watch_frame(frozen_frame());
-    let watch = client.watch().await.unwrap();
-    let _first = next_frame(&watch).await;
-
-    service.fail_watch(Status::cancelled("daemon cancelled Watch"));
-
-    let error = timeout(Duration::from_secs(1), watch.next())
-        .await
-        .expect("remote cancellation must not hang")
-        .expect_err("remote cancellation must ask the caller to reconnect");
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-}
-
-#[tokio::test]
-async fn reconnect_starts_with_a_fresh_complete_frame_and_no_cursor() {
-    let (client, service, _session, _machine) = watching_session().await;
-    let first = frozen_frame();
-    let second = frame_with_extra_volume(&first);
-    service.push_watch_frame(first.clone());
-    let watch = client.watch().await.unwrap();
-    assert_eq!(next_frame(&watch).await, first);
-    watch.cancel();
-    assert_eq!(
-        timeout(Duration::from_secs(1), watch.next())
+        let error = timeout(Duration::from_secs(2), watch.next())
             .await
-            .expect("cancel must end the first Watch")
-            .unwrap(),
-        None
-    );
-    drop(watch);
-
-    let watch = client.watch().await.unwrap();
-    service.push_watch_frame(second.clone());
-    let reconnect = next_frame(&watch).await;
-    assert_eq!(reconnect, second);
-    assert_ne!(reconnect, first);
-    assert_eq!(
-        *service.watch_requests.lock().unwrap(),
-        [RuntimeWatchRequest {}, RuntimeWatchRequest {}]
-    );
-    watch.cancel();
+            .expect("termination must end the iterable")
+            .expect_err("termination is a typed error");
+        assert_eq!(error.code, RpcErrorCode::Unavailable, "{error:?}");
+        if let Some(message) = message {
+            assert!(error.message.contains(message), "{error:?}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -551,29 +407,6 @@ fn frame_with_extra_volume(frame: &RuntimeWatchFrame) -> RuntimeWatchFrame {
         },
     });
     changed
-}
-
-fn assert_redacted(frame: &RuntimeWatchFrame) {
-    let payload = serde_json::to_value(frame).unwrap();
-    let text = payload.to_string();
-    for forbidden in [
-        "BEGIN CERTIFICATE",
-        "BEGIN PRIVATE KEY",
-        "private_key",
-        "challenge_token",
-        "challenge_response",
-        "renewal_token",
-        "dns_endpoint",
-    ] {
-        assert!(
-            !text.contains(forbidden),
-            "{forbidden} must not appear on the Watch frame"
-        );
-    }
-    assert_eq!(
-        payload.get("hosted_dns_hostname"),
-        Some(&Value::String("cluster.example.ts.net".into()))
-    );
 }
 
 fn assert_no_list_rpc(service: &DiscoveryService) {

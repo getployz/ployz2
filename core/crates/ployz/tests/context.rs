@@ -7,7 +7,7 @@ use ployz::{
         select_connections,
     },
 };
-use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT, MACHINE_API_PORT, MachineId};
+use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, MachineId};
 
 #[test]
 fn config_round_trips_ordered_connections_with_private_permissions() {
@@ -154,16 +154,29 @@ fn connection_sources_follow_direct_context_and_local_precedence() {
         vec![Connection::unix("/run/ployz/ployz.sock").unwrap()]
     );
 
-    assert!(
-        select_connections(
+    let path = PathBuf::from("/tmp/config.yaml");
+    let unset = Config::new(&path, None, config.contexts.clone());
+    for (config, context, expected) in [
+        (
+            Config::new("/tmp/empty.yaml", None, BTreeMap::new()),
             None,
-            Some(&Config::new("/tmp/empty.yaml", None, BTreeMap::new())),
-            None,
-            true,
-            "/run/ployz/ployz.sock",
-        )
-        .is_err()
-    );
+            ContextError::NoContexts("/tmp/empty.yaml".into()),
+        ),
+        (unset, None, ContextError::NoCurrentContext(path.clone())),
+        (
+            config,
+            Some("gone"),
+            ContextError::ContextNotFound {
+                name: "gone".into(),
+                path,
+            },
+        ),
+    ] {
+        assert_eq!(
+            select_connections(None, Some(&config), context, true, "/run/ployz/ployz.sock"),
+            Err(expected)
+        );
+    }
 }
 
 #[test]
@@ -191,95 +204,45 @@ fn stored_connections_reject_missing_multiple_malformed_and_removed_transports()
 }
 
 #[test]
-fn selecting_a_connection_moves_only_that_entry_to_the_front() {
-    let mut context = Context {
-        connections: [
-            MACHINE_API_PORT,
-            CORROSION_GOSSIP_PORT,
-            CORROSION_API_PORT,
-            51003,
-        ]
-        .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
-        .into(),
-    };
-    let original = context.clone();
+fn dropping_a_machine_leaves_only_the_remaining_connections_in_order() {
+    let manual = "ssh://root@manual.example.com";
+    for (dropped, remaining) in [
+        ('2', ["ord1", "ord3", "manual"]),
+        ('1', ["ord2", "ord3", "manual"]),
+    ] {
+        let mut context = Context {
+            connections: vec![
+                ssh_machine("ord1.example.com", '1'),
+                ssh_machine("ord2.example.com", '2'),
+                ssh_machine("ord3.example.com", '3'),
+                Connection::from_str(manual).unwrap(),
+            ],
+        };
 
-    assert!(context.select_connection(2));
-    assert_eq!(
-        context
-            .connections
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        vec![
-            format!("tcp://127.0.0.1:{CORROSION_API_PORT}"),
-            format!("tcp://127.0.0.1:{MACHINE_API_PORT}"),
-            format!("tcp://127.0.0.1:{CORROSION_GOSSIP_PORT}"),
-            "tcp://127.0.0.1:51003".into(),
-        ]
-    );
+        context.drop_machine(&machine_id(dropped));
 
-    let mut invalid = original.clone();
-    assert!(!invalid.select_connection(9));
-    assert_eq!(invalid, original);
-}
+        assert_eq!(
+            context
+                .connections
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            remaining.map(|host| match host {
+                "manual" => manual.to_owned(),
+                host => format!("ssh://root@{host}.example.com"),
+            })
+        );
+    }
 
-#[test]
-fn dropping_a_machine_leaves_only_the_remaining_connections() {
+    // A Machine the context never named, next to a connection without an ID, is a no-op.
     let mut context = Context {
         connections: vec![
             ssh_machine("ord1.example.com", '1'),
-            ssh_machine("ord2.example.com", '2'),
-            ssh_machine("ord3.example.com", '3'),
-        ],
-    };
-
-    context.drop_machine(&machine_id('2'));
-
-    assert_eq!(
-        context
-            .connections
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        ["ssh://root@ord1.example.com", "ssh://root@ord3.example.com",]
-    );
-}
-
-#[test]
-fn dropping_the_default_machine_leaves_the_next_connection_as_default() {
-    let mut context = Context {
-        connections: vec![
-            ssh_machine("ord1.example.com", '1'),
-            ssh_machine("ord2.example.com", '2'),
-            ssh_machine("ord3.example.com", '3'),
-        ],
-    };
-
-    context.drop_machine(&machine_id('1'));
-
-    assert_eq!(
-        context
-            .connections
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        ["ssh://root@ord2.example.com", "ssh://root@ord3.example.com",]
-    );
-}
-
-#[test]
-fn dropping_a_machine_the_context_never_named_is_a_no_op() {
-    let mut context = Context {
-        connections: vec![
-            ssh_machine("ord1.example.com", '1'),
-            Connection::ssh(SshDestination::parse("root@manual.example.com").unwrap()),
+            Connection::from_str(manual).unwrap(),
         ],
     };
     let before = context.clone();
-
     context.drop_machine(&machine_id('9'));
-
     assert_eq!(context, before);
 }
 
@@ -379,35 +342,28 @@ fn config_cannot_store_current_context_as_empty_string() {
 }
 
 #[test]
-fn empty_current_context_yaml_fails_to_load() {
+fn current_context_yaml_loads_absent_or_null_as_none_and_rejects_empty() {
     let root =
-        std::env::temp_dir().join(format!("ployz-empty-current-yaml-{}", std::process::id()));
+        std::env::temp_dir().join(format!("ployz-current-context-yaml-{}", std::process::id()));
     let path = root.join("config.yaml");
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    fs::write(&path, "current_context: \"\"\n").unwrap();
 
+    for yaml in ["contexts: {}\n", "current_context: null\n"] {
+        fs::write(&path, yaml).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().current_context(),
+            None,
+            "{yaml}"
+        );
+    }
+
+    fs::write(&path, "current_context: \"\"\n").unwrap();
     let error = Config::load(&path).unwrap_err();
     assert!(
         matches!(error, ConfigError::EmptyCurrentContext(ref error_path) if error_path == &path),
         "{error}"
     );
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn absent_or_null_current_context_yaml_loads_as_none() {
-    let root = std::env::temp_dir().join(format!("ployz-null-current-yaml-{}", std::process::id()));
-    let path = root.join("config.yaml");
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-
-    fs::write(&path, "contexts: {}\n").unwrap();
-    assert_eq!(Config::load(&path).unwrap().current_context(), None);
-
-    fs::write(&path, "current_context: null\n").unwrap();
-    assert_eq!(Config::load(&path).unwrap().current_context(), None);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -420,57 +376,6 @@ fn load_or_empty_with_no_file_has_no_current_context() {
 
     let config = Config::load_or_empty(&path).unwrap();
     assert_eq!(config.current_context(), None);
-}
-
-#[test]
-fn selecting_connections_with_no_current_context_is_no_current_context() {
-    let prod = Connection::tcp(format!("127.0.0.1:{MACHINE_API_PORT}").parse().unwrap());
-    let path = PathBuf::from("/tmp/config.yaml");
-    let config = Config::new(
-        &path,
-        None,
-        BTreeMap::from([(
-            "prod".into(),
-            Context {
-                connections: vec![prod],
-            },
-        )]),
-    );
-
-    assert_eq!(
-        select_connections(None, Some(&config), None, true, "/run/ployz/ployz.sock"),
-        Err(ContextError::NoCurrentContext(path))
-    );
-}
-
-#[test]
-fn selecting_connections_with_a_missing_name_is_context_not_found() {
-    let prod = Connection::tcp(format!("127.0.0.1:{MACHINE_API_PORT}").parse().unwrap());
-    let path = PathBuf::from("/tmp/config.yaml");
-    let config = Config::new(
-        &path,
-        Some("prod".into()),
-        BTreeMap::from([(
-            "prod".into(),
-            Context {
-                connections: vec![prod],
-            },
-        )]),
-    );
-
-    assert_eq!(
-        select_connections(
-            None,
-            Some(&config),
-            Some("gone"),
-            true,
-            "/run/ployz/ployz.sock"
-        ),
-        Err(ContextError::ContextNotFound {
-            name: "gone".into(),
-            path,
-        })
-    );
 }
 
 #[test]
