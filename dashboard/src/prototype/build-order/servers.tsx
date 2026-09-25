@@ -157,6 +157,30 @@ export function BuildOrderSection() {
   );
 }
 
+const WORKFLOW = `name: Ployz build
+on:
+  workflow_dispatch:
+    inputs:
+      build: { required: true, type: string }
+      runner: { required: false, type: string, default: ubuntu-latest }
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: \${{ inputs.runner }}
+    steps:
+      - uses: ployz/build@v1
+        with:
+          build: \${{ inputs.build }}
+`;
+
+/** GitHub's new-file page with the workflow filled in; the user commits it (or opens a PR) themselves. */
+function workflowFileUrl(fullName: string) {
+  const params = new URLSearchParams({ filename: ".github/workflows/ployz-build.yml", value: WORKFLOW });
+  return `https://github.com/${fullName}/new/main?${params.toString()}`;
+}
+
 function GithubReposDialog() {
   const { repos } = useBuildOrderState();
   const setReadiness = (fullName: string, readiness: "ready" | "pr-open") =>
@@ -167,7 +191,7 @@ function GithubReposDialog() {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>GitHub Actions</DialogTitle>
-          <DialogDescription>Each repository needs a small workflow file. It only runs when Ployz starts a build.</DialogDescription>
+          <DialogDescription>Each repository needs one small workflow file. It only runs when Ployz starts a build.</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col divide-y rounded-lg border">
           {repos.map((repo) => (
@@ -177,10 +201,18 @@ function GithubReposDialog() {
                 <CheckIcon className="size-4 text-success" aria-label="Set up" />
               ) : repo.readiness === "pr-open" ? (
                 <Button size="xs" variant="ghost" onClick={() => setReadiness(repo.fullName, "ready")}>
-                  PR open · simulate merge
+                  Waiting for commit · simulate
                 </Button>
               ) : (
-                <Button size="xs" variant="ink" onClick={() => setReadiness(repo.fullName, "pr-open")}>Open setup PR</Button>
+                <Button
+                  size="xs"
+                  variant="ink"
+                  nativeButton={false}
+                  render={<a href={workflowFileUrl(repo.fullName)} target="_blank" rel="noreferrer" />}
+                  onClick={() => setReadiness(repo.fullName, "pr-open")}
+                >
+                  Add workflow ↗
+                </Button>
               )}
             </div>
           ))}
