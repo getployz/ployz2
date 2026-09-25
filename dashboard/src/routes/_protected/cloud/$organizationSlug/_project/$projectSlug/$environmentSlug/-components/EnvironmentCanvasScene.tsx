@@ -35,6 +35,7 @@ import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
 import { DeployBar } from "./DeployBar";
 import { BackToLive, DeploymentModeProvider, useDeploymentMode } from "./deployment-mode";
+import { DeploymentServicePanel } from "./DeploymentServicePanel";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
@@ -217,8 +218,9 @@ function CanvasScene() {
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
   const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
   const attempt = useDeploymentMode();
-  // ponytail: Deployment Mode opens no panel until its read-only panel lands (#1052); the live panel edits.
-  const inspectedNodeId = attempt ? null : selectedNodeId;
+  // Deployment Mode opens only its read-only panel, and only for a service in the Attempt Target; the live panel edits.
+  const inspectedNodeId = !attempt ? selectedNodeId
+    : attempt.nodes.some((node) => node.nodeType === "service" && node.nodeId === selectedServiceId) ? selectedServiceId : null;
 
   return (
     <CanvasInspectorOverlay
@@ -241,7 +243,7 @@ function CanvasScene() {
         <Suspense fallback={null}><DeployBar /></Suspense>
       </>}
     >
-      {inspectedNodeId ? <Outlet /> : null}
+      {!inspectedNodeId ? null : attempt ? <DeploymentServicePanel attempt={attempt} serviceId={inspectedNodeId} /> : <Outlet />}
     </CanvasInspectorOverlay>
   );
 }

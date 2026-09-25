@@ -10,12 +10,12 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { BackToLive } from "../deployment-mode";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
-import { DeploymentNodeCard } from "./DeploymentNode";
+import { DeploymentNodeCard, DeploymentNodeLink } from "./DeploymentNode";
 import type { CanvasDeploymentNode } from "./types";
 
 /**
  * The canvas as one Cloud Deployment Attempt saw it: exactly its node set at current positions.
- * Read-only by construction: no dragging, context menus, Create, change controls, or node links.
+ * Read-only by construction: no dragging, context menus, Create, or change controls. Service nodes open the read-only panel.
  */
 export function DeploymentCanvas({ attempt, environmentId }: { attempt: DeploymentAttempt; environmentId: string }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -68,7 +68,7 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
       </div>
       <div className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden">
         <div className="flex flex-col gap-3">
-          {nodes.map((node) => <DeploymentNodeCard key={node.id} data={node.data} />)}
+          {nodes.map((node) => <DeploymentNodeLink key={node.id} data={node.data}><DeploymentNodeCard data={node.data} /></DeploymentNodeLink>)}
         </div>
       </div>
       <BackToLive className="absolute top-4 right-4 z-10 min-[861px]:hidden" />

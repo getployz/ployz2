@@ -1,14 +1,14 @@
 import { useState } from "react";
-import { useParams, useRouter } from "@tanstack/react-router";
+import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
-import { DeploymentStatusCard } from "#/components/deployment-status-card";
-import { DeploymentLogs } from "#/components/deployment-logs";
 import { reconcileDeploymentCollections, useDeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
+import { deploymentStatusLabel } from "#/modules/deployments/deployment-view";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { formatRelativeTime } from "#/utils/relative-time";
 import { VolumeRemoveAttemptHistory } from "#/components/volume-remove/deployment-volume-remove-history";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
@@ -44,8 +44,7 @@ export function useRetryDeployment(deployment: EnvironmentDeploymentSummary) {
   return { retryDeployment, isRetrying };
 }
 
-export function DeploymentRow({ deployment, serviceId }: { deployment: EnvironmentDeploymentSummary; serviceId?: string }) {
-  const [isOpen, setIsOpen] = useState(() => ["planning", "deploying"].includes(deployment.status));
+export function DeploymentRow({ deployment }: { deployment: EnvironmentDeploymentSummary }) {
   const { retryDeployment, isRetrying } = useRetryDeployment(deployment);
   const [isDispatching, setIsDispatching] = useState(false);
   const router = useRouter();
@@ -70,7 +69,6 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
       resource.implementationType === "volume" ? [resource.id] : [],
     ),
   );
-  const [showLogs, setShowLogs] = useState(false);
   const queuedForNextTrigger = deployment.status === "queued" && !deployment.dispatchRequestedAt;
   async function deployQueuedTarget() {
     if (!organizationSlug || !queuedForNextTrigger) return;
@@ -97,11 +95,18 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
 
   if (!attempt) return null;
 
+  const cancelling = ["queued", "planning", "deploying"].includes(deployment.status) && Boolean(deployment.cancellationRequestedAt);
+  // Steps and logs live in Deployment Mode's service panel; this row only names the attempt and holds its commands.
   return <>
-    <DeploymentStatusCard deployment={deployment} view={attempt.view} serviceId={serviceId} progress={deployment.runtimeProgress}
-      showLogs={showLogs} onLogsChange={setShowLogs}
-      onLogsIntent={organizationSlug ? () => preloadDeploymentLogs(organizationSlug, deployment.id, collectionScope) : undefined}
-      logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} hasBuild={deployment.buildServiceIds.some((id) => !serviceId || id === serviceId)} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={<>
+    <article className="flex min-w-0 flex-col rounded-xl border">
+      <header className="flex flex-wrap items-center gap-3 px-3 py-4 sm:gap-5 sm:px-5">
+        <span className="rounded-md bg-muted/50 px-2.5 py-1.5 text-xs font-medium">{cancelling ? "Cancelling" : deploymentStatusLabel(attempt.view)}</span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{deployment.message ?? "Deployment"}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{deployment.projectSlug} / {deployment.environmentSlug} · {formatRelativeTime(deployment.createdAt)} · {deployment.serviceCount} {deployment.serviceCount === 1 ? "service" : "services"}</p>
+        </div>
+        {/* ponytail: temporary way into Deployment Mode; the deploy bar (#1050) replaces it. */}
+        {organizationSlug ? <Button variant="outline" size="sm" nativeButton={false} render={<Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ organizationSlug, projectSlug: deployment.projectSlug, environmentSlug: deployment.environmentSlug }} search={{ deployment: deployment.id }} />}>View on canvas</Button> : null}
         <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" size="icon" />}
@@ -161,13 +166,13 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-      </>}>
+      </header>
       {deployment.volumeRemoveAttempts.length > 0 ? <div className="px-6 py-3"><VolumeRemoveAttemptHistory
         attempts={deployment.volumeRemoveAttempts} organizationSlug={organizationSlug ?? ""}
         projectSlug={deployment.projectSlug} environmentSlug={deployment.environmentSlug}
         availableVolumeResourceIds={availableVolumeResourceIds}
       /></div> : null}
-    </DeploymentStatusCard>
+    </article>
     {organizationSlug ? <CancelDeploymentDialog open={cancelOpen} onOpenChange={setCancelOpen} organizationSlug={organizationSlug} deployment={deployment} /> : null}
   </>;
 }

@@ -18,7 +18,7 @@ export function ServiceDrawerTabs({
   const navigate = useNavigate({ from: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId" });
   return (
     <Tabs
-      value={tab ?? "settings"}
+      value={Schema.is(servicePageSchema)(tab) ? tab : "settings"}
       onValueChange={(value) => {
         if (Schema.is(servicePageSchema)(value)) {
           void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });

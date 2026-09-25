@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { Suspense } from "react";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { DbProvider } from "@tanstack/react-db";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -27,8 +27,8 @@ import { Route as deploymentsRoute } from "../deployments";
 const organizationId = "00000000-0000-4000-8000-000000000001";
 const projectId = "00000000-0000-4000-8000-000000000002";
 const environmentId = "00000000-0000-4000-8000-000000000003";
-const [previous, attemptId, failedId, runningId] = ["a0000000-0000-4000-8000-000000000011", "b0000000-0000-4000-8000-000000000012",
-  "c0000000-0000-4000-8000-000000000013", "d0000000-0000-4000-8000-000000000014"];
+const [previous, attemptId, failedId, runningId, replaceFailedId] = ["a0000000-0000-4000-8000-000000000011", "b0000000-0000-4000-8000-000000000012",
+  "c0000000-0000-4000-8000-000000000013", "d0000000-0000-4000-8000-000000000014", "e0000000-0000-4000-8000-000000000015"];
 const [api, old, worker, web] = ["00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022", "00000000-0000-4000-8000-000000000023", "00000000-0000-4000-8000-000000000024"];
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
 const createdAt = new Date("2026-09-01T00:00:00Z");
@@ -54,6 +54,9 @@ const removal: DeploymentProgressRow = { index: 0, machineId: "m", machineName: 
   startedAt: 0, finishedAt: 3_000 };
 const healthFailure: DeploymentProgressRow = { ...removal, index: 1, serviceId: web, serviceName: "web", operation: "replace_container", status: "failed",
   error: "Health check timed out", containerId: "4e7a19c", startedAt: 3_000, finishedAt: 63_000 };
+// A later attempt failed replacing `api`: the health check failed in container c0ffee.
+const failedReplace: DeploymentProgressRow = { ...removal, serviceId: api, serviceName: "api", operation: "replace_container", status: "failed",
+  error: "Health check timed out after 60s", containerId: "c0ffee" };
 const rows = new Map<string, unknown[]>(Object.entries({
   project: [{ id: projectId, organizationId, name: "Shop", slug: "shop", createdAt, updatedAt: createdAt }],
   environment: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt, updatedAt: createdAt,
@@ -61,9 +64,10 @@ const rows = new Map<string, unknown[]>(Object.entries({
   environment_summary: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt }],
   service: [service(api, "api"), service(old, "old"), service(web, "web"), service(worker, "worker")],
   environment_deployment: [deployment(previous, 1, null),
-    deployment(attemptId, 2, { completed: 1, total: 2, outcome: "failed", rows: [removal, healthFailure], compensation: [] }, "failed")],
+    deployment(attemptId, 2, { completed: 1, total: 2, outcome: "failed", rows: [removal, healthFailure], compensation: [] }, "failed"),
+    deployment(replaceFailedId, 3, { completed: 0, total: 1, outcome: "failed", rows: [failedReplace], compensation: [] }, "failed")],
   environment_node_config_snapshot: [snapshot(previous, api, "api"), snapshot(previous, old, "old"), snapshot(previous, web, "web"),
-    snapshot(attemptId, api, "api"), snapshot(attemptId, web, "web")],
+    snapshot(attemptId, api, "api"), snapshot(attemptId, web, "web"), snapshot(replaceFailedId, api, "api")],
 }));
 const card = (name: string) => screen.getAllByText(name)[0]?.closest("[data-canvas-node]");
 
@@ -71,6 +75,8 @@ async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production" }: 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([...rows.get(table) ?? [], ...extra[table] ?? []]));
+  // The failed attempt's event log is finished and empty, so Deploy logs reads it from cache.
+  queryClient.setQueryData(["collections", "session", "user", "acme", "deployment_logs", replaceFailedId], { events: [], finished: true });
   // The change-state projection stamps its version from these tables, then reads no states.
   await Promise.all([getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection].map((get) => preloadCollection(get("acme", scope))));
   await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => []));
@@ -99,8 +105,17 @@ async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production" }: 
   return router;
 }
 
-const enterDeploymentMode = (router: Awaited<ReturnType<typeof openCanvas>>) =>
-  act(() => router.navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: { deployment: attemptId } }));
+const enterDeploymentMode = (router: Awaited<ReturnType<typeof openCanvas>>, deployment = attemptId) =>
+  act(() => router.navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: { deployment } }));
+
+async function openNode(nodeId: string) {
+  const link = await waitFor(() => {
+    const found = document.querySelector<HTMLAnchorElement>(`a[data-canvas-node="${nodeId}"]`);
+    if (!found) throw new Error(`Missing link to ${nodeId}`);
+    return found;
+  });
+  await act(async () => { fireEvent.click(link); });
+}
 
 beforeEach(() => {
   vi.stubGlobal("EventSource", class { addEventListener() {} removeEventListener() {} close() {} });
@@ -124,14 +139,14 @@ describe("deployment mode on the environment canvas", () => {
     expect(unchanged?.textContent).toContain("Unchanged");
     expect(unchanged?.getAttribute("data-dimmed")).toBe("true");
     expect(screen.queryAllByText("worker")).toEqual([]);
-    // Read-only: no Create, no change controls, no links into the live service panel.
+    // Read-only: no Create, no change controls.
     expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
-    expect(document.querySelector(`a[data-canvas-node="${api}"]`)).toBeNull();
 
     // Navigating inside the canvas keeps the mode, and the editable live panel stays closed.
     await act(() => router.navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: api }, search: {} }));
     expect(router.state.location.search).toMatchObject({ deployment: attemptId });
     expect(screen.queryByText("Live service panel")).toBeNull();
+    await act(() => router.navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: (prev) => prev }));
 
     const [backToLive] = screen.getAllByText("Back to live");
     if (!backToLive) throw new Error("Missing Back to live");
@@ -158,6 +173,41 @@ describe("deployment mode on the environment canvas", () => {
     // Unchanged: name and outcome only, dimmed.
     expect(card("api")?.querySelector("[data-stage], [data-tail]")).toBeNull();
     expect(card("api")?.textContent).toBe("apiUnchanged");
+  });
+
+  it("opens a node's read-only panel on the tab its outcome calls for, with the tab in the URL", async () => {
+    const router = await openCanvas();
+    await enterDeploymentMode(router, replaceFailedId);
+    await openNode(api);
+
+    // A failed rollout lands on Deploy logs; the panel has only the Deployment Mode tabs.
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Deploy logs" }).getAttribute("aria-selected")).toBe("true"));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ deployment: replaceFailedId, tab: "deploy-logs" }));
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Details", "Build logs", "Deploy logs"]);
+    // A prebuilt image built nothing.
+    expect(screen.getByRole("tab", { name: "Build logs" }).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByText("Live service panel")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Details" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ deployment: replaceFailedId, tab: "details" }));
+    expect(screen.getByText("Health check timed out after 60s")).toBeTruthy();
+    expect(screen.getByText("c0ffee")).toBeTruthy();
+    expect(screen.getByText("0 variables (as deployed)")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Resource inspector" })).getByText("nginx:1")).toBeTruthy();
+    // Read-only: nothing to edit or save.
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("opens an unchanged node on Details and keeps the live panel for Live Mode", async () => {
+    const router = await openCanvas();
+    await enterDeploymentMode(router);
+    await openNode(api);
+    expect(await screen.findByText(/Unchanged in this deployment/)).toBeTruthy();
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ tab: "details" }));
+
+    await act(() => router.navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: api }, search: { deployment: undefined, tab: undefined } }));
+    expect(await screen.findByText("Live service panel")).toBeTruthy();
+    expect(screen.queryAllByRole("tab")).toEqual([]);
   });
 
   it("leaves the mode on browser Back", async () => {
