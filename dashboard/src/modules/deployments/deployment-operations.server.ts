@@ -12,11 +12,17 @@ import { loadEnvironmentSnapshotProjection, type EnvironmentSnapshotProjection }
 import type { Actor } from "#/modules/identity/actor";
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { decodeEnvironmentResourceNodeConfig } from "#/modules/environment-design/environment-resource-node";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { decodeStrict, strictParseOptions } from "#/modules/environment-design/schema";
+import { and, eq } from "drizzle-orm";
+import { Database } from "#/server/database.server";
+import { environmentDeployment } from "#/modules/deployments/tables";
+import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
+import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { getDisplayedDeployEnvBySnapshotConfig } from "#/modules/deployments/deploy-environment.server";
 
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 
-import type { DeploymentBuildTailQueryInput, DeploymentOperationEvidencePageQueryInput, EnvironmentChangeStateNodeProjection, EnvironmentChangeStateProjection, OrganizationEnvironmentChangeStateQueryInput } from "#/modules/deployments/deployment-contract";
+import type { DeploymentBuildTailQueryInput, DeploymentServiceVariablesQueryInput, DeploymentOperationEvidencePageQueryInput, EnvironmentChangeStateNodeProjection, EnvironmentChangeStateProjection, OrganizationEnvironmentChangeStateQueryInput } from "#/modules/deployments/deployment-contract";
 
 const requireOrganization = Effect.fn("Deployments.requireOrganization")(
   function* (actor: Actor, organizationSlug: string) {
@@ -147,4 +153,26 @@ export const listDeploymentBuildTail = Effect.fn("Deployments.buildTail")(functi
 
 export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
   return yield* loadDeploymentEvents(yield* logCursor(actor, input));
+});
+
+/**
+ * One service's variables as the attempt deployed them, recomputed from the attempt's frozen
+ * snapshots and producers only. Sealed values, and values resolving from them, are null: never decrypted.
+ */
+export const getDeploymentServiceVariables = Effect.fn("Deployments.serviceVariables")(function* (actor: Actor, input: DeploymentServiceVariablesQueryInput) {
+  const organization = yield* requireOrganization(actor, input.organizationSlug);
+  const { drizzle } = yield* Database;
+  const [deployment] = yield* drizzle.select({ variableProducers: environmentDeployment.variableProducers }).from(environmentDeployment)
+    .where(and(eq(environmentDeployment.id, input.deploymentId), eq(environmentDeployment.organizationId, organization.id))).limit(1);
+  if (!deployment) return yield* new NotFound({ message: "The deployment was not found." });
+  const rows = yield* drizzle.select({ serviceId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
+    .from(environmentNodeConfigSnapshot)
+    .where(and(eq(environmentNodeConfigSnapshot.environmentDeploymentId, input.deploymentId), eq(environmentNodeConfigSnapshot.nodeType, "service")));
+  const snapshots = rows.map((row) => ({ serviceId: row.serviceId, config: decodeStrict(serviceDeploymentConfigSchema, row.config) }));
+  // The Cluster Domain never changes once reserved, so it is the one deploy used.
+  const clusterDomain = snapshots.some(({ config }) => config.managedHostnames.length > 0)
+    ? (yield* loadClusterDomain(organization.id))?.name ?? null
+    : null;
+  const env = yield* getDisplayedDeployEnvBySnapshotConfig(snapshots, deployment.variableProducers ?? null, clusterDomain);
+  return env.get(input.serviceId) ?? {};
 });
