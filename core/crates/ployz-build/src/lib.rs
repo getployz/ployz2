@@ -275,7 +275,7 @@ pub fn execute(
     cancellation: &Cancellation,
     observe: &(dyn Fn(&Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
-    execute_local(
+    execute_rendered(
         request,
         Produce::Output(request.output),
         cancellation,
@@ -294,10 +294,10 @@ pub fn export_cache(request: &Request<'_>, cancellation: &Cancellation) -> Resul
     if !github_cache(request) {
         return Ok(());
     }
-    execute_local(request, Produce::Cache, cancellation, &|_| {}).map(drop)
+    execute_rendered(request, Produce::Cache, cancellation, &|_| {}).map(drop)
 }
 
-fn execute_local(
+fn execute_rendered(
     request: &Request<'_>,
     produce: Produce,
     cancellation: &Cancellation,

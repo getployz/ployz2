@@ -399,6 +399,20 @@ describe("Image Builds on GitHub Actions", () => {
     expect(fake.ended).toEqual([grantId(1)]);
   }, 30_000);
 
+  it("fails a reported build once its budget passed and the Machine still can't end its grant", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    fake.endFails = true;
+    await report(["linux/amd64"]);
+    fake.runStatus = "completed";
+    // Within the budget the next check retries.
+    expect(await run(checkGithubImageBuild(await target(), { ended: true, startLimit: false }))).toEqual({ kind: "waiting" });
+    await harness.db.update(schema.environmentDeploymentImageBuild).set({ checkedInAt: new Date(Date.now() - 3 * 60 * 60_000) });
+    expect(await run(checkGithubImageBuild(await target(), { ended: true, startLimit: false })))
+      .toMatchObject({ kind: "settled", result: { status: "failed" } });
+    expect(await row()).toMatchObject({ failureMessage: "GitHub: your Machine couldn't be reached to confirm the push within 2 hours." });
+  });
+
   it("ignores the run failing after the final report settled the build", async () => {
     await dispatch();
     await checkIn(oidcToken());

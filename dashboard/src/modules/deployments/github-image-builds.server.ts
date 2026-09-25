@@ -307,12 +307,16 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
   const grant = row.github.grant;
   if (!grant || !row.machineId) return yield* failed("GitHub: the run ended before it received its grant.");
   // Only the Machine's answer decides; while it can't be reached the build stays unsettled and the
-  // next check (the run's completion or the poll) ends the grant again.
+  // next check (the run's completion or the poll) ends the grant again, until the run's budget is
+  // spent: a Machine gone for good must not hold the deploy forever.
   const ended = yield* endGrant(row.organizationId, row.machineId, grant.id).pipe(
     Effect.map((answer) => ({ pushed: answer.pushed ?? null })),
     Effect.catch((error) => Effect.logWarning("Could not end a GitHub build's grant; the next check retries.", error).pipe(Effect.as(null))),
   );
-  if (!ended) return waiting;
+  if (!ended) {
+    const spent = timedOut || Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS;
+    return spent ? yield* failed("GitHub: your Machine couldn't be reached to confirm the push within 2 hours.") : waiting;
+  }
   const pushed = ended.pushed;
   const platforms = row.github.report?.platforms;
   if (!pushed || !platforms?.length) return yield* failed(timedOut ? "GitHub: the run didn't finish within 2 hours." : "GitHub: the run pushed no image.");
