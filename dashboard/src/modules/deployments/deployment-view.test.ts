@@ -110,7 +110,7 @@ describe("deployment view projection", () => {
           { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "c".repeat(32) as MachineId, name: "nuc" } }, github: null, skips: [] },
           { image: "worker", serverChoice: null, github: null, skips: [] },
           { image: "blog", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/2", reason: "next_in_build_order" }, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] },
-          { image: "wiki", serverChoice: null, github: null, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }] },
+          { image: "wiki", serverChoice: null, github: null, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }, { builder: "servers", kind: "preferred_unavailable", machineId: "e".repeat(32) as MachineId, name: null }] },
           { image: "shop", serverChoice: { machineName: "fast", reason: { kind: "preferred" } }, github: null, skips: [] },
           { image: "mail", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/3", reason: "preferred" }, skips: [] },
           { image: "cron", serverChoice: { machineName: "hel-1", reason: { kind: "preferred_unavailable", preferred: "d".repeat(32) as MachineId, name: null } }, github: null, skips: [] },
@@ -124,7 +124,7 @@ describe("deployment view projection", () => {
       null,
       { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1", skipped: [] },
       { server: "GitHub Actions", reason: "next in the build order", runUrl: "https://github.com/o/r/actions/runs/2", skipped: ["Your servers: none started it in 3 min"] },
-      { server: null, reason: null, skipped: ["GitHub: no workflow in o/r"] },
+      { server: null, reason: null, skipped: ["GitHub: no workflow in o/r", "Preferred server: no longer in the Cluster"] },
       { server: "fast", reason: "preferred builder", skipped: [] },
       { server: "GitHub Actions", reason: "preferred builder", runUrl: "https://github.com/o/r/actions/runs/3", skipped: [] },
       { server: "hel-1", reason: "the preferred Server is no longer in the Cluster", skipped: [] },
@@ -132,7 +132,7 @@ describe("deployment view projection", () => {
     // The skip trail reads after the Builder that took the build, or alone before one did.
     expect(view.nodes.slice(5, 7).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([
       "Built on GitHub Actions · next in the build order · skipped Your servers: none started it in 3 min",
-      "Skipped GitHub: no workflow in o/r",
+      "Skipped GitHub: no workflow in o/r · skipped Preferred server: no longer in the Cluster",
     ]);
   });
 

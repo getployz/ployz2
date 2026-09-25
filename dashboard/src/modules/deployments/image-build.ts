@@ -1,5 +1,6 @@
 import type { BuildGrantId } from "@ployz/sdk";
 import { Schema } from "effect";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { CollectorCheckpoint } from "./preparation-progress";
 
 /**
@@ -16,6 +17,8 @@ export const skipReasonSchema = Schema.Union([
   Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("multi_platform"), platforms: Schema.Array(Schema.String) }),
   Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("dispatch_failed"), message: Schema.String }),
   Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("ended_before_start") }),
+  /** The Service's Preferred Server is gone (`name` null) or no longer accepts builds: the walk went back to Auto. */
+  Schema.Struct({ builder: Schema.Literal("servers"), kind: Schema.Literal("preferred_unavailable"), machineId: rustMachineIdSchema, name: Schema.NullOr(Schema.String) }),
   /** It hadn't started the build within its "start within" limit. */
   Schema.Struct({ builder: Schema.Literals(["github", "servers"]), kind: Schema.Literal("not_started"), minutes: Schema.Number }),
 ]);

@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import type { MachineId } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { servicePolicySchema } from "#/modules/environment-design/service-policy";
@@ -6,9 +7,13 @@ import { service } from "#/modules/environment-design/tables";
 import { checkGithubBuildWorkflow, listOrganizationGithubRepositories } from "#/modules/github/github-build.server";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 import { defaultBuildOrder, imageBuildWalk, type BuildOrder, type BuildOrderRow } from "./build-order";
-import type { ImageBuildTarget } from "./image-builds.server";
+import type { SkipReason } from "./image-build";
+import { skipUnstarted, type ImageBuildTarget } from "./image-builds.server";
+
+const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
 import { environmentDeployment, organizationBuildOrder } from "./tables";
 
 /** Whether GitHub is set up: some repository the Organization's Services build from has the build workflow. */
@@ -29,12 +34,27 @@ export const loadBuildOrder = Effect.fn("Deployments.loadBuildOrder")(function* 
 });
 
 /**
+ * Why a Preferred Server can't take builds any more, from the Cluster's current view; null while it
+ * can. A Cluster Cloud can't see right now keeps the preference: the Engine ranks it anyway, and
+ * reports it unavailable if it vanished since.
+ */
+const preferredServerUnavailable = Effect.fn("Deployments.preferredServerUnavailable")(function* (organizationId: string, machineId: MachineId) {
+  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (session.status !== "connected") return null;
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const observed = frame.machines.find(({ machine }) => machine.id === machineId);
+  if (observed?.machine.accepts_builds) return null;
+  return { builder: "servers", kind: "preferred_unavailable", machineId, name: observed?.machine.name ?? null } satisfies SkipReason;
+}, Effect.scoped, Effect.orElseSucceed(() => null));
+
+/**
  * The Builders one Image Build tries, in turn: the Service's Preferred Builder, then the
- * Organization's Build Order without it, both read as the build starts. A Preferred Server the
- * Cluster can't use any more is the Engine's to notice: it chooses as it would without it, and says so.
+ * Organization's Build Order without it, both read as the build starts. A Preferred Server that is
+ * gone or no longer builds goes back to Auto, and the skip trail says why, so a GitHub-only
+ * Organization never builds on its servers.
  */
 export const imageBuildCandidates = Effect.fn("Deployments.imageBuildCandidates")(function* (
-  build: Pick<ImageBuildTarget, "deploymentId" | "serviceId">,
+  build: Pick<ImageBuildTarget, "id" | "image" | "deploymentId" | "serviceId">,
 ) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ organizationId: environmentDeployment.organizationId, policy: service.policy })
@@ -42,7 +62,17 @@ export const imageBuildCandidates = Effect.fn("Deployments.imageBuildCandidates"
     .where(eq(environmentDeployment.id, build.deploymentId)).limit(1);
   if (!row) return imageBuildWalk(defaultBuildOrder(false), undefined);
   const policy = Schema.decodeUnknownOption(servicePolicySchema)(row.policy);
-  const preferred = Option.isSome(policy) ? policy.value.preferredBuilder : undefined;
+  if (row.policy !== null && Option.isNone(policy)) {
+    yield* Effect.logWarning("A Service's policy does not decode; its build follows the Build Order.", { serviceId: build.serviceId });
+  }
+  let preferred = Option.isSome(policy) ? policy.value.preferredBuilder : undefined;
+  if (preferred !== undefined && preferred !== "github") {
+    const unavailable = yield* preferredServerUnavailable(row.organizationId, preferred);
+    if (unavailable) {
+      yield* skipUnstarted(build, unavailable);
+      preferred = undefined;
+    }
+  }
   return imageBuildWalk(yield* loadBuildOrder(row.organizationId), preferred);
 });
 

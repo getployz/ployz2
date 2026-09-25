@@ -468,7 +468,11 @@ describe("Image Builds on GitHub Actions", () => {
     const prefer = (preferredBuilder: string) => harness.db.update(schema.service)
       .set({ policy: { autoDeploy: true, waitForCi: false, watchPaths: [], imageUpdate: { type: "off" }, preferredBuilder: asTestDouble<MachineId>()(preferredBuilder) } });
     /** The Builders a fresh Image Build of the Service walks. */
-    const plan = async () => run(imageBuildCandidates({ deploymentId, serviceId }));
+    const plan = async () => {
+      await harness.db.delete(schema.environmentDeploymentImageBuild);
+      await harness.db.insert(schema.environmentDeploymentImageBuild).values({ organizationId, deploymentId, serviceId, image: "api", inngestRunId: runId });
+      return run(imageBuildCandidates(await target()));
+    };
 
     it("defaults to GitHub first once a repository has the build workflow, and to the servers until then", async () => {
       await harness.db.delete(schema.organizationBuildOrder);
@@ -500,6 +504,7 @@ describe("Image Builds on GitHub Actions", () => {
       await prefer(fast.id);
       expect(await plan()).toEqual([{ builder: "servers", reason: "preferred", machineId: fast.id }, { builder: "github", reason: "first_in_build_order" }]);
       // The whole walk: the preferred Server's go has a start limit, then GitHub gets it.
+      await harness.db.delete(schema.environmentDeploymentImageBuild);
       await queued();
       fake.serversQueued = true;
       await dispatch(1);
@@ -507,5 +512,18 @@ describe("Image Builds on GitHub Actions", () => {
       expect(fake.preferredMachines).toEqual([fast.id]);
       expect(await row()).toMatchObject({ builder: "github", github: { reason: "first_in_build_order" }, skips: [serversNotStarted] });
     }, 30_000);
+
+    it("goes back to Auto, and says why, when the preferred Server no longer builds or is gone", async () => {
+      await buildOrder("github-only");
+      await prefer(fast.id);
+      fake.machines = [machine, { ...fast, accepts_builds: false }];
+      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order" }]);
+      expect(await row()).toMatchObject({ skips: [{ builder: "servers", kind: "preferred_unavailable", machineId: fast.id, name: "fast" }] });
+      fake.machines = [machine];
+      // GitHub only: a gone preferred Server never puts the build on your servers.
+      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order" }]);
+      expect(await row()).toMatchObject({ skips: [{ builder: "servers", kind: "preferred_unavailable", machineId: fast.id, name: null }] });
+      expect((await buildLog()).imageBuilds).toEqual([expect.objectContaining({ skips: [expect.objectContaining({ kind: "preferred_unavailable" })] })]);
+    });
   });
 });

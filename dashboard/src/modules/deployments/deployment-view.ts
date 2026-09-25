@@ -64,6 +64,7 @@ export function skipReasonText(reason: SkipReason): string {
     case "multi_platform": return `${builder}: needs ${reason.platforms.join("+")}`;
     case "dispatch_failed": return `${builder}: could not start the build (${reason.message})`;
     case "ended_before_start": return `${builder}: the run ended before it started`;
+    case "preferred_unavailable": return reason.name === null ? "Preferred server: no longer in the Cluster" : `${reason.name}: no longer accepts builds`;
     case "not_started": return reason.builder === "github"
       ? `${builder}: no runner in ${reason.minutes} min`
       : `${builder}: none started it in ${reason.minutes} min`;

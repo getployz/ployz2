@@ -232,7 +232,7 @@ The Organization's ordered list of Builders that an Image Build tries, moving to
 _Avoid_: Build pool, build preference, fallback builder
 
 **Preferred Builder**:
-One Builder a Service tries first, before the Organization's Build Order: GitHub Actions or one specific Server. When it does not start the build in time, the Image Build continues with the Build Order; it never forbids the others. A preferred Server that is offline, gone or no longer accepts Builds leaves the Cluster choosing as it would without it, and the Image Build records why.
+One Builder a Service tries first, before the Organization's Build Order: GitHub Actions or one specific Server. When it does not start the build in time, the Image Build continues with the Build Order; it never forbids the others. A preferred Server that is gone or no longer accepts Builds when the build starts sends the Image Build back to Auto (the Build Order alone), and the Image Build records why.
 _Avoid_: Builder override, pinned builder, build target
 
 **Build Workflow**:
