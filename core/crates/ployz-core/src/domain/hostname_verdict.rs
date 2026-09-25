@@ -24,7 +24,8 @@ pub enum VerifyAnswer {
 }
 
 /// How a hostname that reaches this Cluster gets here.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ClusterRoute {
     /// A resolved address that answered is a Machine public address.
     Direct,

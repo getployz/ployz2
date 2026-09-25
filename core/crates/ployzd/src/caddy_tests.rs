@@ -164,7 +164,10 @@ fn projection_resolves_route_endpoints_and_certificate() {
     .unwrap();
     let certificates = BTreeMap::from([(
         CertificateHost::parse("example.com").unwrap(),
-        CertificateRow::from_parts(Some(material.clone()), Some(challenge.clone())),
+        CertificateRow::from_parts(
+            Some((material.clone(), ployz_core::ClusterRoute::Direct)),
+            Some(challenge.clone()),
+        ),
     )]);
 
     let projection = projection(
@@ -347,7 +350,10 @@ fn https_site_with_material_pins_tls_paths() {
     )];
     let certificates = BTreeMap::from([(
         CertificateHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(Some(test_material()), None),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        ),
     )]);
 
     let caddyfile = caddyfile_for(
@@ -455,7 +461,10 @@ fn changing_material_changes_the_pin_paths() {
         "TIMESTAMP",
         &BTreeMap::from([(
             CertificateHost::parse("secure.example.com").unwrap(),
-            CertificateRow::from_parts(Some(test_material()), None),
+            CertificateRow::from_parts(
+                Some((test_material(), ployz_core::ClusterRoute::Direct)),
+                None,
+            ),
         )]),
     );
     let second = caddyfile_for(
@@ -465,7 +474,10 @@ fn changing_material_changes_the_pin_paths() {
         "TIMESTAMP",
         &BTreeMap::from([(
             CertificateHost::parse("secure.example.com").unwrap(),
-            CertificateRow::from_parts(Some(test_material()), None),
+            CertificateRow::from_parts(
+                Some((test_material(), ployz_core::ClusterRoute::Direct)),
+                None,
+            ),
         )]),
     );
 
@@ -489,7 +501,10 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
     let without = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
     let unused = BTreeMap::from([(
         CertificateHost::parse("other.example.com").unwrap(),
-        CertificateRow::from_parts(Some(test_material()), None),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        ),
     )]);
 
     assert_eq!(
@@ -597,7 +612,11 @@ fn last_error_is_omitted_once_material_exists() {
     )];
     let certificates = BTreeMap::from([(
         CertificateHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(Some(test_material()), None).with_error("stale"),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        )
+        .with_error("stale"),
     )]);
 
     let caddyfile = caddyfile_for(
@@ -835,7 +854,10 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     let material = test_material();
     let certificates = BTreeMap::from([(
         CertificateHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(Some(material.clone()), None),
+        CertificateRow::from_parts(
+            Some((material.clone(), ployz_core::ClusterRoute::Direct)),
+            None,
+        ),
     )]);
     let admin = FakeAdmin::default();
     let certs = directory.join("certs");

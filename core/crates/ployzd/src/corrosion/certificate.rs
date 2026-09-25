@@ -242,11 +242,11 @@ impl CertificateRow {
     /// ACME-owned snapshot for one hostname.
     #[must_use]
     pub fn from_parts(
-        material: Option<CertificateMaterial>,
+        material: Option<(CertificateMaterial, ClusterRoute)>,
         challenge: Option<CertificateChallenge>,
     ) -> Self {
         Self::Acme {
-            material: material.map(|material| (material, ClusterRoute::Direct)),
+            material,
             challenge,
             refusal: None,
         }
@@ -255,11 +255,7 @@ impl CertificateRow {
     /// ACME row that holds material newly issued along `route`, and no challenge.
     #[must_use]
     pub fn issued(material: CertificateMaterial, route: ClusterRoute) -> Self {
-        Self::Acme {
-            material: Some((material, route)),
-            challenge: None,
-            refusal: None,
-        }
+        Self::from_parts(Some((material, route)), None)
     }
 
     /// The route ACME-issued material validated along. `None` without ACME material.
@@ -412,11 +408,7 @@ impl CertificateRow {
                 Error::Protocol("published certificate row has no valid material".into())
             });
         }
-        let route = if body.route == VIA_PROXY {
-            ClusterRoute::ViaProxy
-        } else {
-            ClusterRoute::Direct
-        };
+        let route = body.route.unwrap_or(ClusterRoute::Direct);
         Ok(Self::Acme {
             material: material.map(|material| (material, route)),
             challenge,
@@ -453,11 +445,7 @@ impl CertificateRow {
             failures: clock.map_or(0, |clock| clock.failures()),
             last_failure: encode_failure(clock.map(|clock| clock.last_failure())),
             published: self.published().is_some(),
-            route: match self.route() {
-                Some(ClusterRoute::ViaProxy) => VIA_PROXY,
-                Some(ClusterRoute::Direct) | None => "",
-            }
-            .into(),
+            route: self.route(),
         })?)
     }
 }
@@ -491,11 +479,9 @@ struct CertificateBody {
     failures: u32,
     last_failure: String,
     published: bool,
-    /// `via_proxy` when the ACME material validated through a proxy; empty means direct.
-    route: String,
+    /// The route ACME material validated along; absent without ACME material.
+    route: Option<ClusterRoute>,
 }
-
-const VIA_PROXY: &str = "via_proxy";
 
 fn encode_attempt(time: SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -523,9 +509,7 @@ fn encode_failure(failure: Option<IssuanceFailure>) -> String {
 }
 
 fn decode_failure(text: &str) -> Option<IssuanceFailure> {
-    serde_json::from_value::<CertificateFailureKind>(text.into())
-        .ok()?
-        .issuance_failure()
+    CertificateFailureKind::from(text).issuance_failure()
 }
 
 #[cfg(test)]
@@ -829,7 +813,10 @@ mod tests {
     #[test]
     fn challenge_write_keeps_issued_material() {
         let issued = issued_material();
-        let latest = CertificateRow::from_parts(Some(issued.clone()), None);
+        let latest = CertificateRow::from_parts(
+            Some((issued.clone(), ployz_core::ClusterRoute::Direct)),
+            None,
+        );
         let challenge = CertificateChallenge::parse("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0", "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
         let row = latest.with_challenge(challenge.clone());
         assert_eq!(row.material(), Some(&issued));

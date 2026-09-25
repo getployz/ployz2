@@ -491,7 +491,7 @@ async fn issue_wanted(
             }
             IssuanceGate::Order(route) => route,
         };
-        if contacts_authority(due, gate) {
+        if matches!(due, IssuanceAction::Order | IssuanceAction::Renew) {
             to_order.push((hostname, route));
         }
     }
@@ -551,13 +551,6 @@ async fn issue_wanted(
         })
         .min()
         .unwrap_or(RETRY_INTERVAL))
-}
-
-/// Contact the CA only when the scheduler wants work and the hostname reaches this Cluster.
-#[must_use]
-pub(crate) fn contacts_authority(due: IssuanceAction, gate: IssuanceGate) -> bool {
-    matches!(due, IssuanceAction::Order | IssuanceAction::Renew)
-        && matches!(gate, IssuanceGate::Order(_))
 }
 
 fn cluster_addresses(machines: &[Machine]) -> Vec<IpAddr> {

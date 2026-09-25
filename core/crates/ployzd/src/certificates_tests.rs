@@ -14,10 +14,10 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, contacts_authority,
-    directory_from_env, ingress_challenge_ips, issuance_action, machine_jitter, machine_rank,
-    material_validity, order_certificate, poll_wait, probe_client, renewal_window, verify_answers,
-    wait_for_http01, wanted_certificate_hosts,
+    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, directory_from_env,
+    ingress_challenge_ips, issuance_action, machine_jitter, machine_rank, material_validity,
+    order_certificate, poll_wait, probe_client, renewal_window, verify_answers, wait_for_http01,
+    wanted_certificate_hosts,
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
@@ -189,36 +189,6 @@ fn only_rank_zero_orders_immediately() {
         ),
         IssuanceAction::Nothing
     );
-}
-
-#[test]
-fn renew_does_not_contact_the_authority_when_the_hostname_is_refused() {
-    let refusal = ployz_core::Refusal::ReachesElsewhere;
-    let clock = IssuanceClock::new(1, UNIX_EPOCH, IssuanceFailure::Refused(refusal));
-    assert!(!contacts_authority(
-        IssuanceAction::Renew,
-        IssuanceGate::Refuse { refusal, clock }
-    ));
-    assert!(!contacts_authority(
-        IssuanceAction::Order,
-        IssuanceGate::Refuse { refusal, clock }
-    ));
-    assert!(!contacts_authority(
-        IssuanceAction::Renew,
-        IssuanceGate::Nothing
-    ));
-    assert!(contacts_authority(
-        IssuanceAction::Renew,
-        IssuanceGate::Order(ployz_core::ClusterRoute::Direct)
-    ));
-    assert!(contacts_authority(
-        IssuanceAction::Order,
-        IssuanceGate::Order(ployz_core::ClusterRoute::Direct)
-    ));
-    assert!(!contacts_authority(
-        IssuanceAction::Nothing,
-        IssuanceGate::Order(ployz_core::ClusterRoute::Direct)
-    ));
 }
 
 #[test]
@@ -791,7 +761,7 @@ fn row_with_lifetime(not_before: SystemTime, not_after: SystemTime) -> Certifica
     let (certificate, private_key) =
         ployz_testkit::fake_acme::self_signed_material("app.example.com", not_before, not_after);
     let material = CertificateMaterial::parse(certificate, private_key).unwrap();
-    CertificateRow::from_parts(Some(material), None)
+    CertificateRow::from_parts(Some((material, ployz_core::ClusterRoute::Direct)), None)
 }
 
 fn host(name: &str) -> IngressHost {
