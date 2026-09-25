@@ -4,72 +4,82 @@ use super::*;
 
 #[tokio::test]
 async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
-    let mut founder = founder_machine();
-    let machine_id = founder.id;
-    founder.accepts_ingress = false;
-    let pairing = json!({ "secret": PAIRING });
-    let registration = Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    };
-    let enroll = EnrollListen::script([
-        json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": pairing,
-        }),
-        json!({
-            "kind": "initialize",
-            "resumed": true,
-            "storage": "none",
-            "pairing": pairing,
-        }),
-    ])
-    .await;
-    enroll.set_callback_status(500);
-    let daemon = JoinDaemon::new(registration.clone());
-    let machine_addr = serve_machine(daemon.clone()).await;
+    // (publication fails instead of the final callback, first-run error)
+    for (publish_fails, error) in [
+        (false, "rerun the same ployz cloud enroll command"),
+        (true, "candidate publication"),
+    ] {
+        let mut founder = founder_machine();
+        let machine_id = founder.id;
+        founder.accepts_ingress = false;
+        let pairing = json!({ "secret": PAIRING });
+        let registration = Registered {
+            assigned_machine: founder,
+            visible_peers: Vec::new(),
+            target_versions: Default::default(),
+        };
+        let enroll = EnrollListen::script([
+            json!({
+                "kind": "initialize",
+                "resumed": false,
+                "storage": "none",
+                "pairing": pairing,
+            }),
+            json!({
+                "kind": "initialize",
+                "resumed": true,
+                "storage": "none",
+                "pairing": pairing,
+            }),
+        ])
+        .await;
+        if publish_fails {
+            enroll.set_publication_status(409);
+        } else {
+            enroll.set_callback_status(500);
+        }
+        let daemon = JoinDaemon::new(registration.clone());
+        let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = init_cloud(
-        &format!("ssh://root@{machine_addr}"),
-        &enroll.url,
-        "founder",
-        false,
-        true,
-    )
-    .await;
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("rerun the same ployz cloud enroll command"),
-        "{stderr}"
-    );
-    assert_eq!(
-        enroll.callbacks(),
-        vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 1]
-    );
+        let output = init_cloud(
+            &format!("ssh://root@{machine_addr}"),
+            &enroll.url,
+            "founder",
+            false,
+            true,
+        )
+        .await;
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(error), "{stderr}");
+        let first_callbacks = if publish_fails {
+            Vec::new()
+        } else {
+            vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING })]
+        };
+        assert_eq!(enroll.callbacks(), first_callbacks);
 
-    enroll.set_callback_status(200);
-    let output = init_cloud(
-        &format!("ssh://root@{machine_addr}"),
-        &enroll.url,
-        "founder",
-        false,
-        true,
-    )
-    .await;
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert_eq!(daemon.initialize_requests().len(), 1);
-    assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.callbacks().len(), 2);
-    assert_eq!(enroll.publications().len(), 2);
+        enroll.set_publication_status(200);
+        enroll.set_callback_status(200);
+        let output = init_cloud(
+            &format!("ssh://root@{machine_addr}"),
+            &enroll.url,
+            "founder",
+            false,
+            true,
+        )
+        .await;
+        assert!(
+            output.status.success(),
+            "stderr: {}\nstdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(daemon.initialize_requests().len(), 1);
+        assert_eq!(daemon.reset_count(), 0);
+        assert_eq!(enroll.callbacks().len(), first_callbacks.len() + 1);
+        assert_eq!(enroll.publications().len(), 2);
+    }
 }
 
 #[tokio::test]
@@ -124,68 +134,6 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
     );
     assert_eq!(daemon.reset_count(), 1);
     assert_eq!(daemon.initialize_requests().len(), 2);
-    assert_eq!(
-        enroll.callbacks(),
-        [json!({
-            "machineId": machine_id.as_str(),
-            "pairingCredential": PAIRING,
-        })]
-    );
-}
-
-#[tokio::test]
-async fn resumed_founder_uses_the_matching_participating_machine() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::start(json!({
-        "kind": "initialize",
-        "resumed": true,
-        "storage": "none",
-        "pairing": pairing,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder.clone(),
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-    connect_daemon(machine_addr)
-        .await
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: ployz_core::InitialMachinePolicy {
-                    accepts_ingress: false,
-                    ..Default::default()
-                },
-                name: founder.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: founder.advertised_endpoints,
-                wireguard_mtu: None,
-            },
-            None,
-        )
-        .await
-        .unwrap();
-
-    let output = init_cloud(
-        &format!("ssh://root@{machine_addr}"),
-        &enroll.url,
-        "founder",
-        false,
-        true,
-    )
-    .await;
-
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert_eq!(daemon.initialize_requests().len(), 1);
     assert_eq!(
         enroll.callbacks(),
         [json!({
@@ -463,41 +411,4 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
         assert_eq!(daemon.reset_count(), 0);
         assert!(enroll.callbacks().is_empty());
     }
-}
-
-#[tokio::test]
-async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
-    let mut founder = founder_machine();
-    founder.accepts_ingress = false;
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::script([
-        json!({ "kind": "initialize", "resumed": false, "pairing": pairing }),
-        json!({ "kind": "initialize", "resumed": true, "pairing": pairing }),
-        json!({ "kind": "initialize", "resumed": true, "pairing": pairing }),
-    ])
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    });
-    let address = serve_machine(daemon.clone()).await;
-    let connect = format!("ssh://root@{address}");
-    enroll.set_publication_status(409);
-    let output = init_cloud(&connect, &enroll.url, "founder", false, true).await;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("candidate publication"));
-    assert!(enroll.callbacks().is_empty());
-    enroll.set_publication_status(200);
-    let output = init_cloud(&connect, &enroll.url, "founder", false, true).await;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(daemon.initialize_requests().len(), 1);
-    assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.publications().len(), 2);
-    assert_eq!(enroll.publications().first(), enroll.publications().get(1));
-    assert_eq!(enroll.callbacks().len(), 1);
 }

@@ -3279,7 +3279,6 @@ dependencies = [
 name = "ployz"
 version = "0.1.2-beta.41"
 dependencies = [
- "base64 0.22.1",
  "chrono",
  "clap",
  "clap_complete",

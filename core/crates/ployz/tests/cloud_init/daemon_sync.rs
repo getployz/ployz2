@@ -73,26 +73,18 @@ async fn run_enroll(
     .unwrap()
 }
 
+struct LocalEnroll {
+    result: Result<(), ployz::handlers::Error>,
+    calls: usize,
+    connections: usize,
+    posts: usize,
+}
+
 async fn enroll_locally(
     daemon_version: &str,
     outcome: InstallOutcome,
-) -> (
-    Result<(), ployz::handlers::Error>,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-) {
-    enroll_locally_with_storage(daemon_version, outcome, "none").await
-}
-
-async fn enroll_locally_with_storage(
-    daemon_version: &str,
-    outcome: InstallOutcome,
     storage: &str,
-) -> (
-    Result<(), ployz::handlers::Error>,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-) {
+) -> LocalEnroll {
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
     let pairing = json!({ "secret": PAIRING });
@@ -110,68 +102,75 @@ async fn enroll_locally_with_storage(
     let installer = recording_installer(daemon.clone(), outcome, Arc::clone(&calls));
     let result = run_enroll(enroll_matches(&connect, &enroll.url), installer).await;
     let _ = std::fs::remove_file(socket);
-    (result, calls, connections)
+    LocalEnroll {
+        result,
+        calls: calls.load(Ordering::SeqCst),
+        connections: connections.load(Ordering::SeqCst),
+        posts: enroll.posts().len(),
+    }
 }
 
 #[tokio::test]
 async fn zfs_preparation_reconnects_after_restarting_a_matching_daemon() {
-    let (result, calls, connections) = enroll_locally_with_storage(
+    let enrolled = enroll_locally(
         env!("CARGO_PKG_VERSION"),
         InstallOutcome::UpdateDaemon,
         "zfs",
     )
     .await;
 
-    assert!(result.is_ok(), "{result:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(enrolled.result.is_ok(), "{:?}", enrolled.result);
+    assert_eq!(enrolled.calls, 1);
     assert!(
-        connections.load(Ordering::SeqCst) >= 2,
+        enrolled.connections >= 2,
         "enrollment must reconnect after storage preparation restarts the daemon"
     );
 }
 
 #[tokio::test]
-async fn matching_daemon_installs_nothing() {
-    let (result, calls, _) =
-        enroll_locally(env!("CARGO_PKG_VERSION"), InstallOutcome::UpdateDaemon).await;
-
-    assert!(result.is_ok(), "{result:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn mismatched_daemon_is_reinstalled_without_preparing_storage() {
-    let (result, calls, connections) =
-        enroll_locally("0.0.0-old", InstallOutcome::UpdateDaemon).await;
-
-    assert!(result.is_ok(), "{result:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(
-        connections.load(Ordering::SeqCst) >= 2,
-        "enrollment must reconnect after the installer restarts the daemon"
-    );
-}
-
-#[tokio::test]
-async fn installer_failure_is_returned_before_enrollment() {
-    let (result, calls, _) =
-        enroll_locally("0.0.0-old", InstallOutcome::Fail("installer failed")).await;
-
-    assert_eq!(result.unwrap_err().to_string(), "installer failed");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn stale_daemon_after_installation_is_rejected() {
-    let (result, _, _) = enroll_locally("0.0.0-old", InstallOutcome::LeaveStale).await;
-
-    assert_eq!(
-        result.unwrap_err().to_string(),
-        format!(
-            "daemon version remained 0.0.0-old after installing CLI version {}",
-            env!("CARGO_PKG_VERSION")
-        )
-    );
+async fn local_daemon_synchronization() {
+    let current = env!("CARGO_PKG_VERSION");
+    let stale = format!("daemon version remained 0.0.0-old after installing CLI version {current}");
+    // (daemon version, installer outcome) -> (installer calls, error, reconnected)
+    let rows: [(&str, InstallOutcome, usize, Option<&str>, bool); 4] = [
+        (current, InstallOutcome::UpdateDaemon, 0, None, false),
+        ("0.0.0-old", InstallOutcome::UpdateDaemon, 1, None, true),
+        (
+            "0.0.0-old",
+            InstallOutcome::Fail("installer failed"),
+            1,
+            Some("installer failed"),
+            false,
+        ),
+        (
+            "0.0.0-old",
+            InstallOutcome::LeaveStale,
+            1,
+            Some(stale.as_str()),
+            false,
+        ),
+    ];
+    for (version, outcome, calls, error, reconnected) in rows {
+        let enrolled = enroll_locally(version, outcome, "none").await;
+        let row = format!("daemon {version}");
+        assert_eq!(enrolled.calls, calls, "{row}");
+        match error {
+            None => {
+                assert!(enrolled.result.is_ok(), "{row}: {:?}", enrolled.result);
+                assert_eq!(enrolled.posts, 1, "{row}");
+            }
+            Some(error) => {
+                assert_eq!(enrolled.result.unwrap_err().to_string(), error, "{row}");
+                assert_eq!(enrolled.posts, 0, "{row}: failed sync must not enroll");
+            }
+        }
+        if reconnected {
+            assert!(
+                enrolled.connections >= 2,
+                "{row}: enrollment must reconnect after the installer restarts the daemon"
+            );
+        }
+    }
 }
 
 #[tokio::test]

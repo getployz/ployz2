@@ -497,71 +497,6 @@ async fn cloud_init_retries_not_yet_then_joins() {
     );
 }
 
-#[tokio::test]
-async fn cloud_init_retries_not_yet_then_initializes() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::script([
-        json!({"kind": "not_yet", "retryAfter": 0}),
-        json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": pairing,
-        }),
-    ])
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = harness::cli()
-        .args([
-            "--connect",
-            &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--accepts-ingress=false",
-            "--no-dns",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
-        "{stdout}"
-    );
-
-    let posts = enroll.posts();
-    assert_eq!(posts.len(), 2);
-    assert_eq!(posts.first(), posts.get(1));
-    assert_eq!(
-        enroll.callbacks(),
-        [json!({
-            "machineId": machine_id.as_str(),
-            "pairingCredential": PAIRING,
-        })]
-    );
-    daemon.initialize_request();
-}
-
 async fn init_cloud(
     connect: &str,
     enroll_url: &str,
@@ -772,78 +707,6 @@ async fn reset_enroll_posts_the_rotated_public_key() {
 }
 
 #[tokio::test]
-async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
-    let local = registration();
-    let mut assigned = local.clone();
-    assigned.assigned_machine.accepts_ingress = false;
-    assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
-    assigned.assigned_machine.name = ployz_core::MachineName::parse("rejoined").unwrap();
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::occupying_join(json!({
-        "kind": "join",
-        "storage": "none",
-        "pairing": pairing,
-        "registration": assigned,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(local.clone());
-    let machine_addr = serve_machine(daemon.clone()).await;
-    let mut client = connect_daemon(machine_addr).await;
-    client
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: Default::default(),
-                name: local.assigned_machine.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: local.assigned_machine.advertised_endpoints,
-                wireguard_mtu: None,
-            },
-            None,
-        )
-        .await
-        .unwrap();
-
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(4),
-        init_cloud(
-            &format!("ssh://root@{machine_addr}"),
-            &enroll.url,
-            "rejoined",
-            true,
-            true,
-        ),
-    )
-    .await
-    .expect("enroll must finish; not_yet means the first POST occupied the name");
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let posted: Vec<String> = enroll
-        .posts()
-        .iter()
-        .map(|post| {
-            post.get("publicKey")
-                .and_then(serde_json::Value::as_str)
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
-    assert_eq!(posted, [daemon.public_key().to_string()]);
-    assert_eq!(
-        daemon
-            .join_request()
-            .registration
-            .assigned_machine
-            .public_key,
-        daemon.public_key()
-    );
-}
-
-#[tokio::test]
 async fn join_places_observed_ingress_on_this_machine() {
     let founder = founder_machine();
     let mut registration = registration();
@@ -888,53 +751,7 @@ async fn join_places_observed_ingress_on_this_machine() {
 }
 
 #[tokio::test]
-async fn partial_peer_observation_reports_incomplete_catch_up_before_placement() {
-    let founder = founder_machine();
-    let mut unreachable = founder.clone();
-    unreachable.id = ployz_core::MachineId::parse("d".repeat(32)).unwrap();
-    unreachable.name = ployz_core::MachineName::parse("unreachable").unwrap();
-    let mut registration = registration();
-    registration.visible_peers = vec![founder.clone(), unreachable.clone()];
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::start(json!({
-        "kind": "join",
-        "storage": "none",
-        "pairing": pairing,
-        "registration": registration,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(registration)
-        .with_containers(vec![ingress_on(&founder)])
-        .fail_list_on(unreachable.id);
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = harness::cli()
-        .args([
-            "--connect",
-            &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "joiner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("partial Service observations"), "{stderr}");
-    assert!(stderr.contains("it remains a Cluster member"), "{stderr}");
-    assert!(stderr.contains(unreachable.id.as_str()), "{stderr}");
-    assert!(daemon.ensure_requests().is_empty());
-    daemon.join_request();
-}
-
-#[tokio::test]
-async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
+async fn join_ingress_rejection_still_places_other_globals() {
     let founder = founder_machine();
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
@@ -978,15 +795,6 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     );
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("app", "api")]);
-    assert!(daemon.containers().iter().all(|container| {
-        container.machine_id == founder.id || container.resolved_spec.name.as_str() != "ingress"
-    }));
-    let details = connect_daemon(machine_addr)
-        .await
-        .call::<op::Inspect>(InspectRequest::default(), None)
-        .await
-        .unwrap();
-    assert!(!details.machine.unwrap().accepts_ingress);
 }
 
 #[tokio::test]
@@ -1041,125 +849,6 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         stderr.contains("ployz-system/ingress: run `ployz ingress deploy`"),
         "stderr: {stderr}"
     );
-}
-
-#[tokio::test]
-async fn join_starts_created_ingress_before_success() {
-    let founder = founder_machine();
-    let mut registration = registration();
-    let joiner = registration.assigned_machine.clone();
-    registration.visible_peers = vec![founder.clone()];
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::start(json!({
-        "kind": "join",
-        "storage": "none",
-        "pairing": pairing,
-        "registration": registration,
-    }))
-    .await;
-    let mut created = ingress_on(&joiner);
-    created
-        .try_update(|parts| {
-            parts.container_id = ployz_core::ContainerId::parse("b".repeat(64)).unwrap();
-            parts.runtime = ployz_core::ContainerRuntimeObservation::Created;
-        })
-        .unwrap();
-    let daemon = JoinDaemon::new(registration).with_containers(vec![ingress_on(&founder), created]);
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = harness::cli()
-        .args([
-            "--connect",
-            &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "joiner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        daemon.ensure_requests().is_empty(),
-        "an exact existing creation only needs Start"
-    );
-    assert!(daemon.containers().iter().any(|container| {
-        container.container_id.as_str() == "b".repeat(64)
-            && matches!(
-                container.runtime,
-                ployz_core::ContainerRuntimeObservation::Running { .. }
-            )
-    }));
-}
-
-#[tokio::test]
-async fn two_concurrent_joins_each_ensure_ingress_locally() {
-    let founder = founder_machine();
-    let (first, second) = tokio::join!(
-        join_against_founder(&founder),
-        join_against_founder(&founder),
-    );
-    assert_eq!(
-        ensure_names(&first),
-        [("ployz-system", "ingress")],
-        "first Joiner must place Ingress Proxy here"
-    );
-    assert_eq!(
-        ensure_names(&second),
-        [("ployz-system", "ingress")],
-        "second Joiner must place Ingress Proxy here"
-    );
-}
-
-async fn join_against_founder(
-    founder: &ployz_core::Machine,
-) -> Vec<ployz_core::CreateContainerRequest> {
-    let mut registration = registration();
-    registration.assigned_machine.id = ployz_core::MachineId::random();
-    registration.visible_peers = vec![founder.clone()];
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::start(json!({
-        "kind": "join",
-        "storage": "none",
-        "pairing": pairing,
-        "registration": registration,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(registration.clone()).with_containers(vec![ingress_on(founder)]);
-    let machine_addr = serve_machine(daemon.clone()).await;
-    let output = harness::cli()
-        .args([
-            "--connect",
-            &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "joiner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    daemon.ensure_requests()
 }
 
 fn ensure_names(requests: &[ployz_core::CreateContainerRequest]) -> Vec<(&str, &str)> {

@@ -8,7 +8,6 @@ use std::{
     },
 };
 
-use base64::{Engine, engine::general_purpose::STANDARD};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -25,14 +24,6 @@ impl EventLog {
     pub fn entries(&self) -> Vec<&'static str> {
         self.0.lock().unwrap().clone()
     }
-}
-
-enum EnrollReplies {
-    Script(VecDeque<Vec<u8>>),
-    Occupy {
-        join: serde_json::Value,
-        claimed: Option<String>,
-    },
 }
 
 pub struct EnrollListen {
@@ -59,30 +50,10 @@ impl EnrollListen {
         bodies: impl IntoIterator<Item = serde_json::Value>,
         events: EventLog,
     ) -> Self {
-        Self::listen(
-            EnrollReplies::Script(
-                bodies
-                    .into_iter()
-                    .map(|body| serde_json::to_vec(&body).unwrap())
-                    .collect(),
-            ),
-            events,
-        )
-        .await
-    }
-
-    pub async fn occupying_join(join: serde_json::Value) -> Self {
-        Self::listen(
-            EnrollReplies::Occupy {
-                join,
-                claimed: None,
-            },
-            EventLog::default(),
-        )
-        .await
-    }
-
-    async fn listen(replies: EnrollReplies, events: EventLog) -> Self {
+        let replies: VecDeque<Vec<u8>> = bodies
+            .into_iter()
+            .map(|body| serde_json::to_vec(&body).unwrap())
+            .collect();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let paths = Arc::new(Mutex::new(Vec::new()));
@@ -141,8 +112,12 @@ impl EnrollListen {
                     continue;
                 }
                 let post = enroll_json_body(raw);
-                recorded_posts.lock().unwrap().push(post.clone());
-                let body = replies.lock().unwrap().next(&post);
+                recorded_posts.lock().unwrap().push(post);
+                let body = replies
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("scripted enroll has a body");
                 write_http(&mut stream, 200, "OK", &body).await;
             }
         });
@@ -181,42 +156,6 @@ impl EnrollListen {
     pub fn set_callback_status(&self, status: u16) {
         self.callback_status.store(status, Ordering::SeqCst);
     }
-}
-
-impl EnrollReplies {
-    fn next(&mut self, post: &serde_json::Value) -> Vec<u8> {
-        match self {
-            Self::Script(remaining) => remaining.pop_front().expect("scripted enroll has a body"),
-            Self::Occupy { join, claimed } => occupy_join(join, claimed, post),
-        }
-    }
-}
-
-fn occupy_join(
-    join: &serde_json::Value,
-    claimed: &mut Option<String>,
-    post: &serde_json::Value,
-) -> Vec<u8> {
-    let posted = post
-        .get("publicKey")
-        .and_then(serde_json::Value::as_str)
-        .expect("enroll POST carries publicKey");
-    if let Some(existing) = claimed.as_ref()
-        && existing != posted
-    {
-        return serde_json::to_vec(&serde_json::json!({
-            "kind": "not_yet",
-            "retryAfter": 0,
-        }))
-        .unwrap();
-    }
-    *claimed = Some(posted.to_owned());
-    let mut body = join.clone();
-    let key = STANDARD.decode(posted).expect("enroll publicKey is base64");
-    *body
-        .pointer_mut("/registration/assigned_machine/public_key")
-        .expect("join registration has public_key") = serde_json::to_value(key).unwrap();
-    serde_json::to_vec(&body).unwrap()
 }
 
 async fn write_http(stream: &mut TcpStream, status: u16, reason: &str, body: &[u8]) {

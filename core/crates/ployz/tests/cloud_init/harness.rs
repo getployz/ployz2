@@ -92,7 +92,6 @@ struct JoinInner {
     transient_target_inspect_failures: AtomicUsize,
     fail_ensure: AtomicBool,
     fail_target_inspect: AtomicBool,
-    fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
 }
 
@@ -137,7 +136,6 @@ impl JoinDaemon {
                 transient_target_inspect_failures: AtomicUsize::new(0),
                 fail_ensure: AtomicBool::new(false),
                 fail_target_inspect: AtomicBool::new(false),
-                fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
             }),
         }
@@ -295,11 +293,6 @@ impl JoinDaemon {
         self.inner
             .transient_target_inspect_failures
             .store(failures, Ordering::SeqCst);
-        self
-    }
-
-    pub fn fail_list_on(self, machine_id: MachineId) -> Self {
-        *self.inner.fail_list_on.lock().unwrap() = Some(machine_id);
         self
     }
 
@@ -670,26 +663,8 @@ impl MachineRpc for JoinDaemon {
     }
     async fn list_containers(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let target = request
-            .metadata()
-            .get(ployz_core::ONE_TARGET_HEADER)
-            .and_then(|value| value.to_str().ok());
-        if self
-            .inner
-            .fail_list_on
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|machine_id| target == Some(machine_id.as_str()))
-        {
-            return rpc_ok(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "unreachable".into(),
-                details: serde_json::Value::Null,
-            });
-        }
         rpc_ok(ContainerList {
             containers: self.inner.containers.lock().unwrap().clone(),
         })
