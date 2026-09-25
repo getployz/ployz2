@@ -5,14 +5,18 @@
   compare BASE HEAD       print deltas; exit 1 if uncovered lines grew past the gate
   mutants-baseline FILE [NEXTEST_ARGS...]   freeze the caught-mutant set for one core source file
   mutants-check FILE [NEXTEST_ARGS...]      re-run it; exit 1 if any frozen mutant now survives
+  mutants-diff BASE_DIR HEAD_DIR            compare two (sharded) cargo-mutants runs, e.g. from CI;
+                                            exit 1 if a mutant caught on base survives on head
 
 NEXTEST_ARGS narrow the tests run per mutant (e.g. -E 'binary_id(ployz::deploy_plan)');
 pass the same ones to baseline and check. Mutation runs in place, so don't edit the tree meanwhile.
+MUTANTS_RE (env) limits mutants to names matching a regex, e.g. the functions a batch's tests cover.
 
 Ignored Rust tests (real-infra rungs) are out of scope; they neither count nor run.
 """
 import collections
 import json
+import os
 import re
 import subprocess
 import sys
@@ -27,10 +31,10 @@ COVERAGE_GATE = 1.0  # max allowed growth of uncovered lines, in percent
 RUST_FEATURES = ["--workspace", "--all-features"]
 
 
-def run(cmd, cwd, **kwargs):
+def run(cmd, cwd, check=True):
     started = time.monotonic()
-    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, **kwargs)
-    if result.returncode != 0:
+    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    if check and result.returncode != 0:
         sys.exit(f"failed: {' '.join(cmd)}\n{result.stdout[-4000:]}\n{result.stderr[-4000:]}")
     return result.stdout, time.monotonic() - started
 
@@ -147,22 +151,37 @@ def mutant_output(target):
 def mutants(path, *nextest_args):
     """Run cargo-mutants on one file; return the multiset of caught mutant keys."""
     target = (Path.cwd() / path).resolve().relative_to(CORE)
+    # A killed in-place run leaves its mutant behind; never baseline or check on top of one.
+    leftovers, _ = run(["git", "grep", "-l", "changed by cargo-mutants", "--", "crates"], CORE, check=False)
+    if leftovers:
+        sys.exit(f"leftover mutants from a killed run; restore with git checkout:\n{leftovers}")
     output = mutant_output(target)
     output.mkdir(parents=True, exist_ok=True)
     # In place reuses the warm target dir; copying the tree would cold-build every job.
     result = subprocess.run(["cargo", "mutants", "--file", str(target), "--test-tool", "nextest", "--all-features",
-                             "--output", str(output), "--in-place", "--no-shuffle", "--", *nextest_args],
+                             "--output", str(output), "--in-place", "--no-shuffle",
+                             *(["--re", os.environ["MUTANTS_RE"]] if os.environ.get("MUTANTS_RE") else []),
+                             "--", *nextest_args],
                             cwd=CORE, text=True, capture_output=True)
     # 2 = some mutants missed, 3 = some timed out: both still produce outcomes to compare.
     if result.returncode not in (0, 2, 3):
         sys.exit(f"cargo mutants failed ({result.returncode}):\n{result.stdout[-4000:]}\n{result.stderr[-4000:]}")
-    outcomes = json.loads((output / "mutants.out/outcomes.json").read_text())["outcomes"]
-    caught = collections.Counter()
-    for outcome in outcomes:
-        scenario = outcome["scenario"]
-        if isinstance(scenario, dict) and outcome["summary"] == "CaughtMutant":
-            caught[mutant_key(scenario["Mutant"]["name"])] += 1
+    caught, _ = read_outcomes([output / "mutants.out/outcomes.json"])
     return target, caught
+
+
+def read_outcomes(paths):
+    """Caught and generated mutant keys across one or more outcomes.json files."""
+    caught, generated = collections.Counter(), collections.Counter()
+    for path in paths:
+        for outcome in json.loads(Path(path).read_text())["outcomes"]:
+            scenario = outcome["scenario"]
+            if not isinstance(scenario, dict):
+                continue
+            key = mutant_key(scenario["Mutant"]["name"])
+            generated[key] += 1
+            caught[key] += outcome["summary"] == "CaughtMutant"
+    return +caught, generated
 
 
 def mutants_baseline(path, *nextest_args):
@@ -182,9 +201,26 @@ def mutants_check(path, *nextest_args):
     sys.exit(1 if lost else 0)
 
 
+def mutants_diff(base_dir, head_dir):
+    base_caught, _ = read_outcomes(Path(base_dir).rglob("outcomes.json"))
+    head_caught, head_generated = read_outcomes(Path(head_dir).rglob("outcomes.json"))
+    # A mutant head no longer generates belongs to deleted code, not to a weaker suite.
+    lost = {key: count - head_caught[key]
+            for key, count in base_caught.items()
+            if head_generated[key] and min(count, head_generated[key]) > head_caught[key]}
+    lines = [f"LOST {key}" for key in sorted(lost)]
+    lines.append(f"{sum(base_caught.values()) - sum(lost.values())}/{sum(base_caught.values())} "
+                 "mutants caught on base are still caught on head")
+    print("\n".join(lines))
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary, "a") as file:
+            file.write("### Mutation gate\n\n```\n" + "\n".join(lines) + "\n```\n")
+    sys.exit(1 if lost else 0)
+
+
 if __name__ == "__main__":
-    commands = {"snapshot": snapshot, "compare": compare,
-                "mutants-baseline": mutants_baseline, "mutants-check": mutants_check}
+    commands = {"snapshot": snapshot, "compare": compare, "mutants-baseline": mutants_baseline,
+                "mutants-check": mutants_check, "mutants-diff": mutants_diff}
     if len(sys.argv) < 3 or sys.argv[1] not in commands:
         sys.exit(__doc__)
     commands[sys.argv[1]](*sys.argv[2:])
