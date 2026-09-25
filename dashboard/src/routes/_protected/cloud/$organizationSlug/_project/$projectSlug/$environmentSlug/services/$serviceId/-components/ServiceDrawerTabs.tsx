@@ -5,6 +5,7 @@ import { ServiceSettingsTab } from "#/routes/_protected/cloud/$organizationSlug/
 import { ServiceVariablesTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesTab";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 import { servicePageSchema, SERVICE_PAGES } from "./service-pages";
+import { ServiceDeploymentsTab } from "./ServiceDeploymentsTab";
 import { Schema } from "effect";
 
 export function ServiceDrawerTabs({
@@ -29,6 +30,7 @@ export function ServiceDrawerTabs({
         {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
       </TabsList>
 
+      <ServiceDeploymentsTab organizationSlug={state.organizationSlug} serviceId={state.service.id} />
       <ServiceSettingsTab state={state} />
       <ServiceVariablesTab state={state} />
       <TabsContent value="logs"><ContainerLogs selection={{ organizationSlug: state.organizationSlug, environmentSlug: state.environmentSlug, serviceId: state.service.id }} /></TabsContent>
