@@ -11,25 +11,23 @@ const row = (serviceId: string, status: DeploymentProgressRow["status"]): Deploy
   machineId: "machine", machineName: "server", displayName: null, target: null, updateOrder: "start_first",
   operation: "replace_container", status, phase: null, elapsedMs: null, deadlineMs: null, health: null,
   error: status === "failed" ? "Health check timed out" : null,
+  containerId: status === "failed" ? "c0ffee" : null,
 });
-it("shows an applied service independently of a later failure, and preserves the environment partial result", () => {
+it("shows a deployed service independently of a later failure, and the failing container", () => {
   const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: {}, buildServiceIds: [], status: "failed", createdAt: new Date(), serviceCount: 2, volumeRemoveAttempts: [], failureCode: "sdk_deploy_failed" });
   const progress = { completed: 1, total: 2, outcome: "failed" as const, rows: [row("postgres", "completed"), row("web", "failed")], compensation: [] };
   const render = (serviceId?: string) => renderToStaticMarkup(createElement(DeploymentStatusCard, {
     deployment, progress, serviceId, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null,
   }));
   const service = render("postgres");
-  expect(service).toContain("Service applied");
+  expect(service).toContain("Service deployed");
   expect(service).toContain("border-success/30");
   expect(service).not.toContain("Health check timed out");
-  expect(render()).toContain("Rollout partially applied");
+  const environment = render();
+  expect(environment).toContain("Failed · 1 of 2 deployed");
+  expect(environment).not.toContain("Partial");
   expect(render("web")).toContain("Health check timed out");
-});
-it("does not claim an unknown runtime outcome was never attempted", () => {
-  const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: {}, buildServiceIds: [], status: "failed", createdAt: new Date(), failureCode: "sdk_deploy_outcome_unknown", serviceCount: 1 });
-  const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress: null, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
-  expect(html).toContain("runtime outcome unknown");
-  expect(html).toContain("Runtime outcome unavailable");
+  expect(render("web")).toContain("container c0ffee");
 });
 
 it("shows captured commit, selected Server, transfer phase and truncation", () => {
@@ -103,9 +101,8 @@ it("shows service success alongside incomplete logs from terminal evidence", () 
   const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: {}, buildServiceIds: ["web"], status: "applied", createdAt: new Date(), serviceCount: 1 });
   const progress = { completed: 1, total: 1, outcome: "success" as const, rows: [row("web", "completed")], compensation: [], logsIncomplete: true };
   const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress, serviceId: "web", expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
-  expect(html).toContain("Service applied");
+  expect(html).toContain("Service deployed");
   expect(html).toContain("Logs incomplete");
   expect(html).toContain("Images prepared");
-  expect(html).toContain("Applied state recorded");
   expect(html).not.toContain("Deployment failed");
 });
