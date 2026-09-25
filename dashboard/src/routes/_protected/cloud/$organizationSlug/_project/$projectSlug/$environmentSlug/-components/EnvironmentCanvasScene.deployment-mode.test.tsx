@@ -126,9 +126,10 @@ async function openNode(nodeId: string) {
   await act(async () => { fireEvent.click(link); });
 }
 
-const setOpenStarted = vi.spyOn(preference, "setOpenStartedDeployments");
+// Re-spied per test: the apply zone's afterEach restores every mock.
+const setOpenStarted = () => vi.mocked(preference.setOpenStartedDeployments);
 beforeEach(() => {
-  setOpenStarted.mockReset().mockResolvedValue();
+  vi.spyOn(preference, "setOpenStartedDeployments").mockReset().mockResolvedValue();
   vi.stubGlobal("EventSource", class { addEventListener() {} removeEventListener() {} close() {} });
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});
@@ -278,17 +279,17 @@ describe("the deploy bar", () => {
       environment_deployment: [deployment(runningId, 4, null, "deploying")],
       environment_node_config_snapshot: [snapshot(runningId, api, "api")],
     } });
-    expect(setOpenStarted).not.toHaveBeenCalled();
+    expect(setOpenStarted()).not.toHaveBeenCalled();
     await click(bar().getByRole("link", { name: /Deploying/ }));
-    expect(setOpenStarted).toHaveBeenLastCalledWith(true);
+    expect(setOpenStarted()).toHaveBeenLastCalledWith(true);
     await click(bar().getByRole("link", { name: "Live" }));
-    expect(setOpenStarted).toHaveBeenLastCalledWith(false);
+    expect(setOpenStarted()).toHaveBeenLastCalledWith(false);
     await click(bar().getByRole("link", { name: /Deploying/ }));
-    expect(setOpenStarted).toHaveBeenLastCalledWith(true);
+    expect(setOpenStarted()).toHaveBeenLastCalledWith(true);
     // Leaving a finished attempt keeps the preference.
     await enterDeploymentMode(router);
     await click(bar().getByRole("link", { name: "Live" }));
-    expect(setOpenStarted).toHaveBeenCalledTimes(3);
+    expect(setOpenStarted()).toHaveBeenCalledTimes(3);
   });
 
   it("never opens a Git-triggered attempt or counts it as yours", async () => {
@@ -301,7 +302,7 @@ describe("the deploy bar", () => {
     expect(screen.queryByText("Back to live")).toBeNull();
     await click(bar().getByRole("link", { name: /Deploying/ }));
     await click(bar().getByRole("link", { name: "Live" }));
-    expect(setOpenStarted).not.toHaveBeenCalled();
+    expect(setOpenStarted()).not.toHaveBeenCalled();
   });
 
   it("stays usable while a service panel is open", async () => {
@@ -351,7 +352,7 @@ describe("the apply zone", () => {
   beforeEach(() => {
     vi.spyOn(preflight, "getDeployTargetPreflight").mockReturnValue({ ok: true });
     vi.spyOn(deploymentFunctions, "listLatestOrganizationEnvironmentChangeStatesServerFn").mockResolvedValue([pending]);
-    vi.spyOn(deploymentFunctions, "submitReviewedPublicationServerFn").mockResolvedValue({ state: "deployment_queued" });
+    vi.spyOn(deploymentFunctions, "submitReviewedPublicationServerFn").mockResolvedValue({ state: "deployment_queued", deploymentId: "f0000000-0000-4000-8000-000000000016" });
   });
   afterEach(() => { vi.restoreAllMocks(); });
 
