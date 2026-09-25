@@ -31,21 +31,17 @@ export class BillingNotFound extends Data.TaggedError("NotFound")<{
   readonly publicErrorCategory = "not-found" as const;
 }
 
-export const getCachedManagedSubscriptionSnapshot = Effect.fn(
-  "Billing.getCachedSnapshot",
+/** Reads the synced billing row, never Polar, so a Polar outage cannot block callers. */
+export const hasCachedActiveSubscription = Effect.fn(
+  "Billing.hasCachedActiveSubscription",
 )(function* (organizationId: string) {
   const database = yield* Database;
   const rows = yield* database.drizzle
-    .select()
+    .select({ active: schemaOrganizationBillingState.hasActiveSubscription })
     .from(schemaOrganizationBillingState)
     .where(eq(schemaOrganizationBillingState.organizationId, organizationId))
     .limit(1);
-  const state = rows[0];
-  return {
-    activeSubscriptionId: state?.activeSubscriptionId ?? null,
-    currentPeriodEnd: state?.currentPeriodEnd ?? null,
-    hasActiveSubscription: state?.hasActiveSubscription ?? false,
-  } satisfies ManagedSubscriptionSnapshot;
+  return rows[0]?.active ?? false;
 });
 
 /** Billing exists only on Ployz-hosted Cloud; self-hosted reads as not found. */
@@ -144,10 +140,9 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
     actor,
     input.organizationSlug,
   );
-  const snapshot = yield* getCachedManagedSubscriptionSnapshot(
-    organization.id,
-  );
-  return { hasActiveSubscription: snapshot.hasActiveSubscription };
+  return {
+    hasActiveSubscription: yield* hasCachedActiveSubscription(organization.id),
+  };
 });
 
 export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(

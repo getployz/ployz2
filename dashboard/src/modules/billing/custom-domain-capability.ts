@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { getCachedManagedSubscriptionSnapshot } from "#/modules/billing/billing.server";
+import { hasCachedActiveSubscription } from "#/modules/billing/billing.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import type { ServiceRoute } from "#/modules/environment-design/tables";
 
@@ -9,8 +9,7 @@ export const customDomainsAllowed = Effect.fn("Billing.customDomainsAllowed")(
   function* (organizationId: string) {
     const polar = yield* Polar;
     if (polar.mode === "self_hosted") return true;
-    const snapshot = yield* getCachedManagedSubscriptionSnapshot(organizationId);
-    return snapshot.hasActiveSubscription;
+    return yield* hasCachedActiveSubscription(organizationId);
   },
 );
 

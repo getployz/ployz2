@@ -1,4 +1,4 @@
-import { requiredServiceEnvironment } from "#/test/config-environment";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { editServiceMetadata } from "./service-metadata.server";
 import { loadEnvironmentDocument, loadCurrentEnvironmentState } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
@@ -43,14 +43,8 @@ it.live(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
-                ...requiredServiceEnvironment(),
+                ...testConfigEnvironment(),
                 DATABASE_URL: container.url.href,
-                APP_URL: "http://localhost:3000",
-                BETTER_AUTH_SECRET: "better-auth-secret",
-                GITHUB_CLIENT_ID: "github-client-id",
-                GITHUB_CLIENT_SECRET: "github-client-secret",
-                APP_ENCRYPTION_SECRET:
-                  "app-encryption-secret-at-least-32-characters",
               },
             }),
           ),
@@ -220,10 +214,8 @@ it.live(
       const container = yield* postgresTestContainer;
       yield* migrateTestDatabase(container.url);
       const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {
-        ...requiredServiceEnvironment(),
-        DATABASE_URL: container.url.href, APP_URL: "http://localhost:3000", BETTER_AUTH_SECRET: "better-auth-secret",
-        GITHUB_CLIENT_ID: "github-client-id", GITHUB_CLIENT_SECRET: "github-client-secret",
-        APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
+        ...testConfigEnvironment(),
+        DATABASE_URL: container.url.href,
       } }))));
       const layer = (polar: PolarService) => Layer.mergeAll(DatabaseLive.pipe(Layer.provide(config)),
         Layer.succeed(Polar, polar), SecretEncryptionLive.pipe(Layer.provide(config)));

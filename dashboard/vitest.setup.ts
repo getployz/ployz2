@@ -8,6 +8,4 @@ process.env["POLAR_ACCESS_TOKEN"] ??= "test-polar-access-token";
 process.env["POLAR_SERVER"] ??= "sandbox";
 process.env["POLAR_WEBHOOK_SECRET"] ??= "test-polar-webhook-secret";
 process.env["POLAR_PRODUCT_ID"] ??= "22222222-2222-4222-8222-222222222222";
-process.env["INNGEST_EVENT_KEY"] ??= "test-inngest-event-key";
-process.env["INNGEST_SIGNING_KEY"] ??= "signkey-test-00";
 process.env["APP_ENCRYPTION_SECRET"] ??= "test-app-encryption-secret-1234567890";

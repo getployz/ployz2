@@ -399,10 +399,6 @@ export function DashboardNavigation({
   projection?: Projection;
   onNavigate?: () => void;
 }) {
-  const section = useDashboardSection();
-  // Self-hosted Cloud has no billing, so no Billing destination.
-  const billingEnabled =
-    useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.billingEnabled ?? false;
   if (scope.kind === "environment") {
     return (
       <EnvironmentNavigation
@@ -414,14 +410,34 @@ export function DashboardNavigation({
     );
   }
   return (
+    <OrganizationNavigation
+      scope={scope}
+      projection={projection}
+      onNavigate={onNavigate}
+    />
+  );
+}
+
+function OrganizationNavigation({
+  scope,
+  projection,
+  onNavigate,
+}: {
+  scope: Extract<DashboardScope, { kind: "all" }>;
+  projection: Projection;
+  onNavigate?: () => void;
+}) {
+  const section = useDashboardSection();
+  // Self-hosted Cloud has no billing, so no Billing destination.
+  const billingEnabled =
+    useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.billingEnabled ?? false;
+  return (
     <SidebarGroup>
       {projection !== "rail" ? (
         <SidebarGroupLabel>Organization</SidebarGroupLabel>
       ) : null}
       <SidebarMenu>
-        {createDashboardNavItems(scope)
-          .filter((item) => billingEnabled || item.section !== "billing")
-          .map((item) => (
+        {createDashboardNavItems(scope, { billingEnabled }).map((item) => (
           <Destination
             key={item.section}
             item={item}

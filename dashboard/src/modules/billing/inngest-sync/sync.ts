@@ -12,6 +12,7 @@ import {
 import { listOrganizationIds } from "#/modules/environment-design/workspace-repository.server";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { Database } from "#/server/database.server";
+import type { PolarConfiguration } from "#/server/config.server";
 
 export const SYNC_ORGANIZATION_BILLING_STATE_SINGLETON = {
   key: "event.data.organizationId",
@@ -162,3 +163,16 @@ export const createScheduleNightlyBillingReconcile = (inngest: PloyzInngest) =>
         runInngestEffect,
       ),
   );
+
+/** A Self-hosted Cloud has no Polar, so billing sync is never registered. */
+export function billingInngestFunctions(
+  inngest: PloyzInngest,
+  billingMode: PolarConfiguration["mode"],
+) {
+  return billingMode === "hosted"
+    ? [
+        createSyncOrganizationBillingStateFunction(inngest),
+        createScheduleNightlyBillingReconcile(inngest),
+      ]
+    : [];
+}

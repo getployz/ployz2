@@ -127,24 +127,28 @@ function RouteComponent() {
   }
 
   const subscribed = billingState.hasActiveSubscription;
+  const action = subscribed
+    ? { label: "Manage billing", variant: "outline", run: openBillingPortal } as const
+    : { label: "Get Started", variant: "default", run: openCheckout } as const;
 
   return (
     <DashboardPage width="wide">
       <Card className="max-w-md">
         <CardHeader className="flex flex-col gap-3">
           {subscribed ? <Badge variant="secondary">Current</Badge> : null}
+          {/* Copy decided in #1007; it describes the POLAR_PRODUCT_ID product. */}
           <CardTitle>Pro</CardTitle>
           <CardDescription>$9/mo · custom domains on Services</CardDescription>
         </CardHeader>
         <CardFooter>
           <Button
             className="w-full"
-            variant={subscribed ? "outline" : "default"}
+            variant={action.variant}
             disabled={!isHydrated || pending}
-            onClick={() => void (subscribed ? openBillingPortal() : openCheckout())}
+            onClick={() => void action.run()}
           >
             {pending ? <Spinner data-icon="inline-start" /> : null}
-            {subscribed ? "Manage billing" : "Get Started"}
+            {action.label}
           </Button>
         </CardFooter>
       </Card>

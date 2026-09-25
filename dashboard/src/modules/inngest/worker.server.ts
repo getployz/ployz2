@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { connect, ConnectionState, type WorkerConnection } from "inngest/connect";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { createInngestFunctions } from "#/modules/inngest/index";
+import { billingInngestFunctions } from "#/modules/billing/inngest-sync/sync";
 import { AppConfig, type PolarConfiguration } from "#/server/config.server";
 import { AppRuntime } from "#/server/runtime.server";
 
@@ -15,7 +16,12 @@ const connectWorker = Effect.fn("Inngest.connectWorker")((
   billingMode: PolarConfiguration["mode"],
 ) =>
   Effect.tryPromise({
-    try: () => connect({ apps: [{ client, functions: createInngestFunctions(client, billingMode) }] }),
+    try: () => connect({
+      apps: [{
+        client,
+        functions: [...createInngestFunctions(client), ...billingInngestFunctions(client, billingMode)],
+      }],
+    }),
     catch: (cause) => new InngestConnectionError({ cause }),
   }),
 );

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Inngest } from "inngest";
 import {
+  billingInngestFunctions,
   createScheduleNightlyBillingReconcile,
   createSyncOrganizationBillingStateFunction,
 } from "#/modules/billing/inngest-sync/sync";
@@ -28,7 +29,6 @@ import {
   createProcessTeardown,
 } from "#/modules/runtime/teardown.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
-import { createInngestFunctions } from "#/modules/inngest/index";
 import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
@@ -88,11 +88,10 @@ describe("Inngest function policies", () => {
 
   it("registers billing sync only on hosted Cloud", () => {
     const inngest = new Inngest({ id: "registration-contract" });
-    const billingIds = ["sync-organization-billing-state", "schedule-nightly-billing-reconcile"];
     const ids = (mode: "hosted" | "self_hosted") =>
-      createInngestFunctions(inngest, mode).map(({ opts }) => opts.id);
+      billingInngestFunctions(inngest, mode).map(({ opts }) => opts.id);
 
-    expect(ids("hosted")).toEqual(expect.arrayContaining(billingIds));
-    expect(ids("self_hosted").filter((id) => billingIds.includes(id))).toEqual([]);
+    expect(ids("hosted")).toEqual(["sync-organization-billing-state", "schedule-nightly-billing-reconcile"]);
+    expect(ids("self_hosted")).toEqual([]);
   });
 });
