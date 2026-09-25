@@ -69,7 +69,7 @@ vi.spyOn(runtimeActivities, "executeLatestEnvironmentDeployment").mockImplementa
   return { type: "success", completed: 0 } as const;
 }));
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.succeed([target]));
-vi.spyOn(buildOrder, "imageBuildCandidates").mockImplementation(() => Effect.sync(() => fake.candidates));
+vi.spyOn(buildOrder, "planImageBuildWalk").mockImplementation(() => Effect.sync(() => fake.candidates));
 vi.spyOn(serverImageBuilds, "buildOnServers").mockImplementation((_build, candidate, startWithinMs) => Effect.sync(() => {
   fake.serverLimits.push(startWithinMs);
   fake.serverPreferred.push(candidate.machineId);

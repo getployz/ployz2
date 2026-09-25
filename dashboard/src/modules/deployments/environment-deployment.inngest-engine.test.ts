@@ -34,7 +34,7 @@ const build = (image: string, buildIndex = 0): ImageBuildTarget => ({ id: `build
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.promise(() => activity.startBuilds()));
 vi.spyOn(serverImageBuilds, "buildOnServers").mockImplementation((target) =>
   Effect.promise(async () => ({ kind: "settled" as const, result: await activity.build(target) })));
-vi.spyOn(buildOrder, "imageBuildCandidates").mockImplementation(() => Effect.succeed(imageBuildWalk("servers-only", undefined)));
+vi.spyOn(buildOrder, "planImageBuildWalk").mockImplementation(() => Effect.succeed(imageBuildWalk("servers-only", undefined)));
 
 function runtimeFailure(
   operation: "execute",

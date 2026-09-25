@@ -26,7 +26,7 @@ import { loadDeploymentBuildLog } from "./deployment-events.server";
 import { createMarkCancelledRowBackedWorkflow, createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 import type { BuildOrder } from "./build-order";
 import type { SkipReason } from "./image-build";
-import { imageBuildCandidates } from "./build-order.server";
+import { planImageBuildWalk } from "./build-order.server";
 import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps } from "./github-image-builds.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
@@ -472,7 +472,7 @@ describe("Image Builds on GitHub Actions", () => {
     const plan = async () => {
       await harness.db.delete(schema.environmentDeploymentImageBuild);
       await harness.db.insert(schema.environmentDeploymentImageBuild).values({ organizationId, deploymentId, serviceId, image: "api", inngestRunId: runId });
-      return run(imageBuildCandidates(await target()));
+      return run(planImageBuildWalk(await target()));
     };
 
     it("defaults to GitHub first once a repository has the build workflow, and to the servers until then", async () => {

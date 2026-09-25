@@ -7,13 +7,11 @@ import { service } from "#/modules/environment-design/tables";
 import { checkGithubBuildWorkflow, listOrganizationGithubRepositories } from "#/modules/github/github-build.server";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 import { defaultBuildOrder, imageBuildWalk, type BuildOrder, type BuildOrderRow } from "./build-order";
 import type { SkipReason } from "./image-build";
 import { skipUnstarted, type ImageBuildTarget } from "./image-builds.server";
-
-const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
 import { environmentDeployment, organizationBuildOrder } from "./tables";
 
 /** Whether GitHub is set up: some repository the Organization's Services build from has the build workflow. */
@@ -53,7 +51,7 @@ const preferredServerUnavailable = Effect.fn("Deployments.preferredServerUnavail
  * gone or no longer builds goes back to Auto, and the skip trail says why, so a GitHub-only
  * Organization never builds on its servers.
  */
-export const imageBuildCandidates = Effect.fn("Deployments.imageBuildCandidates")(function* (
+export const planImageBuildWalk = Effect.fn("Deployments.planImageBuildWalk")(function* (
   build: Pick<ImageBuildTarget, "id" | "image" | "deploymentId" | "serviceId">,
 ) {
   const { drizzle } = yield* Database;

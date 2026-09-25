@@ -34,7 +34,7 @@ import {
   type ImageBuildTarget,
 } from "#/modules/deployments/image-builds.server";
 import type { BuildCandidate } from "#/modules/deployments/build-order";
-import { imageBuildCandidates } from "#/modules/deployments/build-order.server";
+import { planImageBuildWalk } from "#/modules/deployments/build-order.server";
 import { skipReasonText, type SkipReason } from "#/modules/deployments/image-build";
 import { buildOnServers } from "#/modules/deployments/server-image-builds.server";
 import {
@@ -186,7 +186,7 @@ async function runImageBuild(
   step: EnvironmentDeploymentStepTools,
   runEffect: DeploymentInngestEffectRunner,
 ) {
-  const candidates = await step.run(`plan-image-build-${build.serviceId}`, () => runEffect(imageBuildCandidates(build)));
+  const candidates = await step.run(`plan-image-build-${build.serviceId}`, () => runEffect(planImageBuildWalk(build)));
   let skipped: SkipReason | null = null;
   for (const [index, candidate] of candidates.entries()) {
     const walk = { key: `${build.serviceId}-${index}`, last: index === candidates.length - 1, step, runEffect };

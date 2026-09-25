@@ -4,7 +4,7 @@ import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
-import { skipReasonText, type CandidateReason, type SkipReason } from "./image-build";
+import { preferredServerUnavailableText, skipReasonText, type CandidateReason, type SkipReason } from "./image-build";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 import { isActiveDeployment } from "./runtime-contract";
@@ -68,9 +68,7 @@ function builderReason(reason: ServerChoice["reason"]): string {
     case "had_cache": return "had this Service's build cache";
     case "spread": return "spread across Servers";
     case "cache_holder_unavailable": return `${reason.name ?? "the Server with the cache"} has the cache but is offline or no longer builds`;
-    case "preferred_unavailable": return reason.name === null
-      ? "the preferred Server is no longer in the Cluster"
-      : `preferred ${reason.name} is offline or no longer builds`;
+    case "preferred_unavailable": return preferredServerUnavailableText(reason.name);
   }
 }
 

@@ -127,7 +127,7 @@ describe("deployment view projection", () => {
       { server: null, reason: null, skipped: ["GitHub: no workflow in o/r", "Preferred server: no longer in the Cluster"] },
       { server: "fast", reason: "preferred builder", skipped: [] },
       { server: "GitHub Actions", reason: "preferred builder", runUrl: "https://github.com/o/r/actions/runs/3", skipped: [] },
-      { server: "hel-1", reason: "the preferred Server is no longer in the Cluster", skipped: [] },
+      { server: "hel-1", reason: "Preferred server: no longer in the Cluster", skipped: [] },
     ]);
     // The skip trail reads after the Builder that took the build, or alone before one did.
     expect(view.nodes.slice(5, 7).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([

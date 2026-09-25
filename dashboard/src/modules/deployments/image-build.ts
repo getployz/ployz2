@@ -24,6 +24,13 @@ export const skipReasonSchema = Schema.Union([
 ]);
 export type SkipReason = typeof skipReasonSchema.Type;
 
+/**
+ * A Preferred Server that can't build, whether Cloud found it when planning the walk (a skip) or the
+ * Engine did when choosing (its reason): the same words either way. `name` is null once it left the Cluster.
+ */
+export const preferredServerUnavailableText = (name: string | null) =>
+  name === null ? "Preferred server: no longer in the Cluster" : `Preferred server ${name}: offline or no longer builds`;
+
 /** Why a Builder didn't take an Image Build, as the canvas, the build log and a failed build say it. */
 export function skipReasonText(reason: SkipReason): string {
   const builder = reason.builder === "github" ? "GitHub" : "Your servers";
@@ -34,7 +41,7 @@ export function skipReasonText(reason: SkipReason): string {
     case "multi_platform": return `${builder}: needs ${reason.platforms.join("+")}`;
     case "dispatch_failed": return `${builder}: could not start the build (${reason.message})`;
     case "ended_before_start": return `${builder}: the run ended before it started`;
-    case "preferred_unavailable": return reason.name === null ? "Preferred server: no longer in the Cluster" : `${reason.name}: no longer accepts builds`;
+    case "preferred_unavailable": return preferredServerUnavailableText(reason.name);
     case "not_started": return reason.builder === "github"
       ? `${builder}: no runner in ${reason.minutes} min`
       : `${builder}: none started it in ${reason.minutes} min`;
