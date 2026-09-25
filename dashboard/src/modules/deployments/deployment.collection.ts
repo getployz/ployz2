@@ -198,3 +198,17 @@ export function useNodeDeployments(organizationSlug: string, environmentId: stri
     return node ? [{ deployment, node }] : [];
   });
 }
+
+/** Every Cloud Deployment Attempt of an environment through the deployment view projection, newest first. */
+// ponytail: projects every attempt on each change; page the history if environments grow long ones.
+export function useEnvironmentDeployments(organizationSlug: string, environmentId: string): DeploymentAttempt[] {
+  const scope = useCollectionScope();
+  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
+  const { data: attempts } = useLiveSuspenseQuery({
+    queryKey: ["environment-deployment-attempts", summaries.id, environmentId],
+    query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
+      .orderBy(({ deployment }) => deployment.createdAt, "desc"),
+  });
+  const inputs = useAttemptTargetInputs(organizationSlug, environmentId);
+  return attempts.map((deployment) => projectAttempt(deployment, inputs));
+}

@@ -33,6 +33,7 @@ import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
+import { DeployBar } from "./DeployBar";
 import { BackToLive, DeploymentModeProvider, useDeploymentMode } from "./deployment-mode";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -231,13 +232,14 @@ function CanvasScene() {
           <BackToLive />
         </> : null}
       </DashboardPageHeader>}
-      canvas={
+      canvas={<>
         <Suspense fallback={<PendingCanvas />}>
           {attempt
             ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
             : <CanvasWithData key={canvasKey} />}
         </Suspense>
-      }
+        <Suspense fallback={null}><DeployBar /></Suspense>
+      </>}
     >
       {inspectedNodeId ? <Outlet /> : null}
     </CanvasInspectorOverlay>

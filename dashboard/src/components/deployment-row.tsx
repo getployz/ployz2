@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams, useRouter } from "@tanstack/react-router";
+import { useParams, useRouter } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -7,7 +7,6 @@ import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
 import { DeploymentStatusCard } from "#/components/deployment-status-card";
 import { DeploymentLogs } from "#/components/deployment-logs";
 import { reconcileDeploymentCollections, useDeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { VolumeRemoveAttemptHistory } from "#/components/volume-remove/deployment-volume-remove-history";
@@ -17,9 +16,37 @@ import { getRawEnvironmentResourcesCollection } from "#/collections/collections"
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import { dispatchQueuedEnvironmentDeploymentServerFn, retryEnvironmentDeploymentServerFn } from "#/modules/deployments/deployment.functions";
 
+/** Retry re-admits a failed attempt's frozen target. */
+export function useRetryDeployment(deployment: EnvironmentDeploymentSummary) {
+  const [isRetrying, setIsRetrying] = useState(false);
+  const { organizationSlug } = useParams({ strict: false });
+  const collectionScope = useCollectionScope();
+  async function retryDeployment() {
+    if (!organizationSlug || !deployment.canRetry) return;
+    setIsRetrying(true);
+    try {
+      await retryEnvironmentDeploymentServerFn({
+          data: {
+            organizationSlug,
+            projectSlug: deployment.projectSlug,
+            environmentSlug: deployment.environmentSlug,
+            failedDeploymentId: deployment.id,
+          },
+        });
+      await reconcileDeploymentCollections(organizationSlug, collectionScope);
+      toast.success("Deployment retry queued.");
+    } catch {
+      toast.error("Could not retry this deployment.");
+    } finally {
+      setIsRetrying(false);
+    }
+  }
+  return { retryDeployment, isRetrying };
+}
+
 export function DeploymentRow({ deployment, serviceId }: { deployment: EnvironmentDeploymentSummary; serviceId?: string }) {
   const [isOpen, setIsOpen] = useState(() => ["planning", "deploying"].includes(deployment.status));
-  const [isRetrying, setIsRetrying] = useState(false);
+  const { retryDeployment, isRetrying } = useRetryDeployment(deployment);
   const [isDispatching, setIsDispatching] = useState(false);
   const router = useRouter();
   const { organizationSlug } = useParams({ strict: false });
@@ -68,27 +95,6 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
 
   const [cancelOpen, setCancelOpen] = useState(false);
 
-  async function retryDeployment() {
-    if (!organizationSlug || !deployment.canRetry) return;
-    setIsRetrying(true);
-    try {
-      await retryEnvironmentDeploymentServerFn({
-          data: {
-            organizationSlug,
-            projectSlug: deployment.projectSlug,
-            environmentSlug: deployment.environmentSlug,
-            failedDeploymentId: deployment.id,
-          },
-        });
-      await reconcileDeploymentCollections(organizationSlug, collectionScope);
-      toast.success("Deployment retry queued.");
-    } catch {
-      toast.error("Could not retry this deployment.");
-    } finally {
-      setIsRetrying(false);
-    }
-  }
-
   if (!attempt) return null;
 
   return <>
@@ -96,8 +102,6 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
       showLogs={showLogs} onLogsChange={setShowLogs}
       onLogsIntent={organizationSlug ? () => preloadDeploymentLogs(organizationSlug, deployment.id, collectionScope) : undefined}
       logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} hasBuild={deployment.buildServiceIds.some((id) => !serviceId || id === serviceId)} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={<>
-        {/* ponytail: temporary way into Deployment Mode; the deploy bar (#1050) replaces it. */}
-        {organizationSlug ? <Button variant="outline" size="sm" nativeButton={false} render={<Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ organizationSlug, projectSlug: deployment.projectSlug, environmentSlug: deployment.environmentSlug }} search={{ deployment: deployment.id }} />}>View on canvas</Button> : null}
         <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" size="icon" />}
