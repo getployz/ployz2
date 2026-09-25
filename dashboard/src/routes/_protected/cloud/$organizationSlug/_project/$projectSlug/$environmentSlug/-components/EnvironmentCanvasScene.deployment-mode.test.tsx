@@ -21,6 +21,7 @@ import type { DeploymentProgress, DeploymentProgressRow } from "#/modules/deploy
 import * as preflight from "#/modules/runtime/deploy-target-preflight";
 import * as restore from "#/modules/environment-design/working-document-restore.functions";
 import { asTestDouble } from "#/lib/test-double";
+import { SidebarProvider } from "#/components/ui/sidebar";
 import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 import { defaultServicePolicy } from "#/modules/environment-design/service-policy";
 import { RuntimeProvider } from "#/providers/runtime-provider";
@@ -109,7 +110,7 @@ async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production", ch
     projectGroup.addChildren([environment.addChildren([canvas.addChildren([index, serviceRoute]), deployments])]),
   ])])]);
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) });
-  render(<DbProvider client={getDbClient(queryClient)}><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></DbProvider>);
+  render(<DbProvider client={getDbClient(queryClient)}><QueryClientProvider client={queryClient}><SidebarProvider><RouterProvider router={router} /></SidebarProvider></QueryClientProvider></DbProvider>);
   await screen.findAllByText("worker");
   return router;
 }
@@ -216,6 +217,11 @@ describe("deployment mode on the environment canvas", () => {
     // A prebuilt image built nothing.
     expect(screen.getByRole("tab", { name: "Build logs" }).getAttribute("aria-disabled")).toBe("true");
     expect(screen.queryByText("Live service panel")).toBeNull();
+    // The header's section picker stands in for the tabs on mobile, so it agrees.
+    fireEvent.click(screen.getByRole("button", { name: "Project navigation" }));
+    const picker = await screen.findByRole("dialog", { name: "Project navigation" });
+    expect(within(picker).getAllByRole("link", { name: "Build logs" })[0]?.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.keyDown(picker, { key: "Escape" });
 
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
     await waitFor(() => expect(router.state.location.search).toMatchObject({ deployment: replaceFailedId, tab: "details" }));

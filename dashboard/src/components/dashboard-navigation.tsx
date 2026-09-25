@@ -41,10 +41,10 @@ import {
   SidebarMenuButton,
 } from "./ui/sidebar";
 import { cn } from "#/lib/utils";
+import { useDeploymentMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
 import { useCanvasInspectorSelection } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/useCanvasInspectorSelection";
 import {
   nodeDestination,
-  useAttemptBuildServiceIds,
   useEnvironmentNavigationNodes,
   type NavigationNode,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-node-navigation";
@@ -94,20 +94,20 @@ function Destination({
 }
 
 function ResourceNavigation({
-  scope, node, selected, tab, deployment, built, onNavigate,
+  scope, node, selected, tab, deployment, onNavigate,
 }: {
   scope: EnvironmentScope;
   node: NavigationNode;
   selected: boolean;
   tab?: string;
   deployment?: string;
-  /** The viewed attempt built this service's image; as in the panel's tabs, a prebuilt image has no Build logs. */
-  built: boolean;
   onNavigate?: (nodeId: string) => void;
 }) {
   const [open, setOpen] = useState(selected);
   const Icon = nodeIcons[node.type];
   const pages = node.type === "service" ? servicePagesFor(deployment) : SERVICE_PAGES.filter((page) => page.id === "settings");
+  // Inside Deployment Mode (the panel header's picker), Build logs is disabled for a prebuilt image, as in the panel's tabs.
+  const prebuilt = useDeploymentMode()?.view.nodes.find((candidate) => candidate.nodeId === node.id)?.build.state === "none";
   return (
     <SidebarMenuItem>
       <Collapsible open={open} onOpenChange={setOpen}>
@@ -127,7 +127,7 @@ function ResourceNavigation({
             {pages.map((page) => (
               <SidebarMenuItem key={page.id}>
                 <SidebarMenuButton isActive={selected && (tab ?? "settings") === page.id}
-                  aria-disabled={page.id === "build-logs" && !built ? true : undefined}
+                  aria-disabled={page.id === "build-logs" && prebuilt ? true : undefined}
                   render={<Link {...nodeDestination(scope, node, page.id)}
                     onClick={() => onNavigate?.(node.id)}
                     aria-current={selected && (tab ?? "settings") === page.id ? "page" : undefined} />}>
@@ -144,13 +144,11 @@ function ResourceNavigation({
 }
 
 export function EnvironmentNodeDirectory({
-  scope, nodes, selectedId, buildServiceIds = [], onNavigate,
+  scope, nodes, selectedId, onNavigate,
 }: {
   scope: EnvironmentScope;
   nodes: NavigationNode[];
   selectedId: string | null;
-  /** In Deployment Mode, the services whose image the attempt built. */
-  buildServiceIds?: readonly string[];
   onNavigate?: (nodeId: string) => void;
 }) {
   const [filter, setFilter] = useState("");
@@ -166,12 +164,12 @@ export function EnvironmentNodeDirectory({
       ) : null}
       {selected ? (
         <SidebarMenu>
-          <ResourceNavigation key={selected.id} scope={scope} node={selected} selected tab={tab} deployment={deployment} built={buildServiceIds.includes(selected.id)} onNavigate={onNavigate} />
+          <ResourceNavigation key={selected.id} scope={scope} node={selected} selected tab={tab} deployment={deployment} onNavigate={onNavigate} />
         </SidebarMenu>
       ) : null}
       <SidebarMenu className="max-h-64 overflow-y-auto overscroll-contain">
         {others.map((node) => (
-          <ResourceNavigation key={node.id} scope={scope} node={node} selected={false} tab={tab} deployment={deployment} built={buildServiceIds.includes(node.id)} onNavigate={onNavigate} />
+          <ResourceNavigation key={node.id} scope={scope} node={node} selected={false} tab={tab} deployment={deployment} onNavigate={onNavigate} />
         ))}
       </SidebarMenu>
       {!others.length && (!selected || filter) ? (
@@ -241,8 +239,6 @@ function EnvironmentNavigation({
     onNavigate?.();
   };
   const resources = useEnvironmentNavigationNodes(scope);
-  const { deployment } = useSearch({ strict: false });
-  const buildServiceIds = useAttemptBuildServiceIds(scope.organizationSlug, deployment);
   const section = useDashboardSection();
   const items = createDashboardNavItems(scope);
   const architecture = items.find((item) => item.section === "overview");
@@ -266,7 +262,6 @@ function EnvironmentNavigation({
       scope={scope}
       nodes={resources.nodes}
       selectedId={selectedNodeId}
-      buildServiceIds={buildServiceIds}
       onNavigate={navigateToNode}
     />
   );
