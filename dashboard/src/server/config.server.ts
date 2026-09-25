@@ -7,7 +7,9 @@ import {
   Layer,
   Option,
   type Redacted,
+  Result,
   Schema,
+  SchemaIssue,
 } from "effect";
 
 const Uuid = Schema.String.check(Schema.isUUID());
@@ -33,7 +35,7 @@ export class InvalidConfiguration extends Data.TaggedError(
 const optional = <A>(config: Config.Config<A>) =>
   Config.option(config).pipe(Config.map(Option.getOrUndefined));
 
-const rawConfig = Config.all({
+const rawFields = {
   nodeEnv: Config.literals(["development", "test", "production"], "NODE_ENV").pipe(
     Config.withDefault("production"),
   ),
@@ -66,7 +68,36 @@ const rawConfig = Config.all({
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
   inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
-});
+};
+const rawConfig = Config.all(rawFields);
+
+/**
+ * Config.all stops at the first bad variable. On failure, read every field so
+ * one ConfigError names all missing or malformed variables.
+ */
+const loadRawConfig = rawConfig.pipe(
+  Effect.catch((first) =>
+    Effect.all(Object.values(rawFields), { mode: "result" }).pipe(
+      Effect.flatMap((results) => {
+        const issues = results.flatMap((result) =>
+          Result.isFailure(result) && Schema.isSchemaError(result.failure.cause)
+            ? [result.failure.cause.issue]
+            : [],
+        );
+        const [head, ...tail] = issues;
+        return Effect.fail(
+          head === undefined
+            ? first
+            : new Config.ConfigError(
+                new Schema.SchemaError(
+                  new SchemaIssue.Composite(Schema.Unknown.ast, [head, ...tail]),
+                ),
+              ),
+        );
+      }),
+    ),
+  ),
+);
 
 /** No Polar variables means a Self-hosted Cloud; a partial set is a mistake. */
 const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
@@ -100,7 +131,7 @@ const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
 });
 
 const makeAppConfig = Effect.gen(function* () {
-  const raw = yield* rawConfig;
+  const raw = yield* loadRawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
   const appUrl = raw.appUrl.href.replace(/\/$/, "");
 
