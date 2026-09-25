@@ -49,7 +49,8 @@ export type GithubObservationOperation =
   | "resolve_file_ref"
   | "list_files"
   | "installation_token"
-  | "download_source";
+  | "download_source"
+  | "fetch_workflow";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
