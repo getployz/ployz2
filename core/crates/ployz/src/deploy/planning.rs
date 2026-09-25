@@ -310,14 +310,16 @@ fn bind(intent: &DeployIntent) -> Result<BoundIntent, PlanError> {
         .cloned()
         .map(|spec| scope_requested(spec, &intent.project_name))
         .collect::<Result<_, _>>()?;
-    let mut requested = Vec::new();
-    for spec in specs {
-        let scoped = target
-            .iter()
-            .find(|candidate| candidate.name == spec.name)
-            .expect("apply-set names are drawn from the Intent target");
-        requested.push(scoped.clone());
-    }
+    let requested = specs
+        .into_iter()
+        .map(|spec| {
+            target
+                .iter()
+                .find(|candidate| candidate.name == spec.name)
+                .expect("apply-set names are drawn from the Intent target")
+                .clone()
+        })
+        .collect();
     Ok(BoundIntent { target, requested })
 }
 

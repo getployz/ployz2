@@ -20,7 +20,7 @@ use ployz_core::{
     DeployEvent, DeployOutcome, DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot,
     ExecutionError, LocalMachineRemoved, MachineTarget, ObservedDataLoss, OpaquePayload,
     ProjectName, PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered,
-    RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
+    RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
     ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
@@ -139,6 +139,17 @@ impl Session {
         }
     }
 
+    async fn unary<T: Rpc>(&self, request: T::Request) -> Result<T::Response, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<T>(request, None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
+    }
+
     /// Observe enrollment facts on this confirmed Entry Machine.
     ///
     /// # Errors
@@ -198,14 +209,8 @@ impl Session {
     /// # Errors
     /// Returns cancellation or Inspect errors.
     pub async fn inspect(&self) -> Result<ployz_core::MachineDetails, RpcError> {
-        let mut client = self.client()?;
-        self.until_closed(async {
-            client
-                .call::<op::Inspect>(ployz_core::InspectRequest::default(), None)
-                .await
-                .map_err(RpcError::from)
-        })
-        .await
+        self.unary::<op::Inspect>(ployz_core::InspectRequest::default())
+            .await
     }
 
     /// Publish or clear Certificate Material for one hostname or single-level wildcard.
@@ -218,14 +223,7 @@ impl Session {
         &self,
         request: PublishCertificateMaterialRequest,
     ) -> Result<CertificateMaterialPublished, RpcError> {
-        let mut client = self.client()?;
-        self.until_closed(async {
-            client
-                .call::<op::PublishCertificateMaterial>(request, None)
-                .await
-                .map_err(RpcError::from)
-        })
-        .await
+        self.unary::<op::PublishCertificateMaterial>(request).await
     }
 
     /// Describe the entry Machine contract.
@@ -235,14 +233,8 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed or
     /// `DescribeContract` fails.
     pub async fn about(&self) -> Result<ContractDescription, RpcError> {
-        let mut client = self.client()?;
-        self.until_closed(async {
-            client
-                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-                .await
-                .map_err(RpcError::from)
-        })
-        .await
+        self.unary::<op::DescribeContract>(DescribeContractRequest {})
+            .await
     }
 
     /// Open a Runtime Watch stream of complete frames.
@@ -255,15 +247,8 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, Watch is not
     /// advertised, or the stream cannot be opened.
     pub async fn watch(&self) -> Result<Watch, RpcError> {
-        let mut client = self.client()?;
-        let description = self
-            .until_closed(async {
-                client
-                    .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-                    .await
-                    .map_err(RpcError::from)
-            })
-            .await?;
+        let description = self.about().await?;
+        let client = self.client()?;
         if !description.supports(RUNTIME_WATCH_CAPABILITY) {
             return Err(RpcError {
                 code: RpcErrorCode::Unsupported,

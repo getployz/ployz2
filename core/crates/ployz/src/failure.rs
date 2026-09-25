@@ -334,24 +334,13 @@ mod tests {
 
     #[test]
     fn warned_follow_on_is_one_line_and_fails() {
-        let cause = "inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out";
-        let add = Failure::warned(
-            "local context cleanup failed after adding the Machine",
-            cause,
-        );
-        let remove = Failure::warned(
-            "local context cleanup failed after removing the Machine",
-            cause,
-        );
-        assert_eq!(
-            add.to_string(),
-            "WARNING: local context cleanup failed after adding the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
-        );
+        let cause = "write context file: permission denied";
+        let remove = Failure::warned("local context cleanup failed after Machine removal", cause);
         assert_eq!(
             remove.to_string(),
-            "WARNING: local context cleanup failed after removing the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
+            "WARNING: local context cleanup failed after Machine removal: write context file: permission denied."
         );
-        assert_eq!(add.to_string().matches(cause).count(), 1);
+        assert_eq!(remove.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
     }
 
