@@ -233,7 +233,7 @@ describe("the deploy bar", () => {
     const list = within(await screen.findByRole("navigation", { name: "Deployments" }));
     // Live first, then deployments newest first.
     expect(list.getAllByRole("link").map((row) => row.textContent)).toEqual([
-      expect.stringContaining("Live"), expect.stringContaining("b0000000"), expect.stringContaining("a0000000"),
+      expect.stringContaining("Live"), expect.stringContaining("e0000000"), expect.stringContaining("b0000000"), expect.stringContaining("a0000000"),
     ]);
 
     await click(list.getByRole("link", { name: /b0000000/ }));
