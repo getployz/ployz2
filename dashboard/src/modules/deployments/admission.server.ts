@@ -9,7 +9,6 @@ import {
   desc,
   eq,
   inArray,
-  isNull,
   not,
   type SQL,
 } from "drizzle-orm";
@@ -34,7 +33,7 @@ import {
   organizationIdForEnvironment,
 } from "#/db/scope-values.server";
 import { projectJsonObject } from "#/lib/json";
-import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { lockEnvironmentDeploymentQueue, pendingAttemptOf } from "#/modules/deployments/queue-lock.server";
 import { getVolumePhysicalName } from "#/modules/environment-design/volume-config";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { stageVolumeRemoveAttempt } from "#/modules/runtime/volume-removal.repository";
@@ -355,14 +354,8 @@ function writeQueuedSavedTarget(
         createdAt: schemaEnvironmentDeployment.createdAt,
       })
       .from(schemaEnvironmentDeployment)
-      .where(
-        and(
-          eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
-          eq(schemaEnvironmentDeployment.status, "queued"),
-          // The building attempt (it has a run) is never replaced; the newest admission always replaces the pending one.
-          isNull(schemaEnvironmentDeployment.inngestRunId),
-        ),
-      )
+      // The building attempt is never replaced; the newest admission always replaces the pending one.
+      .where(pendingAttemptOf(input.environmentId))
       .for("update")
       .limit(1);
     const queued = queuedRows[0];

@@ -16,7 +16,7 @@ import {
 import {
   dispatchEnvironmentDeployment,
   ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
-} from "./dispatch.server";
+} from "./runtime-lifecycle.repository.server";
 import { commitFirstConnectAdmission } from "./first-connect.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000401";
@@ -320,14 +320,15 @@ describe("Saved deployment admission", () => {
       .set({ inngestRunId: "run-owned" })
       .where(eq(schema.environmentDeployment.id, second.id));
     const owned = new Inngest({ id: "admission-dispatch-owned-test" });
-    owned.send = async () => ({ ids: [] });
-    await expect(
-      harness.runEffect(
-        dispatchEnvironmentDeployment(
-          { environmentDeploymentId: second.id, environmentId },
-        ).pipe(Effect.provideService(InngestClient, owned)),
-      ),
-    ).rejects.toMatchObject({ _tag: "Conflict" });
+    const sent: unknown[] = [];
+    owned.send = async (event) => { sent.push(event); return { ids: [] }; };
+    // A run-owned row is the building attempt: dispatch leaves it alone.
+    await harness.runEffect(
+      dispatchEnvironmentDeployment(
+        { environmentDeploymentId: second.id, environmentId },
+      ).pipe(Effect.provideService(InngestClient, owned)),
+    );
+    expect(sent).toEqual([]);
   });
 
   it("records a no-Saved first connection so a later callback cannot deploy", async () => {

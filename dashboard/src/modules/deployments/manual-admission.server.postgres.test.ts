@@ -2,7 +2,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { runtimeWatchFrameFixture, runtimeWatchVolumeFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { OrganizationRuntime, type OrganizationRuntimeService, type ConnectedRuntimeClient } from "#/modules/runtime/organization-runtime.server";
 import { submitReviewedPublication, prepareEnvironmentDestructiveVolumes } from "./deployment-command.server";
-import { dispatchEnvironmentDeployment } from "./dispatch.server";
+import { dispatchEnvironmentDeployment } from "./runtime-lifecycle.repository.server";
 import { recordInngestRun } from "./runtime-lifecycle.repository.server";
 import { createRetryAttempt } from "./retry-repository.server";
 import { destructiveVolumeReviewsSchema } from "#/modules/environment-design/destructive-volume-review";

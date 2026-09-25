@@ -17,7 +17,7 @@ import { noPairingChanges } from "#/test/organization-runtime";
 import { loadDeploymentBuildLog } from "./deployment-events.server";
 import { requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
 import { admitEnvironmentDeployment } from "./admission.server";
-import { dispatchEnvironmentDeployment } from "./dispatch.server";
+import { dispatchEnvironmentDeployment, dispatchPendingDeployment, dispatchStrandedPendingDeployments } from "./runtime-lifecycle.repository.server";
 import * as schema from "#/db/schema";
 import {
   type PostgresTestHarness,
@@ -428,6 +428,31 @@ describe("deployment Inngest durable smoke", () => {
         expect(failed.error).toEqual(expect.objectContaining({ message: "Image Build failed: web." }));
         expect(await attempt(targetDeploymentId)).toMatchObject({ status: "failed" });
         await expectPendingDispatched(pendingId);
+      }, 20_000);
+
+      it("reports Deploy now on the pending attempt as waiting while an attempt builds", async () => {
+        await building({ builds: [], failImage: null, hold: false, prepared: [] });
+        const pendingId = await admit(push("second"));
+        const deployNow = await harness.runEffect(dispatchPendingDeployment(environmentId).pipe(Effect.provideService(InngestClient, client)));
+        expect(deployNow).toEqual({ state: "pending" });
+        expect(await attempt(pendingId)).toMatchObject({ dispatchRequestedAt: null });
+        expect(dispatched).toEqual([]);
+      }, 20_000);
+
+      it("sweeps a pending attempt whose dispatch was lost, and leaves one behind a building attempt", async () => {
+        await building({ builds: [], failImage: null, hold: false, prepared: [] });
+        const pendingId = await admit(push("second"));
+        const sweep = () => harness.runEffect(dispatchStrandedPendingDeployments().pipe(Effect.provideService(InngestClient, client)));
+        expect(await sweep()).toBe(0);
+        expect(dispatched).toEqual([]);
+        // The building attempt left queued, but its post-commit dispatch never ran (a crash).
+        await harness.db.update(schema.environmentDeployment).set({ status: "failed", finishedAt: new Date() })
+          .where(eq(schema.environmentDeployment.id, targetDeploymentId));
+        expect(await sweep()).toBe(1);
+        await expectPendingDispatched(pendingId);
+        // A resend is harmless: the event ID is deterministic per attempt.
+        await sweep();
+        expect(new Set(dispatched)).toEqual(new Set([pendingId]));
       }, 20_000);
 
       it("dispatches the pending attempt when the building attempt is cancelled", async () => {

@@ -40,7 +40,7 @@ import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
 } from "#/modules/deployments/admission.server";
-import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
+import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import {
   listLatestEnvironmentSavedStatesForGithubBranch,
 } from "#/modules/environment-design/saved-state-repository.server";
