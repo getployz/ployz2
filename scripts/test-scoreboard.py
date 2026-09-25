@@ -8,11 +8,13 @@
 
 NEXTEST_ARGS narrow the tests run per mutant (e.g. -E 'binary_id(ployz::deploy_plan)');
 pass the same ones to baseline and check. Mutation runs in place, so don't edit the tree meanwhile.
+MUTANTS_RE (env) limits mutants to names matching a regex, e.g. the functions a batch's tests cover.
 
 Ignored Rust tests (real-infra rungs) are out of scope; they neither count nor run.
 """
 import collections
 import json
+import os
 import re
 import subprocess
 import sys
@@ -151,7 +153,9 @@ def mutants(path, *nextest_args):
     output.mkdir(parents=True, exist_ok=True)
     # In place reuses the warm target dir; copying the tree would cold-build every job.
     result = subprocess.run(["cargo", "mutants", "--file", str(target), "--test-tool", "nextest", "--all-features",
-                             "--output", str(output), "--in-place", "--no-shuffle", "--", *nextest_args],
+                             "--output", str(output), "--in-place", "--no-shuffle",
+                             *(["--re", os.environ["MUTANTS_RE"]] if os.environ.get("MUTANTS_RE") else []),
+                             "--", *nextest_args],
                             cwd=CORE, text=True, capture_output=True)
     # 2 = some mutants missed, 3 = some timed out: both still produce outcomes to compare.
     if result.returncode not in (0, 2, 3):
