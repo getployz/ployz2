@@ -6,6 +6,9 @@ use std::{fs, path::Path};
 use tokio_util::sync::CancellationToken;
 
 const POLICY: &str = "cpu_cores: 0.5\nmemory_bytes: 536870912\n";
+/// Retention must not depend on the test host's free disk: the default GC
+/// target keeps 20% of the Docker root free and evicts the whole cache below it.
+const RETAINED: &str = "min_free_bytes: 1\n";
 const EVIDENCE: &str = "/tmp/ployz-policy-evidence";
 
 struct Host {
@@ -67,7 +70,7 @@ exit "$status"
         );
         // The script is test-authored, not user-provided text.
         host.shell(&format!("cat > /usr/local/bin/docker <<'PLOYZ_AUDIT'\n{wrapper}\nPLOYZ_AUDIT\nchmod +x /usr/local/bin/docker"));
-        host.configure(POLICY);
+        host.configure(&format!("{POLICY}{RETAINED}"));
         host
     }
 
@@ -186,7 +189,7 @@ async fn selected_machine_build_resource_policy_and_cache_administration() {
             "configured GC retained the build layer: {target}"
         );
     }
-    host.configure(POLICY);
+    host.configure(&format!("{POLICY}{RETAINED}"));
     let unrelated = format!("ployz-unrelated-808-{}", uuid::Uuid::new_v4());
     host.shell(&format!("docker volume create --label dev.ployz.test=unrelated {unrelated}; docker run --rm -v {unrelated}:/data alpine:3.23.3 sh -c 'echo preserved > /data/value'"));
     let before_clear = host.stamp("/built-at");

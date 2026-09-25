@@ -7,6 +7,12 @@ use std::{collections::BTreeMap, fs, path::Path};
 /// Without a configured GC target, keep this share of the Docker root free.
 const DEFAULT_MIN_FREE_PERCENT: u64 = 20;
 
+/// Cache cap when none is configured. BuildKit evicts one record whenever a
+/// free-space target alone is already met (its keep target equals the cache
+/// size, which is not "under" it); any cap above the cache size avoids that.
+/// 2^62 bytes survives Buildx's float byte parsing exactly.
+const UNCAPPED_CACHE_BYTES: u64 = 1 << 62;
+
 /// Parsed only from the execution host, never from captured source or requests.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -152,10 +158,9 @@ impl Resources {
             "--force".into(),
             "--reserved-space".into(),
             "0".into(),
+            "--max-used-space".into(),
+            self.max_used_bytes().to_string(),
         ];
-        if let Some(bytes) = self.cache_bytes {
-            arguments.extend(["--max-used-space".into(), bytes.to_string()]);
-        }
         if let Some(bytes) = min_free_bytes {
             arguments.extend(["--min-free-space".into(), bytes.to_string()]);
         }
@@ -168,6 +173,10 @@ impl Resources {
             .map(|_| ())
     }
 
+    fn max_used_bytes(&self) -> u64 {
+        self.cache_bytes.unwrap_or(UNCAPPED_CACHE_BYTES)
+    }
+
     pub(crate) fn buildkit_config(&self) -> String {
         // BuildKit's default reservedSpace can exceed a small host budget.
         // Give its GC permission to reclaim down to zero; it owns all eviction.
@@ -175,9 +184,7 @@ impl Resources {
         if self.cache_bytes.is_none() && self.min_free_bytes.is_none() {
             config.push_str(&format!("minFreeSpace = \"{DEFAULT_MIN_FREE_PERCENT}%\"\n"));
         }
-        if let Some(bytes) = self.cache_bytes {
-            config.push_str(&format!("maxUsedSpace = {bytes}\n"));
-        }
+        config.push_str(&format!("maxUsedSpace = {}\n", self.max_used_bytes()));
         if let Some(bytes) = self.min_free_bytes {
             config.push_str(&format!("minFreeSpace = {bytes}\n"));
         }
@@ -271,7 +278,7 @@ mod tests {
         assert!(defaults.preparation_arguments().is_empty());
         assert_eq!(
             defaults.buildkit_config(),
-            "[worker.oci]\ngc = true\nreservedSpace = 0\nminFreeSpace = \"20%\"\n"
+            "[worker.oci]\ngc = true\nreservedSpace = 0\nminFreeSpace = \"20%\"\nmaxUsedSpace = 4611686018427387904\n"
         );
         assert_eq!(
             Resources::parse(b"cache_bytes: 1073741824")

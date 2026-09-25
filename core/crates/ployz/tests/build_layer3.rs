@@ -34,7 +34,14 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     )
     .unwrap();
     cluster.wait_ready(Duration::from_secs(120)).await.unwrap();
-    cluster.initialize_first().await.unwrap();
+    cluster.initialize_entry().await.unwrap();
+    // Layer reuse must not depend on this host's free disk (see policy.rs).
+    cluster
+        .machine_shell(
+            0,
+            "mkdir -p /root/.ployz; echo 'min_free_bytes: 1' > /root/.ployz/build.yaml",
+        )
+        .unwrap();
     let session = session(&cluster).await;
     let built_content = |prepared: &PreparedDeploy| {
         let receipt = prepared.build_receipts().values().next().unwrap();
@@ -131,27 +138,16 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     session.close().await;
 }
 
-/// A Cloud session through the entry Machine's plain TCP endpoint, once the daemon's
-/// restart after initialization has it listening again.
+/// A Cloud session through the entry Machine's plain TCP endpoint.
 async fn session(cluster: &Cluster) -> Session {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let connected = ployz::sdk::connect_connections(
-            vec![ployz::context::Connection::tcp(
-                cluster.api_socket_address(0).unwrap(),
-            )],
-            Arc::new(ployz::connect::SystemConnector::default()),
-        )
-        .await;
-        match connected {
-            Ok(session) => return session,
-            Err(error) if Instant::now() < deadline => {
-                eprintln!("waiting for the entry Machine: {}", error.message);
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            Err(error) => panic!("entry Machine never accepted a session: {error:?}"),
-        }
-    }
+    ployz::sdk::connect_connections(
+        vec![ployz::context::Connection::tcp(
+            cluster.api_socket_address(0).unwrap(),
+        )],
+        Arc::new(ployz::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap()
 }
 
 /// One Git Service `app` in Project `build`, as Cloud freezes it. `MESSAGE`
