@@ -24,8 +24,10 @@ import { TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/
 import { DeploymentExecutionError } from "#/modules/deployments/execution-error";
 import {
   cleanUpDeploymentImages,
+  executeImageBuild,
   executeLatestEnvironmentDeployment,
 } from "#/modules/deployments/runtime-activities.server";
+import { startImageBuilds } from "#/modules/deployments/image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
 import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.repository.server";
 import {
@@ -119,13 +121,6 @@ function terminalizeDeploymentFailure(
     }),
   );
 }
-
-export const PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY = [
-  {
-    key: "event.data.environmentId",
-    limit: 1,
-  },
-] as const;
 
 export type EnvironmentDeploymentStepTools = Pick<
   PloyzStepTools,
@@ -236,6 +231,16 @@ export async function executeProcessEnvironmentDeployment(
   }
 
   try {
+    // Admission fan-out: every Image Build starts now, in parallel, without holding the Environment slot.
+    const builds = await step.run("start-image-builds", () => runEffect(startImageBuilds(context, runId)));
+    const settled = await Promise.all(builds.map((build) =>
+      step.run(`build-image-${build.serviceId}`, () => runEffect(executeImageBuild(build)))));
+    // Every build settles first, so the ones that finished keep their receipts for a retry.
+    const unbuilt = settled.filter(({ status }) => status !== "built").map(({ image }) => image);
+    if (unbuilt.length) {
+      throw new DeploymentExecutionError({ failureCode: "image_build_failed", message: `Image Build failed: ${unbuilt.join(", ")}.` });
+    }
+
     while (true) {
       const planning = await step.run(
         "mark-deployment-planning",
@@ -375,7 +380,10 @@ export const createProcessEnvironmentDeployment = (
     retries: 0,
     cancelOn: [{ event: environmentDeployCancelRequestedEvent, match: "data.environmentDeploymentId" }],
     triggers: [{ event: environmentDeployRequestedEventType }],
-    concurrency: [...PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY],
+    // No concurrency limit. Inngest counts executing steps, so a per-Environment limit would stall a
+    // queued attempt's Image Builds behind an earlier attempt's deploy step, and a per-attempt one
+    // would serialize its parallel builds. The Environment execution slot is the database's
+    // partial unique index; one run owns an attempt through its recorded run id.
     onFailure: async ({ event, error }) =>
       executeProcessEnvironmentDeploymentOnFailure(
         { event, error },

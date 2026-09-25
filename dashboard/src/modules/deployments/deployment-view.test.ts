@@ -14,8 +14,8 @@ function row(index: number, operation?: DeployOperation): OperationRow {
 /** The Engine serializes keys alphabetically, unlike the planned rows. */
 const engineOrdered = <T,>(value: T): T => JSON.parse(canonicalJson(value)) as T;
 const context = { serviceIdFor: (name: string | null) => name };
-const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null) =>
-  ({ id, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
+const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null, image = "") =>
+  ({ id, image, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
 const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: Partial<DeploymentViewInput["deployment"]> = {}): DeploymentViewInput["deployment"] =>
   ({ status, failureMessage: null, deployPreview: null, ...extra });
 /** A service in the Attempt Target; `image` makes it a built one. */
@@ -106,6 +106,28 @@ describe("deployment view projection", () => {
         output: [{ stepId: 2, text: "one\ntwo\n" }, { stepId: 2, text: "three\n" }] },
     });
     expect(view.nodes.map((n) => [n.outcome, n.build.state, n.tail])).toEqual([["building", "running", ["two", "three"]], ["queued", "queued", []]]);
+  });
+
+  it("shows a queued attempt's Image Builds in parallel, and one failing while another still builds", () => {
+    const view = deploymentView({
+      deployment: deployment("queued"), progress: null,
+      nodes: [node({ nodeId: "api", changed: true, image: "api" }), node({ nodeId: "web", changed: true, image: "web" }), node({ nodeId: "docs", changed: true, image: "docs" })],
+      buildLog: {
+        steps: [
+          step(1, 1, "stage:Building", "api", 0, null, null, "api"), step(2, 1, "sha256:a", "[1/2] RUN make", 1, null, null, "api"),
+          step(3, 1, "stage:Building", "web", 0, 5, null, "web"), step(4, 1, "sha256:b", "[1/2] RUN make", 1, 5, "exit code: 2", "web"),
+          step(5, 0, "stage:Reused", "Reused image", 2, 2, null, "docs"),
+        ],
+        output: [{ stepId: 2, text: "compiling\n" }, { stepId: 4, text: "boom\n" }],
+      },
+    });
+    expect(view.status).toBe("building");
+    expect(view.nodes.map((n) => [n.outcome, n.build.state, n.tail])).toEqual([
+      ["building", "running", ["compiling"]],
+      ["failed", "failed", ["boom", "exit code: 2"]],
+      ["queued", "done", []],
+    ]);
+    expect(view.nodes[1]?.failure).toEqual({ message: "Image build failed", containerId: null });
   });
 
   it("marks a node the attempt removed as Removed and counts it as deployed", () => {

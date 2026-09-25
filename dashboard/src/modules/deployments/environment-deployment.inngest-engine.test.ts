@@ -13,6 +13,8 @@ import {
   type DeploymentRuntimeOutcome,
 } from "#/modules/deployments/runtime-activities.server";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import * as imageBuilds from "#/modules/deployments/image-builds.server";
+import type { ImageBuildTarget } from "#/modules/deployments/image-builds.server";
 import { createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 
 const activity = {
@@ -22,7 +24,14 @@ const activity = {
   execute: vi.fn(),
   authorizeFailure: vi.fn(),
   terminalizeFailure: vi.fn(),
+  startBuilds: vi.fn(),
+  build: vi.fn(),
 };
+
+const build = (image: string): ImageBuildTarget => ({ id: `build-${image}`, deploymentId: "deployment-1", serviceId: `service-${image}`, image });
+
+vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.promise(() => activity.startBuilds()));
+vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((target) => Effect.promise(() => activity.build(target)));
 
 function runtimeFailure(
   operation: "execute",
@@ -121,6 +130,7 @@ describe("process-environment-deployment Inngest adapter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     activity.claim.mockResolvedValue(true);
+    activity.startBuilds.mockResolvedValue([]);
     activity.load.mockResolvedValue(deploymentContext);
     activity.planning.mockResolvedValue({ state: "started" });
     activity.execute.mockImplementation(async () => {
@@ -131,7 +141,7 @@ describe("process-environment-deployment Inngest adapter", () => {
     activity.terminalizeFailure.mockResolvedValue(true);
   });
 
-  it("preserves the durable trigger, retries, and keyed concurrency", () => {
+  it("preserves the durable trigger and retries, with no concurrency limit to stall Image Builds", () => {
     const processEnvironmentDeployment = createProcessEnvironmentDeployment(
       new Inngest({ id: "test" }),
     );
@@ -140,9 +150,43 @@ describe("process-environment-deployment Inngest adapter", () => {
         id: "process-environment-deployment",
         retries: 0,
         triggers: [{ event: environmentDeployRequestedEventType }],
-        concurrency: [{ key: "event.data.environmentId", limit: 1 }],
       }),
     );
+    expect(processEnvironmentDeployment.opts.concurrency).toBeUndefined();
+  });
+
+  it("starts every Image Build before taking the Environment slot, then deploys", async () => {
+    const order: string[] = [];
+    activity.startBuilds.mockResolvedValue([build("api"), build("web")]);
+    activity.build.mockImplementation(async ({ image }: ImageBuildTarget) => {
+      order.push(`build ${image}`);
+      return { imageBuildId: image, image, status: "built" };
+    });
+    activity.planning.mockImplementation(async () => {
+      order.push("planning");
+      return { state: "started" };
+    });
+    const output = await makeEngine().execute();
+    expect(output.error).toBeUndefined();
+    expect(output.result).toEqual({ environmentDeploymentId: "deployment-1", status: "applied" });
+    // The test engine resumes once per parallel branch, so it may replay the planning step.
+    expect(new Set(order.slice(0, 2))).toEqual(new Set(["build api", "build web"]));
+    expect(new Set(order.slice(2))).toEqual(new Set(["planning"]));
+    expect(activity.execute).toHaveBeenCalled();
+  });
+
+  it("lets every Image Build settle, then fails the attempt without taking the slot", async () => {
+    activity.startBuilds.mockResolvedValue([build("api"), build("web")]);
+    activity.build.mockImplementation(async ({ image }: ImageBuildTarget) =>
+      ({ imageBuildId: image, image, status: image === "api" ? "failed" : "built" }));
+    const output = await makeEngine().execute();
+    expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
+    expect(activity.build).toHaveBeenCalledTimes(2);
+    expect(activity.planning).not.toHaveBeenCalled();
+    expect(activity.execute).not.toHaveBeenCalled();
+    expect(activity.terminalizeFailure).toHaveBeenCalledWith(expect.objectContaining({
+      environmentDeploymentId: "deployment-1", failureCode: "image_build_failed",
+    }));
   });
 
   it("rejects an incomplete event envelope inside the decode step", async () => {
