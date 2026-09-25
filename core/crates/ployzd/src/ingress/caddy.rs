@@ -146,7 +146,7 @@ pub(crate) async fn reconcile<A: CaddyAdmin>(
     admin: Option<&A>,
 ) -> Result<(), Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let caddyfile = automatic_caddyfile(projection, &timestamp);
+    let caddyfile = render_caddyfile(projection, &timestamp);
     if let Some(admin) = admin {
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
@@ -165,7 +165,7 @@ fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn automatic_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
+fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     let machine_name = projection.machine.name.as_str();
     let local_machine = &projection.machine.id;
     let mut output = format!(

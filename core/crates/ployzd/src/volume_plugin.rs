@@ -111,12 +111,19 @@ struct MountResponse {
 ///
 /// Returns an error unless systemd supplied exactly one valid Unix listener.
 pub(super) fn inherited_listener() -> io::Result<StdUnixListener> {
-    ployzd::daemon::inherited_unix_listener()?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "systemd did not pass the Volume plugin socket",
-        )
-    })
+    ployzd::socket_activation::inherited_unix_listener()
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("Volume plugin requires exactly one systemd socket: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "systemd did not pass the Volume plugin socket",
+            )
+        })
 }
 
 /// Serves the Docker Volume plugin on an activated Unix listener.

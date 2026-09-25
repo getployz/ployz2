@@ -1,4 +1,4 @@
-use super::{CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile as render_automatic_caddyfile};
+use super::{CONFIG_FILE, CaddyAdmin, Error, render_caddyfile};
 use crate::{
     corrosion::{CertificateChallenge, CertificateRow},
     ingress::{
@@ -52,14 +52,14 @@ fn projection(
     )
 }
 
-fn automatic_caddyfile(
+fn caddyfile_for(
     local_machine: &MachineId,
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> String {
-    render_automatic_caddyfile(
+    render_caddyfile(
         &projection(local_machine, machine_name, containers, certificates),
         timestamp,
     )
@@ -96,7 +96,7 @@ fn automatic_sites_render_routes_and_health_endpoint() {
             vec![ingress("example.com", 80, HttpProtocol::Http)],
         ),
     ];
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
@@ -115,7 +115,7 @@ fn automatic_sites_render_routes_and_health_endpoint() {
 }
 #[test]
 fn shared_renderer_projection_drives_caddy() {
-    let caddyfile = render_automatic_caddyfile(&renderer_projection(), "TIMESTAMP");
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
 
     assert!(caddyfile.contains("http://empty.example.com"));
     assert!(caddyfile.contains("respond \"Bad Gateway\" 502"));
@@ -252,7 +252,7 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
     })
     .unwrap();
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(vec![blog, shop_rollout, shop_old]),
@@ -304,7 +304,7 @@ fn proxy_owner_may_disagree_across_observation_sets_and_converges_when_they_matc
     .unwrap();
 
     let file = |observations: Vec<ContainerObservation>| {
-        automatic_caddyfile(
+        caddyfile_for(
             &local,
             "node-a",
             &service_containers(observations),
@@ -345,7 +345,7 @@ fn https_site_with_material_pins_tls_paths() {
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
@@ -380,7 +380,7 @@ fn changing_material_changes_the_pin_paths() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let containers = service_containers(observations);
-    let first = automatic_caddyfile(
+    let first = caddyfile_for(
         &local,
         "node-a",
         &containers,
@@ -390,7 +390,7 @@ fn changing_material_changes_the_pin_paths() {
             CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
-    let second = automatic_caddyfile(
+    let second = caddyfile_for(
         &local,
         "node-a",
         &containers,
@@ -418,18 +418,18 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let containers = service_containers(observations);
-    let without = automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
+    let without = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
     let unused = BTreeMap::from([(
         IngressHost::parse("other.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
     assert_eq!(
-        automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new(),),
+        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new(),),
         without
     );
     assert_eq!(
-        automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", &unused,),
+        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &unused,),
         without
     );
     assert!(!without.contains("tls "));
@@ -458,7 +458,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
         ),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
@@ -494,7 +494,7 @@ fn last_error_is_a_skipped_certificate_comment() {
         ),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
@@ -532,7 +532,7 @@ fn last_error_is_omitted_once_material_exists() {
         CertificateRow::from_parts(Some(test_material()), None).with_error("stale"),
     )]);
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
@@ -569,7 +569,7 @@ fn automatic_sites_exclude_hook_containers() {
         },
     ];
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
@@ -626,7 +626,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
         ),
     ];
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers(observations),
@@ -695,7 +695,7 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
         })
         .unwrap();
 
-    let caddyfile = automatic_caddyfile(
+    let caddyfile = caddyfile_for(
         &local,
         "node-a",
         &service_containers([healthy, stopped, unhealthy]),

@@ -220,10 +220,7 @@ async fn install_locked(
         }
     }
 
-    // A daemon started before ployz.socket existed serves a path the new socket
-    // unit rebinds; only a restart hands it the activated listener.
-    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file()
-        || !paths.systemd_dir.join("ployz.socket").is_file();
+    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
     restart_required |= install_binaries(
         &request.source,
         &paths,
@@ -246,7 +243,12 @@ async fn install_locked(
     } else {
         if restart_required {
             progress(MachineUpgradeStage::Restarting)?;
-            systemctl("restart daemon", ["restart", "ployz.service"])?;
+            // One transaction: a changed socket unit takes effect, and
+            // After=ployz.socket starts the socket before the daemon.
+            systemctl(
+                "restart daemon",
+                ["restart", "ployz.socket", "ployz.service"],
+            )?;
             systemctl(
                 "restart volume plugin",
                 ["try-restart", "ployz-volume-plugin.service"],

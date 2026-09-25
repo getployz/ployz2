@@ -34,6 +34,7 @@ pub mod management;
 pub mod mutation;
 pub mod network;
 pub(crate) mod runtime_watch;
+pub mod socket_activation;
 mod storage;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]

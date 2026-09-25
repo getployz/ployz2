@@ -4,10 +4,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    os::unix::{
-        fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
-        net::UnixListener as StdUnixListener,
-    },
+    os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -682,52 +679,14 @@ fn claim_socket(path: &Path) -> io::Result<File> {
     Ok(lock)
 }
 
-/// Takes the Unix listener systemd socket activation passed, if any.
-///
-/// # Errors
-///
-/// Returns an error when systemd passed more than one socket or a socket that
-/// is not a Unix stream listener.
-pub fn inherited_unix_listener() -> io::Result<Option<StdUnixListener>> {
-    let mut inherited = listenfd::ListenFd::from_env();
-    if inherited.len() > 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "expected at most one systemd socket, received {}",
-                inherited.len()
-            ),
-        ));
-    }
-    inherited.take_unix_listener(0)
-}
-
 /// Serve the socket `ployz.socket` passed, or bind it when run without systemd
 /// (development, tests, and the local testkit).
 fn listen_socket(path: &Path) -> io::Result<UnixListener> {
-    let Some(listener) = inherited_unix_listener()? else {
+    let Some(listener) = crate::socket_activation::inherited_unix_listener()? else {
         return bind_socket(path);
     };
-    require_socket_path(&listener, path)?;
     listener.set_nonblocking(true)?;
     UnixListener::from_std(listener)
-}
-
-/// systemd owns an activated socket's mode and group, so only its path is left
-/// to prove: clients dial `path`, not whatever the unit happened to bind.
-fn require_socket_path(listener: &StdUnixListener, path: &Path) -> io::Result<()> {
-    let address = listener.local_addr()?;
-    if address.as_pathname() == Some(path) {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "systemd passed a socket bound to {address:?}, expected {}",
-                path.display()
-            ),
-        ))
-    }
 }
 
 fn bind_socket(path: &Path) -> io::Result<UnixListener> {
@@ -807,7 +766,7 @@ mod tests {
 
     use super::{
         ContainerMode, Daemon, DaemonConfig, ManagementConfig, claim_socket, listen_socket,
-        require_socket_path, wait_for_participation, wait_until_socket_accepts,
+        wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -1093,17 +1052,6 @@ mod tests {
         tokio::net::UnixStream::connect(&path)
             .await
             .expect("listen must queue connections");
-    }
-
-    #[test]
-    fn activated_socket_must_be_the_configured_path() {
-        let root = TestDir::new("ployzd-socket-activated");
-        fs::create_dir_all(&root.0).unwrap();
-        let path = root.0.join("ployz.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        require_socket_path(&listener, &path).unwrap();
-        let error = require_socket_path(&listener, &root.0.join("other.sock")).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[tokio::test]

@@ -45,6 +45,8 @@ mod container_observations;
 pub(crate) use container_observations::ContainerObservationCondition;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
+/// Bounds how long a connect waits for the entry daemon to confirm itself.
+const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct Client {
@@ -122,15 +124,15 @@ impl Client {
                 Err(error) => Err(error),
             }
         };
-        tokio::time::timeout(Duration::from_secs(5), confirm)
+        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
             .map_err(|_| {
                 // A socket-activated daemon accepts connects before it serves;
                 // this bound is what keeps a starting daemon from hanging the CLI.
-                ConnectError::Attempt(
-                    "entry Machine daemon did not answer within 5s; it may still be starting, retry shortly"
-                        .into(),
-                )
+                ConnectError::Attempt(format!(
+                    "entry Machine daemon did not answer within {}s; it may still be starting, retry shortly",
+                    CONNECT_CONFIRM_TIMEOUT.as_secs()
+                ).into())
             })?
     }
 
