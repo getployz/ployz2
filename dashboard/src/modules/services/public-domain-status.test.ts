@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 import type { RuntimeCertificateRecord } from "#/modules/runtime/runtime.collection";
-import { dnsRecordsFor, publicDomainStatus } from "#/modules/services/public-domain-status";
+import { certificateFor, dnsRecordsFor, publicDomainStatus } from "#/modules/services/public-domain-status";
 
 const ready: ClusterDomainStatus = { kind: "ready" };
 const certificate = (status: string, failureKind?: string): RuntimeCertificateRecord => ({
@@ -11,38 +11,64 @@ const certificate = (status: string, failureKind?: string): RuntimeCertificateRe
   backoff: failureKind ? { failureKind, nextAttemptAt: "2026-09-25T12:12:00Z", failures: 2 } : null,
 });
 
+const generated = { kind: "generated" } as const;
+const custom = (row: RuntimeCertificateRecord | null) => ({ kind: "custom", certificate: row }) as const;
+
 describe("publicDomainStatus", () => {
   it.each([
     ["an undeployed domain waits for the next deploy",
-      { custom: true, deployed: false, certificate: certificate("available"), clusterDomain: ready }, { kind: "not_deployed" }],
+      { domain: custom(certificate("available")), deployed: false, observed: true, clusterDomain: ready }, { kind: "not_deployed" }],
     ["servers that can't receive traffic affect every domain",
-      { custom: true, deployed: true, certificate: certificate("available"), clusterDomain: { kind: "attention", reason: "port_80", addresses: ["203.0.113.1"] } },
+      { domain: custom(certificate("available")), deployed: true, observed: true, clusterDomain: { kind: "attention", reason: "port_80", addresses: ["203.0.113.1"] } },
       { kind: "unreachable" }],
     ["no servers affect every domain",
-      { custom: false, deployed: true, certificate: null, clusterDomain: { kind: "attention", reason: "no_servers" } }, { kind: "unreachable" }],
+      { domain: generated, deployed: true, observed: true, clusterDomain: { kind: "attention", reason: "no_servers" } }, { kind: "unreachable" }],
     ["a generated domain is live once the Cluster Domain is ready",
-      { custom: false, deployed: true, certificate: null, clusterDomain: ready }, { kind: "live" }],
+      { domain: generated, deployed: true, observed: true, clusterDomain: ready }, { kind: "live" }],
+    ["a generated domain doesn't wait on the Runtime Watch",
+      { domain: generated, deployed: true, observed: false, clusterDomain: ready }, { kind: "live" }],
     ["a generated domain sets up with its Cluster Domain",
-      { custom: false, deployed: true, certificate: null, clusterDomain: { kind: "setting_up" } }, { kind: "setting_up" }],
+      { domain: generated, deployed: true, observed: true, clusterDomain: { kind: "setting_up" } }, { kind: "setting_up" }],
     ["a generated domain goes down with an expired wildcard",
-      { custom: false, deployed: true, certificate: null, clusterDomain: { kind: "attention", reason: "https_down" } }, { kind: "https_down" }],
+      { domain: generated, deployed: true, observed: true, clusterDomain: { kind: "attention", reason: "https_down" } }, { kind: "https_down" }],
     ["an expired wildcard leaves custom domains alone",
-      { custom: true, deployed: true, certificate: certificate("available"), clusterDomain: { kind: "attention", reason: "https_down" } }, { kind: "live" }],
+      { domain: custom(certificate("available")), deployed: true, observed: true, clusterDomain: { kind: "attention", reason: "https_down" } }, { kind: "live" }],
     ["a custom domain with a certificate is live",
-      { custom: true, deployed: true, certificate: certificate("available"), clusterDomain: null }, { kind: "live" }],
+      { domain: custom(certificate("available")), deployed: true, observed: true, clusterDomain: null }, { kind: "live" }],
     ["a custom domain that doesn't resolve needs DNS",
-      { custom: true, deployed: true, certificate: certificate("failure", "does_not_resolve"), clusterDomain: ready }, { kind: "needs_dns" }],
+      { domain: custom(certificate("failure", "does_not_resolve")), deployed: true, observed: true, clusterDomain: ready }, { kind: "needs_dns" }],
     ["a custom domain resolving elsewhere needs DNS pointed here",
-      { custom: true, deployed: true, certificate: certificate("failure", "resolves_elsewhere"), clusterDomain: ready }, { kind: "dns_elsewhere" }],
+      { domain: custom(certificate("failure", "resolves_elsewhere")), deployed: true, observed: true, clusterDomain: ready }, { kind: "dns_elsewhere" }],
     ["a refused certificate retries at the next attempt",
-      { custom: true, deployed: true, certificate: certificate("failure", "authority"), clusterDomain: ready },
+      { domain: custom(certificate("failure", "authority")), deployed: true, observed: true, clusterDomain: ready },
       { kind: "cert_failed", retryAt: new Date("2026-09-25T12:12:00Z") }],
     ["a pending certificate is issuing",
-      { custom: true, deployed: true, certificate: certificate("pending"), clusterDomain: ready }, { kind: "issuing" }],
+      { domain: custom(certificate("pending")), deployed: true, observed: true, clusterDomain: ready }, { kind: "issuing" }],
     ["no certificate row yet is issuing",
-      { custom: true, deployed: true, certificate: null, clusterDomain: null }, { kind: "issuing" }],
+      { domain: custom(null), deployed: true, observed: true, clusterDomain: null }, { kind: "issuing" }],
+    ["a custom domain is unknown while the Runtime Watch isn't observing",
+      { domain: custom(null), deployed: true, observed: false, clusterDomain: ready }, { kind: "unknown" }],
+    ["an unknown certificate status is unknown",
+      { domain: custom(certificate("unknown")), deployed: true, observed: true, clusterDomain: ready }, { kind: "unknown" }],
+    ["an unrecognized certificate status is unknown",
+      { domain: custom(certificate("revoked")), deployed: true, observed: true, clusterDomain: ready }, { kind: "unknown" }],
   ] as const)("%s", (_, input, expected) => {
     expect(publicDomainStatus(input)).toEqual(expected);
+  });
+});
+
+describe("certificateFor", () => {
+  const wildcard = { ...certificate("available"), hostname: "*.acme.com" };
+
+  it("prefers the hostname's own row", () => {
+    const own = certificate("pending");
+    expect(certificateFor("www.acme.com", [wildcard, own])).toBe(own);
+  });
+
+  it("falls back to the wildcard one label up", () => {
+    expect(certificateFor("www.acme.com", [wildcard])).toBe(wildcard);
+    expect(certificateFor("a.www.acme.com", [wildcard])).toBeNull();
+    expect(certificateFor("acme.com", [wildcard])).toBeNull();
   });
 });
 

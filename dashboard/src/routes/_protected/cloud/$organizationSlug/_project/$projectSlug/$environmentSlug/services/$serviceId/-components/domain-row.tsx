@@ -3,7 +3,9 @@ import { Link } from "@tanstack/react-router";
 import { AlertTriangleIcon, ArrowUpRightIcon, GlobeIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { CopyButton } from "#/components/copy-button";
 import { Button } from "#/components/ui/button";
+import { buttonVariants } from "#/components/ui/button-variants";
 import { Spinner } from "#/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
 import type { DnsRecord, PublicDomainStatus } from "#/modules/services/public-domain-status";
 import { formatRelativeTime } from "#/utils/relative-time";
@@ -58,61 +60,64 @@ export function DomainRowShell({
   );
 }
 
-function StatusIcon({ status }: { status: PublicDomainStatus }) {
-  switch (status.kind) {
-    case "live":
-      return <GlobeIcon />;
-    case "not_deployed":
-      return <GlobeIcon className="opacity-50" />;
-    case "setting_up":
-    case "issuing":
-      return <Spinner />;
-    default:
-      return <AlertTriangleIcon className="text-warning" />;
-  }
-}
+type StatusView = { icon: ReactNode; phrase: string | null; action: "dns" | "server_settings" | null };
 
-/** One short phrase per status; the link, if any, is the one next step. */
-function statusPhrase(status: PublicDomainStatus): string | null {
+/** The icon is the status; one short phrase and at most one link say what's next. */
+function statusView(status: PublicDomainStatus): StatusView {
+  const warning = <AlertTriangleIcon className="text-warning" />;
   switch (status.kind) {
     case "live":
-      return null;
+    case "unknown":
+      return { icon: <GlobeIcon />, phrase: null, action: null };
     case "not_deployed":
-      return "Live after your next deploy";
+      return { icon: <GlobeIcon className="opacity-50" />, phrase: "Live after your next deploy", action: null };
     case "setting_up":
-      return "Setting up";
+      return { icon: <Spinner />, phrase: "Setting up", action: null };
     case "issuing":
-      return "Issuing certificate";
+      return { icon: <Spinner />, phrase: "Issuing certificate", action: null };
     case "needs_dns":
-      return "Waiting for DNS update";
+      return { icon: warning, phrase: "Waiting for DNS update", action: "dns" };
     case "dns_elsewhere":
-      return "DNS points somewhere else";
+      return { icon: warning, phrase: "DNS points somewhere else", action: "dns" };
     case "cert_failed":
-      return status.retryAt ? `Certificate failed · retrying ${formatRelativeTime(status.retryAt)}` : "Certificate failed";
+      return {
+        icon: warning,
+        phrase: status.retryAt ? `Certificate failed · retrying ${formatRelativeTime(status.retryAt)}` : "Certificate failed",
+        action: null,
+      };
     case "unreachable":
-      return "Servers can’t receive traffic";
+      return { icon: warning, phrase: "Servers can’t receive traffic", action: "server_settings" };
     case "https_down":
-      return "HTTPS is down · we’re fixing it";
+      return { icon: warning, phrase: "HTTPS is down · we’re fixing it", action: null };
   }
 }
 
 function DnsRecords({ records }: { records: DnsRecord[] }) {
   return (
-    <div className="grid grid-cols-[auto_auto_1fr] items-center gap-x-6 gap-y-1 rounded-md bg-muted px-3 py-2 font-mono text-xs">
-      <span className="text-muted-foreground">Type</span>
-      <span className="text-muted-foreground">Name</span>
-      <span className="text-muted-foreground">Value</span>
-      {records.map((record) => (
-        <div key={`${record.type}-${record.value}`} className="contents">
-          <span>{record.type}</span>
-          <span>{record.name}</span>
-          <span className="flex min-w-0 items-center gap-1">
-            <span className="truncate">{record.value}</span>
-            <CopyButton value={record.value} label={`Copy ${record.type} value`} size="icon-xs" />
-          </span>
-        </div>
-      ))}
-    </div>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Type</TableHead>
+          <TableHead>Name</TableHead>
+          <TableHead>Value</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {records.map((record) => (
+          <TableRow key={`${record.type}-${record.value}`}>
+            <TableCell>{record.type}</TableCell>
+            <TableCell>
+              {record.name}
+              <CopyButton value={record.name} label={`Copy ${record.type} name`} size="icon-xs" />
+            </TableCell>
+            <TableCell>
+              {record.value}
+              <CopyButton value={record.value} label={`Copy ${record.type} value`} size="icon-xs" />
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }
 
@@ -120,72 +125,70 @@ function DnsRecords({ records }: { records: DnsRecord[] }) {
 export function PublicDomainRow({
   organizationSlug,
   title,
-  hostname,
+  label,
   portLabel,
   status,
-  dnsRecords,
+  dnsRecords = [],
   changed,
   onEdit,
   onDelete,
 }: {
   organizationSlug: string;
-  /** The hostname, or a placeholder while it has none. */
+  /** The hostname, linked while live, or a placeholder while it has none. */
   title: ReactNode;
-  hostname: string | null;
+  /** Names the domain in the edit and remove buttons. */
+  label: string;
   portLabel: string;
   status: PublicDomainStatus;
   /** The records that point the domain here; only custom domains have them. */
-  dnsRecords: DnsRecord[];
+  dnsRecords?: DnsRecord[];
   changed: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const [showDns, setShowDns] = useState(false);
-  const phrase = statusPhrase(status);
-  const needsDns = (status.kind === "needs_dns" || status.kind === "dns_elsewhere") && dnsRecords.length > 0;
+  const view = statusView(status);
+  const action = view.action === "dns" && dnsRecords.length === 0 ? null : view.action;
   return (
     <div className="flex flex-col gap-2">
       <DomainRowShell
         changed={changed}
-        icon={<StatusIcon status={status} />}
+        icon={view.icon}
         actions={
           <>
-            <Button type="button" variant="ghost" size="icon-sm" aria-label={`Edit ${hostname ?? "domain"}`} onClick={onEdit}>
+            <Button type="button" variant="ghost" size="icon-sm" aria-label={`Edit ${label}`} onClick={onEdit}>
               <PencilIcon />
             </Button>
-            <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${hostname ?? "domain"}`} onClick={onDelete}>
+            <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${label}`} onClick={onDelete}>
               <Trash2Icon />
             </Button>
           </>
         }
       >
-        {hostname ? (
-          <DomainTitle hostname={hostname} copyLabel={`Copy ${hostname}`} href={status.kind === "live" ? `https://${hostname}` : undefined} />
-        ) : (
-          title
-        )}
-        <div className="text-muted-foreground text-sm">
-          → {portLabel}
-          {phrase ? ` · ${phrase}` : null}
-          {needsDns ? (
-            <>
-              {" · "}
-              <button type="button" className="text-foreground underline-offset-4 hover:underline" onClick={() => setShowDns(!showDns)}>
-                {showDns ? "Hide DNS records" : "Show DNS records"}
-              </button>
-            </>
+        {title}
+        <div className="flex flex-wrap items-center gap-1 text-muted-foreground text-sm">
+          <span>
+            → {portLabel}
+            {view.phrase ? ` · ${view.phrase}` : null}
+          </span>
+          {action ? <span>·</span> : null}
+          {action === "dns" ? (
+            <Button type="button" variant="link" size="sm" onClick={() => setShowDns(!showDns)}>
+              {showDns ? "Hide DNS records" : "Show DNS records"}
+            </Button>
           ) : null}
-          {status.kind === "unreachable" ? (
-            <>
-              {" · "}
-              <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} className="text-foreground underline-offset-4 hover:underline">
-                Server Settings
-              </Link>
-            </>
+          {action === "server_settings" ? (
+            <Link
+              to="/cloud/$organizationSlug/~/settings"
+              params={{ organizationSlug }}
+              className={buttonVariants({ variant: "link", size: "sm" })}
+            >
+              Server Settings
+            </Link>
           ) : null}
         </div>
       </DomainRowShell>
-      {needsDns && showDns ? <DnsRecords records={dnsRecords} /> : null}
+      {action === "dns" && showDns ? <DnsRecords records={dnsRecords} /> : null}
     </div>
   );
 }
