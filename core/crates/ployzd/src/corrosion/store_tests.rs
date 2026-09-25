@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, IssuanceFailure,
-    Machine, MachineId,
+    CertificateHost, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock,
+    IssuanceFailure, Machine, MachineId,
 };
 use serde_json::json;
 
@@ -885,7 +885,76 @@ async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
     assert_eq!(row.last_error(), Some("policy refused"));
     assert_eq!(
         store.certificates().await.unwrap(),
-        BTreeMap::from([(hostname, material)])
+        BTreeMap::from([(CertificateHost::from(hostname), material)])
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let (store, task) = identity_store(db).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let published_name = CertificateHost::from(hostname.clone());
+    let material = |name: &str| {
+        let pair = rcgen::generate_simple_self_signed([name.to_owned()]).unwrap();
+        super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
+            .unwrap()
+    };
+    let published = material("app.example.com");
+    store
+        .publish_certificate_material(&published_name, &published)
+        .await
+        .unwrap();
+
+    store
+        .publish_certificate(&hostname, &material("app.example.com"))
+        .await
+        .unwrap();
+    store
+        .publish_certificate_challenge(
+            &hostname,
+            &super::CertificateChallenge::parse(
+                "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+                "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    store
+        .record_certificate_error(&hostname, "policy refused")
+        .await
+        .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert!(row.is_published());
+    assert_eq!(row.material(), Some(&published));
+    assert_eq!(row.challenge(), None);
+    assert_eq!(row.last_error(), None);
+
+    let wildcard = CertificateHost::parse("*.example.com").unwrap();
+    let wildcard_material = material("*.example.com");
+    store
+        .publish_certificate_material(&wildcard, &wildcard_material)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.certificates().await.unwrap().get("*.example.com"),
+        Some(&wildcard_material)
+    );
+
+    store
+        .clear_published_certificate(&published_name)
+        .await
+        .unwrap();
+    assert_eq!(store.certificate(&hostname).await.unwrap(), None);
+    let issued = material("app.example.com");
+    store.publish_certificate(&hostname, &issued).await.unwrap();
+    store
+        .clear_published_certificate(&published_name)
+        .await
+        .unwrap();
+    assert_eq!(store.certificate(&hostname).await.unwrap(), Some(issued));
     task.abort();
 }

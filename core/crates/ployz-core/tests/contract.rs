@@ -4,24 +4,25 @@ use std::{
 };
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CapabilityName, CodecError, ContainerCreated, ContainerHostname,
-    ContainerId, ContainerKind, ContainerLabels, ContainerObservationMap,
-    ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
-    CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace,
-    DnsRecord, DnsRecordType, DockerVolumeName, Domain, DomainRecords,
-    ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FanoutFailure,
-    FanoutOutcome, FanoutResponse, FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-    GET_INGRESS_PROXY_CONFIG_CAPABILITY, GetContainerObservationsRequest,
-    GetIngressProxyConfigRequest, HealthObservation, HttpProtocol, ImageIngestDestination,
-    ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
-    ImageSummary, ImagesRemoved, IngressHost, IngressHostname, IngressProxyConfig,
-    IngressProxyFragment, InspectMachineUpgradeRequest, InspectWireGuardRequest,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
-    MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess,
-    MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NameMatches,
-    OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    PartialResult, PortPublication, ProjectName, PublicIpDiscovery, PublicIpUpdate,
+    CREATE_CONTAINER_CAPABILITY, CapabilityName, CertificateHost, CertificateMaterialChange,
+    CertificateMaterialPublished, CodecError, ContainerCreated, ContainerHostname, ContainerId,
+    ContainerKind, ContainerLabels, ContainerObservationMap, ContainerRuntimeObservation,
+    ContractDescription, CreateContainerRequest, CreateDomainRecordsRequest,
+    DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace, DnsRecord, DnsRecordType,
+    DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
+    EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
+    FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
+    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation, HttpProtocol,
+    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
+    ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressHostname,
+    IngressProxyConfig, IngressProxyFragment, InspectMachineUpgradeRequest,
+    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
+    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachineRelease,
+    MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
+    ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, ProjectName,
+    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
     PullImageFromMachineRequest, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
     RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
@@ -1069,6 +1070,68 @@ fn ingress_proxy_config_contract_contains_the_exact_caddyfile() {
     assert_eq!(
         GET_INGRESS_PROXY_CONFIG_CAPABILITY,
         "ployz.ingress.config.v1"
+    );
+}
+
+#[test]
+fn publish_certificate_material_contract_is_exact_and_never_prints_the_key() {
+    let set = op::PublishCertificateMaterial::into_request(PublishCertificateMaterialRequest {
+        hostname: CertificateHost::parse("*.opaque.ployz.example").unwrap(),
+        change: CertificateMaterialChange::Set {
+            certificate_chain_pem: "CHAIN".into(),
+            private_key_pem: "SECRET KEY".into(),
+        },
+    });
+    assert_eq!(set.encode().unwrap().decode_request().unwrap(), set);
+    assert_eq!(
+        serde_json::to_value(&set).unwrap(),
+        json!({
+            "protocol_major": 1,
+            "command": "publish_certificate_material",
+            "payload": {
+                "hostname": "*.opaque.ployz.example",
+                "change": {
+                    "action": "set",
+                    "certificate_chain_pem": "CHAIN",
+                    "private_key_pem": "SECRET KEY"
+                }
+            }
+        })
+    );
+    assert!(!format!("{set:?}").contains("SECRET KEY"));
+
+    let clear = serde_json::from_value::<PublishCertificateMaterialRequest>(json!({
+        "hostname": "app.example.com",
+        "change": { "action": "clear" }
+    }))
+    .unwrap();
+    assert_eq!(clear.change, CertificateMaterialChange::Clear);
+
+    for hostname in [
+        "*.*.example.com",
+        "app.*.example.com",
+        "*",
+        "*.",
+        "App.example.com",
+    ] {
+        assert!(CertificateHost::parse(hostname).is_err(), "{hostname}");
+    }
+    let wildcard = CertificateHost::parse("*.example.com").unwrap();
+    let host = |name: &str| IngressHost::parse(name).unwrap();
+    assert!(wildcard.covers(&host("app.example.com")));
+    assert!(!wildcard.covers(&host("example.com")));
+    assert!(!wildcard.covers(&host("deep.app.example.com")));
+    assert!(CertificateHost::from(host("example.com")).covers(&host("example.com")));
+
+    assert_eq!(
+        RpcResponse::from(CertificateMaterialPublished {})
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::PublishCertificateMaterial>()
+            .unwrap(),
+        CertificateMaterialPublished {}
     );
 }
 

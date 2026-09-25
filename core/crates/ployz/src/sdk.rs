@@ -1,5 +1,5 @@
 //! Native Cloud session: connect, observe_enrollment, register,
-//! about, runtime.watch, preview, run, preview_project_removal, remove_volumes,
+//! about, publish_certificate_material, runtime.watch, preview, run, preview_project_removal, remove_volumes,
 //! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
 //! destroy_project, destroy_cluster, and close.
 use std::sync::Arc;
@@ -16,12 +16,12 @@ use crate::connect::{Client, ConnectError, Connector, TransportError, connect_se
 use crate::context::{Connection, ConnectionSource, SelectedConnections};
 use crate::deploy::{DeployIntent, DeployPlan, VolumeFate};
 use ployz_core::{
-    ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
-    DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot, ExecutionError,
-    LocalMachineRemoved, MachineTarget, ObservedDataLoss, OpaquePayload, ProjectName,
-    RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest, RpcError, RpcErrorCode,
-    RuntimeWatchFrame, RuntimeWatchRequest, ServiceObservation, VolumeRemoval,
-    decode_runtime_watch_frame, op,
+    CertificateMaterialPublished, ClusterTeardown, ContractDescription, DataLossConfirmation,
+    DeployEvent, DeployOutcome, DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot,
+    ExecutionError, LocalMachineRemoved, MachineTarget, ObservedDataLoss, OpaquePayload,
+    ProjectName, PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered,
+    RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
+    ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
 pub use payloads::typescript_declarations;
@@ -202,6 +202,26 @@ impl Session {
         self.until_closed(async {
             client
                 .call::<op::Inspect>(ployz_core::InspectRequest::default(), None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
+    }
+
+    /// Publish or clear Certificate Material for one hostname or single-level wildcard.
+    /// Set and Clear are idempotent, so transport drops are retried.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, or an `invalid_argument` refusal
+    /// when the chain, key match, or hostname coverage does not hold.
+    pub async fn publish_certificate_material(
+        &self,
+        request: PublishCertificateMaterialRequest,
+    ) -> Result<CertificateMaterialPublished, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<op::PublishCertificateMaterial>(request, None)
                 .await
                 .map_err(RpcError::from)
         })

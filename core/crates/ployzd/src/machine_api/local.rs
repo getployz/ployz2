@@ -8,17 +8,17 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, ContainerList, ContainerObservationMap, ContractDescription, Domain,
-    DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
-    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, op,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
+    ContainerList, ContainerObservationMap, ContractDescription, Domain, DomainRecords,
+    IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
 use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    corrosion::{AdminClient, ReplicatedStore},
+    corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
@@ -734,6 +734,49 @@ impl MachineRpc for MachineService {
         {
             Ok(records) => respond(DomainRecords { records }),
             Err(error) => respond(hosted_dns_error(error)),
+        }
+    }
+
+    async fn publish_certificate_material(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PublishCertificateMaterial>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        let hostname = request.hostname;
+        let result = match request.change {
+            CertificateMaterialChange::Set {
+                certificate_chain_pem,
+                private_key_pem,
+            } => {
+                let material = CertificateMaterial::parse(certificate_chain_pem, private_key_pem)
+                    .and_then(|material| material.covering(&hostname));
+                let material = match material {
+                    Ok(material) => material,
+                    Err(error) => {
+                        return respond(RpcError {
+                            code: RpcErrorCode::InvalidArgument,
+                            message: format!(
+                                "refused Certificate Material for {hostname}: {error}"
+                            ),
+                            details: Value::Null,
+                        });
+                    }
+                };
+                replicated
+                    .publish_certificate_material(&hostname, &material)
+                    .await
+            }
+            CertificateMaterialChange::Clear => {
+                replicated.clear_published_certificate(&hostname).await
+            }
+        };
+        match result {
+            Ok(()) => respond(CertificateMaterialPublished {}),
+            Err(error) => respond(cluster_store_error(error)),
         }
     }
 

@@ -818,6 +818,13 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
+    async fn publish_certificate_material(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
+        unused()
+    }
     async fn reset(
         &self,
         _request: Request<OpaquePayload>,

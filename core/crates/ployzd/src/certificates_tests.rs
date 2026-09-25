@@ -77,7 +77,7 @@ fn wanted_hosts_are_https_ingress_only() {
     ];
 
     assert_eq!(
-        wanted_certificate_hosts(observations.iter()),
+        wanted_certificate_hosts(observations.iter(), &BTreeMap::new()),
         BTreeSet::from([host("app.example.com"), host("web.opaque.ployz.example"),])
     );
     assert_eq!(
@@ -87,14 +87,68 @@ fn wanted_hosts_are_https_ingress_only() {
                 "api",
                 vec![ingress("plain.example.com", HttpProtocol::Http)]
             )]
-            .iter()
+            .iter(),
+            &BTreeMap::new(),
         ),
         BTreeSet::new()
     );
     assert_eq!(
-        wanted_certificate_hosts([observation(1, "api", Vec::new())].iter()),
+        wanted_certificate_hosts([observation(1, "api", Vec::new())].iter(), &BTreeMap::new()),
         BTreeSet::new()
     );
+}
+
+#[test]
+fn published_material_and_published_wildcards_are_not_wanted() {
+    let observations = [observation(
+        1,
+        "api",
+        vec![
+            ingress("pinned.example.com", HttpProtocol::Https),
+            ingress("web.apps.example.com", HttpProtocol::Https),
+            ingress("deep.web.apps.example.com", HttpProtocol::Https),
+            ingress("apps.example.com", HttpProtocol::Https),
+            ingress("acme.example.com", HttpProtocol::Https),
+        ],
+    )];
+    let acme = self_signed(&["acme.example.com"]);
+    let rows = BTreeMap::from([
+        (
+            certificate_host("pinned.example.com"),
+            CertificateRow::published(self_signed(&["pinned.example.com"])),
+        ),
+        (
+            certificate_host("*.apps.example.com"),
+            CertificateRow::published(self_signed(&["*.apps.example.com"])),
+        ),
+        (
+            certificate_host("acme.example.com"),
+            CertificateRow::issued(acme),
+        ),
+    ]);
+    assert_eq!(
+        wanted_certificate_hosts(observations.iter(), &rows),
+        BTreeSet::from([
+            host("acme.example.com"),
+            host("apps.example.com"),
+            host("deep.web.apps.example.com"),
+        ])
+    );
+}
+
+fn certificate_host(name: &str) -> ployz_core::CertificateHost {
+    ployz_core::CertificateHost::parse(name).unwrap()
+}
+
+fn self_signed(names: &[&str]) -> CertificateMaterial {
+    let pair = rcgen::generate_simple_self_signed(
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
 }
 
 #[test]

@@ -296,7 +296,7 @@ The Qualified Service that wins an Ingress Hostname from one observer's Service 
 _Avoid_: hostname lease, ownership table, global hostname uniqueness, Serving as the ownership gate
 
 **Certificate Material**:
-The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
+The certificate and private key held in cluster state for one Ingress Hostname or single-level wildcard `*.x`. It is served as given; it is not an issuance request and not a local proxy store. Published material comes from an operator or Cloud; ACME never orders, renews, or overwrites it, and a published wildcard serves every hostname one label under `x`.
 _Avoid_: Caddy certificate, ACME certificate, cert secret
 
 **Certificate Policy**:

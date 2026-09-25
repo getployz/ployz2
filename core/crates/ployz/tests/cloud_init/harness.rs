@@ -1001,6 +1001,12 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn publish_certificate_material(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn create_domain_records(
         &self,
         request: Request<OpaquePayload>,

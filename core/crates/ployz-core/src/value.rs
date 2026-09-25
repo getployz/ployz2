@@ -690,6 +690,48 @@ validated_string_newtype!(
     |value| is_hostname(value)
 );
 
+validated_string_newtype!(
+    /// Name that Certificate Material is held under: an explicit Ingress Hostname
+    /// or a single-level wildcard `*.x`.
+    CertificateHost,
+    "certificate hostname",
+    "a lowercase DNS hostname or a single-level wildcard such as *.example.com",
+    |value| is_hostname(value) || value.strip_prefix("*.").is_some_and(is_hostname)
+);
+
+impl CertificateHost {
+    /// Whether this is a single-level wildcard `*.x`.
+    #[must_use]
+    pub fn is_wildcard(&self) -> bool {
+        self.0.starts_with("*.")
+    }
+
+    /// Whether material held under this name serves `hostname`: the same name,
+    /// or exactly one label under a wildcard's parent.
+    #[must_use]
+    pub fn covers(&self, hostname: &IngressHost) -> bool {
+        match self.0.strip_prefix("*.") {
+            Some(parent) => hostname
+                .as_str()
+                .split_once('.')
+                .is_some_and(|(_, rest)| rest == parent),
+            None => self.0 == hostname.as_str(),
+        }
+    }
+}
+
+impl From<IngressHost> for CertificateHost {
+    fn from(hostname: IngressHost) -> Self {
+        Self(hostname.0)
+    }
+}
+
+impl std::borrow::Borrow<str> for CertificateHost {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// One Machine's optimistic container subnet candidate.
 ///
 /// A Machine Subnet is always an IPv4 `/24`.
