@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { BuildReceipt, BuildReceipts, MachineId } from "@ployz/sdk";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { organizationIdForDeployment } from "#/db/scope-values.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -8,7 +8,7 @@ import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "./runtime-contract";
 import type { DeploymentContext } from "./runtime-repository.contract";
-import { environmentDeployment, environmentDeploymentImageBuild, type ServerChoice } from "./tables";
+import { environmentDeployment, environmentDeploymentImageBuild, type ImageBuildStatus, type ServerChoice } from "./tables";
 
 const buildReceiptSchema = Schema.Struct({
   fingerprint: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
@@ -32,6 +32,14 @@ export type ImageBuildOutcome =
   | { status: "built"; receipt: BuildReceipt }
   | { status: "failed"; message: string; machineId: string | null }
   | { status: "cancelled" };
+
+export type ImageBuildResult = { imageBuildId: string; image: string; status: ImageBuildStatus };
+/** One Builder's go at an Image Build: it settled there, or the Builder didn't take it and the walk moves on. */
+export type ImageBuildAttempt = { kind: "settled"; result: ImageBuildResult } | { kind: "skipped"; reason: string };
+
+/** How long a Builder that isn't last in the walk has to start a build before the next Builder gets it. */
+export const START_WITHIN_MINUTES = 3;
+export const START_WITHIN_MS = START_WITHIN_MINUTES * 60_000;
 
 /** The attempt's Git Services each get one Image Build. */
 export const imageBuildServices = (context: Pick<DeploymentContext, "snapshots">) =>
@@ -81,6 +89,24 @@ export const settleImageBuild = Effect.fn("Deployments.settleImageBuild")(functi
   yield* drizzle.update(environmentDeploymentImageBuild).set({ ...patch, finishedAt: now, updatedAt: now })
     .where(and(eq(environmentDeploymentImageBuild.id, imageBuildId), eq(environmentDeploymentImageBuild.status, "building")));
   return patch.status;
+});
+
+export const settleImageBuildResult = (build: Pick<ImageBuildTarget, "id" | "image">, outcome: ImageBuildOutcome) =>
+  settleImageBuild(build.id, outcome).pipe(Effect.map((status): ImageBuildResult => ({ imageBuildId: build.id, image: build.image, status })));
+
+/**
+ * Adds a Builder that didn't take the build to its skip trail and clears what that Builder left, so
+ * the next one starts clean. Refused once the build started on GitHub (checked in) or settled: a
+ * build that started never moves.
+ */
+export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(function* (imageBuildId: string, reason: string) {
+  const { drizzle } = yield* Database;
+  const table = environmentDeploymentImageBuild;
+  const [skipped] = yield* drizzle.update(table).set({
+    skips: sql`array_append(${table.skips}, ${reason})`, builder: "server", machineId: null, serverChoice: null,
+    githubRunId: null, githubRunUrl: null, githubWorkflowRef: null, updatedAt: new Date(),
+  }).where(and(eq(table.id, imageBuildId), eq(table.status, "building"), isNull(table.checkedInAt))).returning({ id: table.id });
+  return skipped !== undefined;
 });
 
 /** An Image Build is wanted while it builds and its attempt is active and not being cancelled. */

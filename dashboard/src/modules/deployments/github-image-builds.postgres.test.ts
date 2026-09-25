@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
-import type { BuildReceipts, Client, MachineDetails, PreparationEvent, PreparationInput, PreparedDeploy } from "@ployz/sdk";
+import type { BuildOptions, BuildOutcome, BuildReceipts, Client, MachineDetails, PreparationEvent, PreparationInput, PreparedDeploy } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -10,7 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "#/db/schema";
 import { asTestDouble } from "#/lib/test-double";
 import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createGitServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
-import { GithubApi, type GithubJsonRequest } from "#/modules/github/github-observation.api";
+import { GithubApi, GithubObservationError, type GithubJsonRequest } from "#/modules/github/github-observation.api";
 import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { makeOrganizationRuntimeLayer, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -24,7 +24,8 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { loadDeploymentBuildLog } from "./deployment-events.server";
 import { createMarkCancelledRowBackedWorkflow, createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
-import { checkInGithubBuild, recordGithubBuildSteps } from "./github-image-builds.server";
+import type { BuildOrder } from "./build-order";
+import { checkInGithubBuild, recordGithubBuildSteps, withdrawGithubImageBuild } from "./github-image-builds.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
 const userId = "00000000-0000-4000-8000-000000000802";
@@ -64,7 +65,23 @@ type Fake = {
   minted: string[];
   ended: string[];
   prepared: BuildReceipts[];
+  /** The Service's Build Platform Requirement, as the Engine reads it from placement. */
+  platforms: string[];
+  /** GitHub calls that fail, by operation. */
+  githubErrors: Map<string, GithubObservationError>;
+  /** Each server build's start limit; `serversQueued` withdraws it unstarted. */
+  serverBuilds: (number | undefined)[];
+  serversQueued: boolean;
+  /** Whether the run ends before GitHub's start limit passes. */
+  runEndsBeforeLimit: boolean;
 };
+
+const serverReceipt = {
+  fingerprint: "b".repeat(64), machine_id: machine.id,
+  image: { reference: `sha256:${"c".repeat(64)}`, tags: [], platforms: ["linux/amd64"], location: "unix:///var/run/docker.sock" },
+};
+const githubError = (operation: "resolve_repository" | "fetch_workflow" | "dispatch_workflow", status: number, code: "not_found" | "request_failed") =>
+  new GithubObservationError({ code, operation, status, retriable: false, message: `GitHub answered ${status}.` });
 
 const header = new Header({ path: "root/Dockerfile", size: 0, mode: 0o644, type: "File" });
 header.encode();
@@ -80,6 +97,8 @@ function githubApi(fake: Fake) {
   return {
     json: <S extends Schema.ConstraintDecoder<unknown>>(request: GithubJsonRequest<S>) => {
       fake.github.push({ operation: request.operation, url: request.url, body: request.body });
+      const error = fake.githubErrors.get(request.operation);
+      if (error) return Effect.fail(error);
       return Schema.decodeUnknownEffect(request.schema)(responses.get(request.operation)).pipe(Effect.orDie);
     },
     archive: () => Effect.succeed(new Response(archive)),
@@ -97,6 +116,15 @@ function fakeClient(fake: Fake) {
       return { pushed };
     },
     inspect: async () => asTestDouble<MachineDetails>()({ id: machine.id }),
+    buildPlatforms: async () => fake.platforms,
+    build: (_input: PreparationInput, options?: BuildOptions) => {
+      fake.serverBuilds.push(options?.startWithinMs);
+      const finished: Promise<BuildOutcome> = Promise.resolve(fake.serversQueued ? { kind: "queued" } : { kind: "built", receipt: serverReceipt });
+      return { abort: () => undefined, finished, async *[Symbol.asyncIterator]() {
+        yield { Selected: { machine, reason: { kind: "spread" as const }, rejections: [] } };
+        yield { Build: { Stage: fake.serversQueued ? "Queued" : "Building" } };
+      } };
+    },
     prepare: (input: PreparationInput) => {
       fake.prepared.push(input.build_receipts ?? {});
       const outcome = { type: "success" as const, completed: [] };
@@ -124,7 +152,7 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   beforeEach(async () => {
-    fake = { github: [], minted: [], ended: [], prepared: [] };
+    fake = { github: [], minted: [], ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -177,6 +205,10 @@ describe("Image Builds on GitHub Actions", () => {
   const runner = makeInngestEffectRunner(run) as typeof runInngestEffect;
   const imageBuildId = async () => (await harness.db.select().from(schema.environmentDeploymentImageBuild))[0]?.id ?? "";
   const row = async () => (await harness.db.select().from(schema.environmentDeploymentImageBuild))[0];
+  const target = async () => ({ id: await imageBuildId(), deploymentId, serviceId, image: "api", buildIndex: 0 });
+  const buildOrder = (order: BuildOrder) => harness.db.update(schema.organizationBuildOrder).set({ buildOrder: order });
+  const queued = () => harness.db.update(schema.environmentDeployment).set({ status: "queued" }).where(eq(schema.environmentDeployment.id, deploymentId));
+  const buildLog = () => harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId, after: 0, limit: 50 }));
   const checkIn = async (token: string) => run(checkInGithubBuild(runnerRequest(token), await imageBuildId()));
   const rejection = async (token: string) => run(Effect.flip(checkInGithubBuild(runnerRequest(token), await imageBuildId())));
   const report = async (platforms: string[]) => run(recordGithubBuildSteps(runnerRequest(oidcToken()), await imageBuildId(), JSON.stringify({
@@ -196,20 +228,22 @@ describe("Image Builds on GitHub Actions", () => {
       const ctx = mockCtx(context);
       // @inngest/test hands waitForEvent a lazy promise that inngest 4 then validates as an event,
       // so the run's completion is delivered by replacing the tool rather than mocking the step.
-      const waitForEvent = async () => ({ name: "github/build-run.completed", data: { runId: githubRunId } });
+      const waitForEvent = async (id: string) => id.startsWith("wait-github-start-") && !fake.runEndsBeforeLimit
+        ? null : { name: "github/build-run.completed", data: { runId: githubRunId } };
       return { ...ctx, runId, step: { ...ctx.step, waitForEvent: asTestDouble<typeof ctx.step.waitForEvent>()(waitForEvent) } };
     },
   });
 
-  /** Resumes a dispatched build: the dispatch already happened. */
-  const runCompleted = (): MockedSteps => [
-    { id: `start-github-build-${serviceId}`, handler: () => ({ kind: "dispatched", runId: githubRunId }) },
+  /** Resumes a dispatched build: the dispatch already happened, GitHub being the `index`th Builder. */
+  const runCompleted = (index = 0): MockedSteps => [
+    { id: `start-github-build-${serviceId}-${index}`, handler: () => ({ kind: "dispatched", runId: githubRunId }) },
   ];
+  const dispatch = (index = 0) => engine().executeStep(`start-github-build-${serviceId}-${index}`);
 
   it("dispatches the build workflow on the default branch with no secret inputs, and records the run", async () => {
-    await engine().executeStep(`start-github-build-${serviceId}`);
-    const dispatch = fake.github.find(({ operation }) => operation === "dispatch_workflow");
-    expect(dispatch).toEqual({
+    await dispatch();
+    const dispatched = fake.github.find(({ operation }) => operation === "dispatch_workflow");
+    expect(dispatched).toEqual({
       operation: "dispatch_workflow",
       url: "https://api.github.com/repos/owner/repo/actions/workflows/ployz-build.yml/dispatches",
       body: { ref: "main", return_run_details: true, inputs: { build: await imageBuildId(), cloud: "http://localhost:3000", ployz_version: expect.stringMatching(/^\d+\.\d+\.\d+/), runner: "ubuntu-latest" } },
@@ -218,7 +252,7 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   it("rejects a check-in from another repository, workflow ref, run, or event, and a second use", async () => {
-    await engine().executeStep(`start-github-build-${serviceId}`);
+    await dispatch();
     expect(await rejection(oidcToken({ aud: "https://elsewhere.test" }))).toMatchObject({ _tag: "Unauthorized" });
     expect(await rejection(oidcToken({}, crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey))).toMatchObject({ _tag: "Unauthorized" });
     expect(await rejection(oidcToken({ repository_id: "43" }))).toMatchObject({ _tag: "Forbidden", message: "The token is for another repository." });
@@ -239,7 +273,7 @@ describe("Image Builds on GitHub Actions", () => {
   it("writes the receipt from the digest the Machine received, shows the runner's steps, and deploys with it", async () => {
     await harness.db.update(schema.environmentDeployment).set({ status: "queued" }).where(eq(schema.environmentDeployment.id, deploymentId));
     // The runner, while Cloud waits for the run to complete: check in, build, report its steps.
-    await engine().executeStep(`start-github-build-${serviceId}`);
+    await dispatch();
     await checkIn(oidcToken());
     await report(["linux/amd64"]);
     const output = await engine(runCompleted()).execute();
@@ -255,14 +289,14 @@ describe("Image Builds on GitHub Actions", () => {
     expect(log.steps.filter((step) => step.image === "api").map((step) => step.name)).toEqual(["Building", "RUN make"]);
     expect(log.output.map((line) => line.text)).toEqual(["ok\n"]);
     // A GitHub build has no Server choice; the log links its run instead.
-    expect(log.serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001" }]);
+    expect(log.serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001", skips: [] }]);
     // A second report would duplicate output, so it is refused.
     expect(await run(Effect.flip(recordGithubBuildSteps(runnerRequest(oidcToken()), built?.id ?? "", JSON.stringify({ platforms: [], events: [] })))))
       .toMatchObject({ _tag: "Conflict" });
   }, 30_000);
 
   it("fails the build when the run ends without pushing", async () => {
-    await engine().executeStep(`start-github-build-${serviceId}`);
+    await dispatch();
     await checkIn(oidcToken());
     await report([]);
     const output = await engine(runCompleted()).execute();
@@ -271,7 +305,7 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   it("cancels the GitHub run and ends the grant when the attempt is cancelled", async () => {
-    await engine().executeStep(`start-github-build-${serviceId}`);
+    await dispatch();
     await checkIn(oidcToken());
     const cancelled = await new InngestTestEngine({
       function: createMarkCancelledRowBackedWorkflow(new Inngest({ id: "github-builds" }), runner),
@@ -282,4 +316,82 @@ describe("Image Builds on GitHub Actions", () => {
     expect(fake.ended).toEqual(["f".repeat(64)]);
     expect(await row()).toMatchObject({ status: "cancelled" });
   });
+
+  it.each([
+    ["no workflow", () => fake.githubErrors.set("fetch_workflow", githubError("fetch_workflow", 404, "not_found")), "GitHub: no workflow in owner/repo"],
+    ["no permission", () => fake.githubErrors.set("resolve_repository", githubError("resolve_repository", 403, "request_failed")), "GitHub: no permission in owner/repo"],
+    ["multi-platform", () => { fake.platforms = ["linux/amd64", "linux/arm64"]; }, "GitHub: needs amd64+arm64"],
+    ["dispatch error", () => fake.githubErrors.set("dispatch_workflow", githubError("dispatch_workflow", 422, "request_failed")), "GitHub: could not start the build (GitHub answered 422.)"],
+  ])("skips GitHub at once for %s, and with GitHub only the build fails with that reason", async (_case, arrange, reason) => {
+    arrange();
+    await queued();
+    const output = await engine().execute();
+    expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
+    expect(await row()).toMatchObject({ status: "failed", failureMessage: reason, skips: [reason], githubRunId: null });
+    expect((await buildLog()).serverChoices).toEqual([expect.objectContaining({ image: "api", skips: [reason] })]);
+  });
+
+  it("builds a single-platform arm64 Service on GitHub's native arm64 runner", async () => {
+    fake.platforms = ["linux/arm64"];
+    await dispatch();
+    expect(fake.github.find(({ operation }) => operation === "dispatch_workflow")?.body).toMatchObject({ inputs: { runner: "ubuntu-24.04-arm" } });
+  });
+
+  it("hands a build no GitHub runner started in time to the servers, which wait, and refuses the late runner", async () => {
+    await buildOrder("github-then-servers");
+    await queued();
+    const output = await engine().execute();
+    expect(output.error).toBeUndefined();
+    expect(await row()).toMatchObject({ status: "built", builder: "server", machineId: machine.id, skips: ["GitHub: no runner in 3 min"], githubRunId: null, githubRunUrl: null });
+    expect(fake.github).toContainEqual({ operation: "cancel_run", url: "https://api.github.com/repos/owner/repo/actions/runs/9001/cancel", body: undefined });
+    // The servers are last, so they wait in the queue without a limit.
+    expect(new Set(fake.serverBuilds)).toEqual(new Set([undefined]));
+    expect(await rejection(oidcToken())).toMatchObject({ _tag: "NotFound" });
+    expect(fake.minted).toEqual([]);
+  }, 30_000);
+
+  it("keeps the build on GitHub when the runner checked in before the limit", async () => {
+    await buildOrder("github-then-servers");
+    await dispatch();
+    await checkIn(oidcToken());
+    expect(await run(withdrawGithubImageBuild(await target()))).toEqual({ kind: "started" });
+    expect(await row()).toMatchObject({ status: "building", builder: "github", githubRunId, skips: [] });
+    expect(fake.github.map(({ operation }) => operation)).not.toContain("cancel_run");
+  });
+
+  it("refuses a check-in once the start limit gave the build away", async () => {
+    await buildOrder("github-then-servers");
+    await dispatch();
+    expect(await run(withdrawGithubImageBuild(await target()))).toEqual({ kind: "skipped", reason: "GitHub: no runner in 3 min" });
+    expect(await rejection(oidcToken())).toMatchObject({ _tag: "NotFound" });
+    expect(fake.minted).toEqual([]);
+  });
+
+  it("moves on when the Workflow run webhook reports the run ended before it checked in", async () => {
+    await buildOrder("github-then-servers");
+    await queued();
+    fake.runEndsBeforeLimit = true;
+    const output = await engine().execute();
+    expect(output.error).toBeUndefined();
+    expect(await row()).toMatchObject({ status: "built", builder: "server", skips: ["GitHub: the run ended before it started"] });
+  }, 30_000);
+
+  it("overflows a build the servers still queue past the limit to GitHub", async () => {
+    await buildOrder("servers-then-github");
+    await queued();
+    fake.serversQueued = true;
+    await dispatch(1);
+    expect(fake.serverBuilds).toEqual([3 * 60_000]);
+    expect(await row()).toMatchObject({ status: "building", builder: "github", machineId: null, serverChoice: null, skips: ["Your servers: none started it in 3 min"] });
+    await checkIn(oidcToken());
+    await report(["linux/amd64"]);
+    // Resuming replays the servers' go from memory; it already skipped.
+    const output = await engine([
+      { id: `build-image-${serviceId}-0`, handler: () => ({ kind: "skipped", reason: "Your servers: none started it in 3 min" }) },
+      ...runCompleted(1),
+    ]).execute();
+    expect(output.error).toBeUndefined();
+    expect(await row()).toMatchObject({ status: "built", builder: "github" });
+    expect((await buildLog()).serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001", skips: ["Your servers: none started it in 3 min"] }]);
+  }, 30_000);
 });

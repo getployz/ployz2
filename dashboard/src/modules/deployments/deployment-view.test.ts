@@ -3,7 +3,7 @@ import type { ContainerId, DeployOperation, MachineId, OperationRow } from "@plo
 import { resolvedServiceSpecFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { parseServiceConfig } from "@ployz/sdk/config";
-import { deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
+import { builtOnLine, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
 
 function row(index: number, operation?: DeployOperation): OperationRow {
   const spec = resolvedServiceSpecFixture();
@@ -100,7 +100,7 @@ describe("deployment view projection", () => {
   it("says which Server each image builds on and why, only once the Engine chose", () => {
     const view = deploymentView({
       deployment: deployment("queued"), progress: null,
-      nodes: ["api", "web", "docs", "worker", "site"].map((image) => node({ nodeId: image, changed: true, image })),
+      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki"].map((image) => node({ nodeId: image, changed: true, image })),
       buildLog: {
         steps: [], output: [],
         serverChoices: [
@@ -109,15 +109,24 @@ describe("deployment view projection", () => {
           { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } } },
           { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "nuc" } } },
           { image: "worker", serverChoice: null },
+          { image: "blog", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/2", skips: ["Your servers: none started it in 3 min"] },
+          { image: "wiki", serverChoice: null, skips: ["GitHub: no workflow in o/r"] },
         ],
       },
     });
     expect(view.nodes.map((n) => n.builtOn)).toEqual([
-      { server: "nuc", reason: "had this Service's build cache" },
-      { server: "hel-1", reason: "spread across Servers" },
-      { server: "hel-1", reason: "nuc has the cache but is offline or no longer builds" },
+      { server: "nuc", reason: "had this Service's build cache", skipped: [] },
+      { server: "hel-1", reason: "spread across Servers", skipped: [] },
+      { server: "hel-1", reason: "nuc has the cache but is offline or no longer builds", skipped: [] },
       null,
-      { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1" },
+      { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1", skipped: [] },
+      { server: "GitHub Actions", reason: "next in the build order", runUrl: "https://github.com/o/r/actions/runs/2", skipped: ["Your servers: none started it in 3 min"] },
+      { server: null, reason: null, skipped: ["GitHub: no workflow in o/r"] },
+    ]);
+    // The skip trail reads after the Builder that took the build, or alone before one did.
+    expect(view.nodes.slice(5).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([
+      "Built on GitHub Actions · next in the build order · skipped Your servers: none started it in 3 min",
+      "Skipped GitHub: no workflow in o/r",
     ]);
   });
 

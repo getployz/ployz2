@@ -27,12 +27,21 @@ import {
   executeImageBuild,
   executeLatestEnvironmentDeployment,
 } from "#/modules/deployments/runtime-activities.server";
-import { startImageBuilds, type ImageBuildTarget } from "#/modules/deployments/image-builds.server";
+import {
+  settleImageBuildResult,
+  START_WITHIN_MINUTES,
+  START_WITHIN_MS,
+  startImageBuilds,
+  type ImageBuildAttempt,
+  type ImageBuildTarget,
+} from "#/modules/deployments/image-builds.server";
+import { imageBuildCandidates } from "#/modules/deployments/build-order.server";
 import {
   cancelGithubImageBuilds,
   finishGithubImageBuild,
   GITHUB_RUN_TIMEOUT,
   startGithubImageBuild,
+  withdrawGithubImageBuild,
 } from "#/modules/deployments/github-image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
 import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.repository.server";
@@ -134,25 +143,57 @@ export type EnvironmentDeploymentStepTools = Pick<
 >;
 
 /**
- * One Image Build on its Builder. GitHub: dispatch, wait for the run to complete (the runner checks
- * in and pushes meanwhile), then settle from the grant. Otherwise the Cluster builds it.
+ * One Image Build walks its Builders in turn. Each but the last has "start within" to start it,
+ * else the next gets it; the last waits. A Builder that can't take it is skipped at once. A build
+ * that started never moves. Every skip lands on the Image Build's trail.
+ *
+ *   candidates ─▶ [servers | github] ─ skipped ─▶ next ─ … ─▶ none left: failed
+ *                        └─ settled (built / failed / cancelled) ─▶ done
  */
 async function runImageBuild(
   build: ImageBuildTarget,
   step: EnvironmentDeploymentStepTools,
   runEffect: DeploymentInngestEffectRunner,
 ) {
-  const started = await step.run(`start-github-build-${build.serviceId}`, () => runEffect(startGithubImageBuild(build)));
-  if (started.kind === "settled") return started.result;
-  if (started.kind === "servers") {
-    return step.run(`build-image-${build.serviceId}`, () => runEffect(executeImageBuild(build)));
+  const candidates = await step.run(`plan-image-build-${build.serviceId}`, () => runEffect(imageBuildCandidates(build)));
+  let reason = "No Builder can take this build.";
+  for (const [index, candidate] of candidates.entries()) {
+    const last = index === candidates.length - 1;
+    const key = `${build.serviceId}-${index}`;
+    const attempt: ImageBuildAttempt = candidate.builder === "github"
+      ? await buildOnGithub(build, key, last, step, runEffect)
+      : await step.run(`build-image-${key}`, () => runEffect(executeImageBuild(build, last ? undefined : START_WITHIN_MS)));
+    if (attempt.kind === "settled") return attempt.result;
+    reason = attempt.reason;
   }
-  const completed = await step.waitForEvent(`wait-github-run-${build.serviceId}`, {
-    event: githubBuildRunCompletedEvent,
-    if: `async.data.runId == ${started.runId}`,
-    timeout: GITHUB_RUN_TIMEOUT,
-  });
-  return step.run(`finish-github-build-${build.serviceId}`, () => runEffect(finishGithubImageBuild(build, completed === null)));
+  return step.run(`fail-image-build-${build.serviceId}`, () =>
+    runEffect(settleImageBuildResult(build, { status: "failed", message: reason, machineId: null })));
+}
+
+/**
+ * GitHub: dispatch, then wait for the run to complete while the runner checks in and pushes. Not
+ * last: a run that hasn't checked in within the limit is withdrawn. A run that ends before it
+ * checked in, which the Workflow run webhook reports at once, never started either.
+ */
+async function buildOnGithub(
+  build: ImageBuildTarget,
+  key: string,
+  last: boolean,
+  step: EnvironmentDeploymentStepTools,
+  runEffect: DeploymentInngestEffectRunner,
+): Promise<ImageBuildAttempt> {
+  const started = await step.run(`start-github-build-${key}`, () => runEffect(startGithubImageBuild(build)));
+  if (started.kind !== "dispatched") return started;
+  const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
+  if (!last) {
+    const ended = await step.waitForEvent(`wait-github-start-${key}`, { ...run, timeout: `${START_WITHIN_MINUTES}m` });
+    if (ended) return step.run(`finish-github-build-${key}`, () => runEffect(finishGithubImageBuild(build, false)));
+    const limit = await step.run(`github-start-limit-${key}`, () => runEffect(withdrawGithubImageBuild(build)));
+    if (limit.kind !== "started") return limit;
+  }
+  // ponytail: a run completing between the two waits is missed; the 2h timeout still settles it.
+  const completed = await step.waitForEvent(`wait-github-run-${key}`, { ...run, timeout: GITHUB_RUN_TIMEOUT });
+  return step.run(`finish-github-build-${key}`, () => runEffect(finishGithubImageBuild(build, completed === null)));
 }
 
 export type EnvironmentDeployEventData =
@@ -199,6 +240,8 @@ export async function executeProcessEnvironmentDeploymentOnFailure(
     },
     runEffect,
   );
+  // A crash mid-walk leaves the rows cancelled; their GitHub runs and grants must stop too.
+  await runEffect(cancelGithubImageBuilds(failedRunId));
 }
 
 export async function executeProcessEnvironmentDeployment(

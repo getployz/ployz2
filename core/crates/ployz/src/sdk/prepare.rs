@@ -312,17 +312,7 @@ pub(super) async fn build_images(
     if build.targets().next().is_none() {
         return Ok(Vec::new());
     }
-    let mut machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
-    let applied = intent.applied_names();
-    if intent.target.iter().any(|spec| {
-        applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
-    }) {
-        read(cancellation, async {
-            client.observe_machine_storage(&mut machines).await;
-            Ok(())
-        })
-        .await?;
-    }
+    let machines = observe_machines(client, intent, cancellation).await?;
     build.cover_machines(intent, &machines)?;
     let mut builds = build
         .reuse_images(client, intent, &machines, reusable, cancellation)
@@ -353,6 +343,27 @@ pub(super) async fn build_images(
             .await?,
     );
     Ok(builds)
+}
+
+/// The Machines and, when a Service mounts provisioned volumes, their storage:
+/// what placement, and so the Build Platform Requirement, is read from.
+pub(super) async fn observe_machines(
+    client: &mut Client,
+    intent: &DeployIntent,
+    cancellation: &CancellationToken,
+) -> Result<Vec<MachineObservation>, PreparationError> {
+    let mut machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
+    let applied = intent.applied_names();
+    if intent.target.iter().any(|spec| {
+        applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
+    }) {
+        read(cancellation, async {
+            client.observe_machine_storage(&mut machines).await;
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(machines)
 }
 
 async fn read<T>(

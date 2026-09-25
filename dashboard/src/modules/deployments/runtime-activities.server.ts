@@ -27,7 +27,10 @@ import { deploymentProgressForEvent } from "./deployment-view";
 import { PloyzPreparationError, type PloyzPreparedDeploy } from "#/modules/runtime/ployz.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
-import { imageBuildWanted, loadBuildReceipts, recordServerChoice, settleImageBuild, type ImageBuildOutcome, type ImageBuildTarget } from "./image-builds.server";
+import {
+  imageBuildWanted, loadBuildReceipts, recordServerChoice, settleImageBuildResult, skipImageBuilder, START_WITHIN_MINUTES,
+  type ImageBuildAttempt, type ImageBuildOutcome, type ImageBuildTarget,
+} from "./image-builds.server";
 import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector, type PreparationWrites } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
@@ -335,11 +338,11 @@ export const executeEnvironmentDeployment = Effect.fn(
 export const REUSED_KEY = "stage:Reused";
 
 /**
- * One Image Build, the per-Image-Build unit of an attempt. The Organization Cluster is its only
- * Builder so far; later Builders slot in here. It never fails: every exit settles the row, and it
- * returns the settled status the attempt waits on. It stops when its attempt ends or is cancelled.
+ * One Image Build on the Organization Cluster. With `startWithinMs`, a build no Server admitted in
+ * time is withdrawn (nothing was uploaded) and skipped, so the next Builder gets it. Otherwise it
+ * never fails: every exit settles the row. It stops when its attempt ends or is cancelled.
  */
-export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(function* (build: ImageBuildTarget) {
+export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(function* (build: ImageBuildTarget, startWithinMs?: number) {
   const cancellation = new AbortController();
   const collector = preparationProgressCollector();
   const reporting = deploymentReporting();
@@ -349,7 +352,7 @@ export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(func
     logged ||= writes.steps.length > 0;
     return reporting.write(persistBuildLog(build.deploymentId, writes, build.image));
   };
-  const outcome = yield* Effect.gen(function* () {
+  const outcome: ImageBuildOutcome | "queued" = yield* Effect.gen(function* () {
     const context = yield* loadDeploymentContext(build.deploymentId);
     const snapshot = context?.snapshots.find((candidate) => candidate.serviceId === build.serviceId);
     if (!context || !snapshot) return { status: "failed", message: "The Service is no longer part of this deployment.", machineId } satisfies ImageBuildOutcome;
@@ -369,8 +372,11 @@ export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(func
         await Effect.runPromiseWith(progressContext)(recordServerChoice(build.id, machine.id, { machineName: machine.name, reason }));
       }
       await Effect.runPromiseWith(progressContext)(log(collector.event(event)));
-    }, { signal: cancellation.signal });
-    if (result.kind === "queued") return { status: "failed", message: "No Server started the build.", machineId } satisfies ImageBuildOutcome;
+    }, { signal: cancellation.signal, startWithinMs });
+    if (result.kind === "queued") {
+      yield* log({ progress: null, steps: collector.finish(), output: [] });
+      return "queued" as const;
+    }
     yield* log({ progress: null, steps: collector.finish(), output: [] });
     if (!logged) {
       const now = new Date();
@@ -388,7 +394,12 @@ export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(func
       return { status: "failed", message: failure.message || "Build failed.", machineId } satisfies ImageBuildOutcome;
     })),
   );
-  return { imageBuildId: build.id, image: build.image, status: yield* settleImageBuild(build.id, outcome) };
+  if (outcome === "queued") {
+    const reason = `Your servers: none started it in ${START_WITHIN_MINUTES} min`;
+    yield* skipImageBuilder(build.id, reason);
+    return { kind: "skipped", reason } satisfies ImageBuildAttempt;
+  }
+  return { kind: "settled", result: yield* settleImageBuildResult(build, outcome) } satisfies ImageBuildAttempt;
 });
 
 const cleanOutcomes: ReadonlySet<ImageRemovalOutcome["status"]> = new Set(["removed", "in_use", "not_found"]);

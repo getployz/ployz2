@@ -89,3 +89,20 @@ pub(super) async fn run(
         Err(error) => Err(super::preparation_error(error, token.is_cancelled())),
     }
 }
+
+/// The Build Platform Requirement of the one Service in `deployment`: the
+/// platforms its possible placements run. A Builder outside the Cluster must
+/// produce exactly these.
+pub(super) async fn platforms(
+    mut client: Client,
+    deployment: serde_json::Value,
+    token: CancellationToken,
+) -> Result<Vec<String>, RpcError> {
+    let intent = preparation::frozen_intent(deployment)?;
+    let machines = super::prepare::observe_machines(&mut client, &intent, &token)
+        .await
+        .map_err(|error| super::preparation_error(error, token.is_cancelled()))?;
+    let platforms = crate::build::placement_platforms(&intent, &machines)
+        .map_err(|error| super::invalid_argument(error.to_string()))?;
+    Ok(platforms.into_iter().collect())
+}

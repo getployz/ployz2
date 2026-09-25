@@ -1,12 +1,13 @@
 import { Schema } from "effect";
 import { OrganizationSlug } from "#/modules/environment-design/workspace-schemas";
 
-export const BUILD_ORDERS = ["servers-only", "github-then-servers", "github-only"] as const;
+export const BUILD_ORDERS = ["servers-only", "github-then-servers", "servers-then-github", "github-only"] as const;
 export type BuildOrder = (typeof BUILD_ORDERS)[number];
 
 export const BUILD_ORDER_LABELS = {
   "servers-only": "Your servers only",
   "github-then-servers": "GitHub, then your servers",
+  "servers-then-github": "Your servers, then GitHub",
   "github-only": "GitHub only",
 } satisfies Record<BuildOrder, string>;
 
@@ -14,6 +15,17 @@ export const BUILD_ORDER_LABELS = {
 export type BuildOrderRow = { id: string; buildOrder: BuildOrder };
 
 export const DEFAULT_BUILD_ORDER: BuildOrder = "servers-only";
+
+/** One Builder an Image Build may try. */
+export type BuildCandidate = { builder: "servers" } | { builder: "github" };
+
+/** The Builders a Build Order tries, in turn. */
+export const buildOrderCandidates = (order: BuildOrder): BuildCandidate[] => ({
+  "servers-only": [{ builder: "servers" }],
+  "github-then-servers": [{ builder: "github" }, { builder: "servers" }],
+  "servers-then-github": [{ builder: "servers" }, { builder: "github" }],
+  "github-only": [{ builder: "github" }],
+} satisfies Record<BuildOrder, BuildCandidate[]>)[order];
 
 export const buildOrderEditSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,

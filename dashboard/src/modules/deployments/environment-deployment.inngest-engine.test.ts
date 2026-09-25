@@ -14,7 +14,7 @@ import {
 } from "#/modules/deployments/runtime-activities.server";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import * as imageBuilds from "#/modules/deployments/image-builds.server";
-import * as githubImageBuilds from "#/modules/deployments/github-image-builds.server";
+import * as buildOrder from "#/modules/deployments/build-order.server";
 import type { ImageBuildTarget } from "#/modules/deployments/image-builds.server";
 import { createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 
@@ -32,8 +32,9 @@ const activity = {
 const build = (image: string, buildIndex = 0): ImageBuildTarget => ({ id: `build-${image}`, deploymentId: "deployment-1", serviceId: `service-${image}`, image, buildIndex });
 
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.promise(() => activity.startBuilds()));
-vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((target) => Effect.promise(() => activity.build(target)));
-vi.spyOn(githubImageBuilds, "startGithubImageBuild").mockImplementation(() => Effect.succeed({ kind: "servers" }));
+vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((target) =>
+  Effect.promise(async () => ({ kind: "settled" as const, result: await activity.build(target) })));
+vi.spyOn(buildOrder, "imageBuildCandidates").mockImplementation(() => Effect.succeed([{ builder: "servers" }]));
 
 function runtimeFailure(
   operation: "execute",

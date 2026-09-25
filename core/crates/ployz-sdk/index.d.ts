@@ -170,6 +170,8 @@ export declare class Client {
   prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
   /** One Image Build. `input` holds exactly one Git Service with its checkout and commit; its receipt is a reuse hint. */
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
+  /** The platforms the one Service in `deployment` may be placed on run: what a Builder outside the Cluster must build. */
+  buildPlatforms(deployment: PreparationInput["deployment"]): Promise<string[]>;
   clearManagementClient(label: string): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;
