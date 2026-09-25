@@ -230,27 +230,48 @@ async fn record_written_by_a_later_daemon_reopens_with_every_known_value() {
 async fn clear_persists_a_tombstone_of_public_keys_only() {
     let dir = TestDir::new("ployzd-clear-management-client");
     let local = participating(&dir).await;
-    let capability = local
-        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
-        .await
-        .unwrap()
-        .capability
-        .unwrap();
-    let clear = |label: &str| {
+    let set = |label: &'static str| {
         let local = local.clone();
-        let label = ManagementClientLabel::parse(label).unwrap();
+        async move {
+            let capability = local
+                .set_management_client(SetManagementClientRequest::Set {
+                    label: ManagementClientLabel::parse(label).unwrap(),
+                })
+                .await
+                .unwrap()
+                .capability
+                .unwrap();
+            let public = *iroh::SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes();
+            (capability, public)
+        }
+    };
+    let clear = |label: &'static str| {
+        let local = local.clone();
         async move {
             local
-                .set_management_client(SetManagementClientRequest::Clear { label })
+                .set_management_client(SetManagementClientRequest::Clear {
+                    label: ManagementClientLabel::parse(label).unwrap(),
+                })
                 .await
                 .unwrap()
         }
     };
-    clear("cloud").await;
+    // One slot in each live state: pending, active and rotating.
+    let (pending, pending_key) = set("pending").await;
+    let (active, active_key) = set("active").await;
+    local.activate_management_client(active_key).await.unwrap();
+    let (rotated, rotated_key) = set("rotating").await;
+    local.activate_management_client(rotated_key).await.unwrap();
+    let (rotating, rotating_key) = set("rotating").await;
+    for label in ["pending", "active", "rotating"] {
+        clear(label).await;
+    }
     assert!(!local.record().has_management_clients());
     let cleared = local.record();
     // Clear is idempotent: a tombstone stays unchanged and an absent label stays absent.
-    clear("cloud").await;
+    clear("rotating").await;
     clear("cli").await;
     assert_eq!(local.record(), cleared);
     drop(local);
@@ -260,18 +281,22 @@ async fn clear_persists_a_tombstone_of_public_keys_only() {
     assert_eq!(reopened.record().management_clients().count(), 0);
     let persisted: serde_json::Value =
         serde_json::from_slice(&fs::read(dir.0.join("machine.json")).unwrap()).unwrap();
-    let public = iroh::SecretKey::from_bytes(capability.client_secret()).public();
     assert_eq!(
         persisted.get("management_clients"),
         Some(&serde_json::json!({
-            "cloud": { "state": "cleared_pending", "pending": public.as_bytes() },
+            "pending": { "state": "cleared_pending", "pending": pending_key },
+            "active": { "state": "cleared_active", "accepted": active_key },
+            "rotating": {
+                "state": "cleared_rotating",
+                "accepted": rotated_key,
+                "pending": rotating_key,
+            },
         }))
     );
-    assert!(
-        !persisted
-            .to_string()
-            .contains(&serde_json::to_string(capability.client_secret()).unwrap())
-    );
+    let text = persisted.to_string();
+    for capability in [pending, active, rotated, rotating] {
+        assert!(!text.contains(&serde_json::to_string(capability.client_secret()).unwrap()));
+    }
 }
 
 #[tokio::test]
