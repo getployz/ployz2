@@ -1,0 +1,12 @@
+{
+  "base": "ab22911a6b008c2fa0c1626ca11f3f6e3ecaddd2",
+  "files": [
+    "crates/ployz/src/deploy/planning.rs",
+    "crates/ployz/src/deploy/planning/placement.rs",
+    "crates/ployz/src/deploy/planning/capacity.rs",
+    "crates/ployz/src/deploy/planning/volumes.rs",
+    "crates/ployz/src/deploy.rs"
+  ],
+  "re": "EndpointDemand|CapacityBudget|endpoint_capacity_error|determine_update_order|remove_unused|binds_overlap|host_ports_conflict|conflicting_siblings|plan_global|plan_replicated|select_replicated|PlacementState|PlacementReservations|is_up_to_date|reusable_global|in bind|bind ->|reject_hostname_conflicts|order_included|assemble_plan|obsolete_services|removal_operations|plan_project_removal|prepare_project_removal|data_loss_from_plan|remove_volume_loss|placement_error|placement_state|scramble|shuffle|plan_one_service|eligible_machines|placement_candidates|seal_plan|preview_deploy|plan_operations|volume_constraints|volume_anchor|volume_eligible_machine_ids|preserved_owned_volumes|scope_requested|record_provisioned|validate_provisioned|incompatible_on|matches|finish|managed_volume_name|declared_physical_names|mounted_managed_volumes|services_in|is_observer_complete|affects_required|named_gap|machine_gap|EliminatingConstraint|write_quoted|write_machine_names|MachineNames|no_eligible_machines|From<ExpandIngressError>",
+  "shards": 4
+}
