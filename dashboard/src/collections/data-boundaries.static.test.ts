@@ -85,6 +85,11 @@ const ON_DEMAND_READS = {
   githubBranchesQueryOptions: "depends on the repository the user just picked",
 };
 
+/** Hook files outside data files that await the server without making UI wait on it. */
+const HOOK_FILES_NOT_COMMANDS = {
+  "modules/environment-design/environment-document-edit.ts": "the editor owns the optimistic save queue; edits apply before it saves",
+};
+
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
   "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
@@ -180,9 +185,9 @@ describe("data boundaries", () => {
           const isRoute = file.startsWith(`${SRC}/routes/`);
           // Only Org Store tables in collections/ inherit the createApiCollection staleTime default.
           const isCollectionsFile = file.startsWith(`${SRC}/collections/`);
-          // Command hooks elsewhere are UI too: components wait through them. Data files read, and the editor owns the optimistic save queue.
+          // Command hooks elsewhere are UI too: components wait through them. Data files only read.
           const path = relative(SRC, file);
-          const isHookFile = /\bexport function use[A-Z]/.test(source.text) && !DATA_FILE.test(path) && path !== "modules/environment-design/environment-document-edit.ts";
+          const isHookFile = /\bexport (function|const) use[A-Z]/.test(source.text) && !DATA_FILE.test(path) && !(path in HOOK_FILES_NOT_COMMANDS);
           const isUi = isRoute || file.startsWith(`${SRC}/components/`) || isHookFile;
           const serverCalls = new Set<string>();
           const importedFrom = new Map<string, string>();
