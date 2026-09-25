@@ -62,11 +62,19 @@ export function ServiceNetworkingSection({
   const [editor, setEditor] = useState<PublicDomainEditor>(null);
 
   const certificateEvidence = (hostname: string): DomainCertificateEvidence => {
-    const certificate = runtimeStatus.certificates.find(
-      (candidate) => candidate.hostname === hostname
+    // A published `*.parent` serves every hostname one label under it, and the
+    // Engine then keeps no row of the hostname's own.
+    const wildcard = `*.${hostname.slice(hostname.indexOf(".") + 1)}`;
+    const certificate =
+      runtimeStatus.certificates.find(
+        (candidate) => candidate.hostname === hostname
+      ) ??
+      runtimeStatus.certificates.find(
+        (candidate) => candidate.hostname === wildcard
+      );
+    const incomplete = [hostname, wildcard].some((name) =>
+      runtimeStatus.incompleteIds.certificates.includes(name)
     );
-    const incomplete =
-      runtimeStatus.incompleteIds.certificates.includes(hostname);
     if (!certificate && !incomplete) return null;
     return {
       status: certificate?.status ?? null,

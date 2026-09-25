@@ -10,10 +10,10 @@ use crate::{
     },
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH,
-    IngressHost, IngressHostname, IngressProxyFragment, MACHINE_API_PORT, Machine, MachineId,
-    MachineName, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
+    AdvertisedEndpoint, CertificateHost, ContainerAddress, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
+    INGRESS_VERIFY_PATH, IngressHostname, IngressProxyFragment, MACHINE_API_PORT, Machine,
+    MachineId, MachineName, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
     ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
     service_containers,
 };
@@ -30,7 +30,7 @@ fn projection(
     local_machine: &MachineId,
     machine_name: &str,
     containers: &[ServiceContainer],
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
 ) -> IngressProjection {
     let machine = Machine {
         labels: Default::default(),
@@ -62,7 +62,7 @@ fn automatic_caddyfile(
     containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
 ) -> String {
     render_automatic_caddyfile(
         &projection(local_machine, machine_name, containers, certificates),
@@ -76,7 +76,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
     admin: Option<&A>,
 ) -> String {
     render_caddyfile(
@@ -90,7 +90,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
 async fn reconcile<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
@@ -188,7 +188,7 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
     )
     .unwrap();
     let certificates = BTreeMap::from([(
-        IngressHost::parse("example.com").unwrap(),
+        CertificateHost::parse("example.com").unwrap(),
         CertificateRow::from_parts(Some(material.clone()), Some(challenge.clone())),
     )]);
 
@@ -379,7 +379,7 @@ fn https_site_with_material_pins_tls_paths() {
         ],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
@@ -409,6 +409,69 @@ fn https_site_with_material_pins_tls_paths() {
 }
 
 #[test]
+fn published_wildcard_serves_covered_https_sites_over_acme_material() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![
+            ingress("api.apps.example.com", 8443, HttpProtocol::Https),
+            ingress("web.apps.example.com", 8443, HttpProtocol::Https),
+            ingress("deep.web.apps.example.com", 8443, HttpProtocol::Https),
+            ingress("plain.apps.example.com", 80, HttpProtocol::Http),
+        ],
+    )];
+    let pair = rcgen::generate_simple_self_signed(["*.apps.example.com".to_owned()]).unwrap();
+    let wildcard = crate::corrosion::CertificateMaterial::parse(
+        pair.cert.pem(),
+        pair.signing_key.serialize_pem(),
+    )
+    .unwrap();
+    let certificates = BTreeMap::from([
+        (
+            CertificateHost::parse("*.apps.example.com").unwrap(),
+            CertificateRow::published(wildcard.clone()),
+        ),
+        (
+            CertificateHost::parse("web.apps.example.com").unwrap(),
+            CertificateRow::issued(test_material()),
+        ),
+    ]);
+    let projection = projection(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        &certificates,
+    );
+    let material = |hostname: &str| {
+        projection
+            .sites
+            .iter()
+            .find(|site| site.hostname.as_str() == hostname)
+            .and_then(|site| site.material().cloned())
+    };
+    assert_eq!(material("api.apps.example.com"), Some(wildcard.clone()));
+    assert_eq!(material("web.apps.example.com"), Some(wildcard));
+    assert_eq!(material("deep.web.apps.example.com"), None);
+    assert_eq!(material("plain.apps.example.com"), None);
+    assert!(
+        projection
+            .sites
+            .iter()
+            .all(|site| !site.hostname.as_str().starts_with('*'))
+    );
+
+    let caddyfile = render_automatic_caddyfile(&projection, "TIMESTAMP", None);
+    assert!(
+        pinned_tls_line(&caddyfile, "api.apps.example.com").is_some(),
+        "{caddyfile}"
+    );
+    assert!(!caddyfile.contains("*.apps.example.com"), "{caddyfile}");
+}
+
+#[test]
 fn changing_material_changes_the_pin_paths() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = vec![observation(
@@ -426,7 +489,7 @@ fn changing_material_changes_the_pin_paths() {
         "TIMESTAMP",
         None,
         &BTreeMap::from([(
-            IngressHost::parse("secure.example.com").unwrap(),
+            CertificateHost::parse("secure.example.com").unwrap(),
             CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
@@ -437,7 +500,7 @@ fn changing_material_changes_the_pin_paths() {
         "TIMESTAMP",
         None,
         &BTreeMap::from([(
-            IngressHost::parse("secure.example.com").unwrap(),
+            CertificateHost::parse("secure.example.com").unwrap(),
             CertificateRow::from_parts(Some(test_material()), None),
         )]),
     );
@@ -468,7 +531,7 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         &BTreeMap::new(),
     );
     let unused = BTreeMap::from([(
-        IngressHost::parse("other.example.com").unwrap(),
+        CertificateHost::parse("other.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None),
     )]);
 
@@ -503,7 +566,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(
             None,
             Some(CertificateChallenge::parse(
@@ -544,7 +607,7 @@ fn last_error_is_a_skipped_certificate_comment() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(None, None).with_error(
             "Ingress Hostname secure.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1.",
         ),
@@ -585,7 +648,7 @@ fn last_error_is_omitted_once_material_exists() {
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(Some(test_material()), None).with_error("stale"),
     )]);
 
@@ -1166,7 +1229,7 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     )];
     let material = test_material();
     let certificates = BTreeMap::from([(
-        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(Some(material.clone()), None),
     )]);
     let admin = FakeAdmin::default();

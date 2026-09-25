@@ -11,10 +11,10 @@ use std::{
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{Stream, StreamExt};
 use ployz_core::{
-    CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
-    ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
+    CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateHost,
+    CertificateObservation, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
+    IssuanceClock, IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation,
+    OpaquePayload, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
     encode_runtime_watch_frame,
 };
 use tokio::sync::{Mutex, mpsc, watch};
@@ -125,7 +125,7 @@ pub(crate) struct RuntimeWatchSnapshot {
     pub machines: ReplicatedObservations<Machine, MachineId>,
     pub containers: ReplicatedObservations<ContainerObservation, ContainerId>,
     pub volumes: ReplicatedObservations<DockerVolume, DockerVolumeId>,
-    pub certificates: ReplicatedObservations<(IngressHost, CertificateRow), IngressHost>,
+    pub certificates: ReplicatedObservations<(CertificateHost, CertificateRow), CertificateHost>,
     pub hosted_dns: Option<Reservation>,
 }
 
@@ -403,7 +403,7 @@ fn unavailable_machine_observations(
         .collect()
 }
 
-fn redact_certificate(hostname: IngressHost, row: &CertificateRow) -> CertificateObservation {
+fn redact_certificate(hostname: CertificateHost, row: &CertificateRow) -> CertificateObservation {
     let backoff = row.clock().map(certificate_backoff);
     let status = if row.material().is_some() {
         CertificateAvailability::Available

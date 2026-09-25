@@ -16,11 +16,11 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
-    DockerVolume, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
-    MachineRuntime, MachineToken, MachineUpdate, ManagementCapability, ManagementClientLabel,
-    ProjectName, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
+    ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
+    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ManagementCapability,
+    ManagementClientLabel, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice,
+    WireGuardDevice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -540,6 +540,44 @@ pub struct CreateDomainRecordsRequest {
     pub records: Vec<DnsRecord>,
 }
 
+/// Publish or clear operator-supplied Certificate Material for one certificate hostname.
+///
+/// Published material is served as given; ACME never orders, renews, or overwrites it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PublishCertificateMaterialRequest {
+    pub hostname: CertificateHost,
+    pub change: CertificateMaterialChange,
+}
+
+/// Set replaces the hostname's material; Clear removes published material and
+/// returns the hostname to ACME.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum CertificateMaterialChange {
+    Set {
+        certificate_chain_pem: String,
+        private_key_pem: String,
+    },
+    Clear,
+}
+
+// Requests may be logged; the private key never is.
+impl fmt::Debug for CertificateMaterialChange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Set {
+                certificate_chain_pem,
+                ..
+            } => formatter
+                .debug_struct("Set")
+                .field("certificate_chain_pem", certificate_chain_pem)
+                .field("private_key_pem", &"<redacted>")
+                .finish(),
+            Self::Clear => formatter.write_str("Clear"),
+        }
+    }
+}
+
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UpdateMachineRequest {
@@ -824,6 +862,10 @@ pub struct DomainRecords {
     pub records: Vec<DnsRecord>,
 }
 
+/// The certificate row holds the published material, or no longer holds published material.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct CertificateMaterialPublished {}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdated {
     pub machine: Machine,
@@ -939,6 +981,7 @@ define_responses! {
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";
+    CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed";

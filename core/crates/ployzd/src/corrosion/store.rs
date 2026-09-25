@@ -14,8 +14,8 @@ use std::{
 use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, DockerVolume,
-    DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ContainerId, ContainerObservation,
+    DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
 };
 use serde_json::json;
 
@@ -533,10 +533,53 @@ impl ReplicatedStore {
         material: &CertificateMaterial,
     ) -> Result<(), Error> {
         let latest = self.certificate_row(hostname).await?;
-        if latest.material() == Some(material) && latest.challenge().is_none() {
+        if latest.is_published()
+            || (latest.material() == Some(material) && latest.challenge().is_none())
+        {
             return Ok(());
         }
-        self.upsert_certificate(hostname, &CertificateRow::issued(material.clone()))
+        self.upsert_certificate(hostname.as_str(), &CertificateRow::issued(material.clone()))
+            .await
+    }
+
+    /// Hold published material for `hostname`; ACME leaves the row alone from now on.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub async fn publish_certificate_material(
+        &self,
+        hostname: &CertificateHost,
+        material: &CertificateMaterial,
+    ) -> Result<(), Error> {
+        let latest = self.row(hostname.as_str()).await?;
+        if latest.is_published() && latest.material() == Some(material) {
+            return Ok(());
+        }
+        self.upsert_certificate(
+            hostname.as_str(),
+            &CertificateRow::published(material.clone()),
+        )
+        .await
+    }
+
+    /// Remove published material so ACME owns `hostname` again. ACME-issued rows stay.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or deleted.
+    pub async fn clear_published_certificate(
+        &self,
+        hostname: &CertificateHost,
+    ) -> Result<(), Error> {
+        if !self.row(hostname.as_str()).await?.is_published() {
+            return Ok(());
+        }
+        self.api
+            .execute([Statement::new(
+                "DELETE FROM certificates WHERE hostname = ?",
+                [json!(hostname.as_str())],
+            )])
             .await
     }
 
@@ -551,11 +594,15 @@ impl ReplicatedStore {
         &self,
         hostname: &IngressHost,
     ) -> Result<CertificateRow, Error> {
+        self.row(hostname.as_str()).await
+    }
+
+    async fn row(&self, hostname: &str) -> Result<CertificateRow, Error> {
         let query = self
             .api
             .query(Statement::new(
                 "SELECT body FROM certificates WHERE hostname = ?",
-                [json!(hostname.as_str())],
+                [json!(hostname)],
             ))
             .await?;
         let rows = query.rows(["body"])?;
@@ -565,15 +612,11 @@ impl ReplicatedStore {
         CertificateRow::decode(text(encoded, "certificate body")?)
     }
 
-    async fn upsert_certificate(
-        &self,
-        hostname: &IngressHost,
-        row: &CertificateRow,
-    ) -> Result<(), Error> {
+    async fn upsert_certificate(&self, hostname: &str, row: &CertificateRow) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
                 "INSERT INTO certificates (hostname, body) VALUES (?, ?) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body",
-                [json!(hostname.as_str()), json!(row.encode()?)],
+                [json!(hostname), json!(row.encode()?)],
             )])
             .await
     }
@@ -584,10 +627,10 @@ impl ReplicatedStore {
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
         let latest = self.certificate_row(hostname).await?;
-        if latest.challenge() == Some(challenge) {
+        if latest.is_published() || latest.challenge() == Some(challenge) {
             return Ok(());
         }
-        self.upsert_certificate(hostname, &latest.with_challenge(challenge.clone()))
+        self.upsert_certificate(hostname.as_str(), &latest.with_challenge(challenge.clone()))
             .await
     }
 
@@ -606,7 +649,7 @@ impl ReplicatedStore {
         if latest.material().is_some() {
             return Ok(());
         }
-        self.upsert_certificate(hostname, &latest.with_backoff(last_error, clock))
+        self.upsert_certificate(hostname.as_str(), &latest.with_backoff(last_error, clock))
             .await
     }
 
@@ -616,10 +659,10 @@ impl ReplicatedStore {
         reason: &str,
     ) -> Result<(), Error> {
         let latest = self.certificate_row(hostname).await?;
-        if latest.last_error() == Some(reason) {
+        if latest.is_published() || latest.last_error() == Some(reason) {
             return Ok(());
         }
-        self.upsert_certificate(hostname, &latest.with_error(reason))
+        self.upsert_certificate(hostname.as_str(), &latest.with_error(reason))
             .await
     }
 
@@ -639,7 +682,9 @@ impl ReplicatedStore {
         Ok((!encoded.is_empty()).then(|| encoded.to_owned()))
     }
 
-    pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
+    pub async fn certificates(
+        &self,
+    ) -> Result<BTreeMap<CertificateHost, CertificateMaterial>, Error> {
         Ok(self
             .certificate_state()
             .await?
@@ -648,7 +693,7 @@ impl ReplicatedStore {
             .collect())
     }
 
-    /// Return decoded certificate rows and typed incomplete Ingress Hostnames.
+    /// Return decoded certificate rows and typed incomplete certificate hostnames.
     ///
     /// An incomplete row is listed in `incomplete_ids`; it is not a deletion.
     ///
@@ -657,7 +702,8 @@ impl ReplicatedStore {
     /// Returns if rows cannot be read or decoded.
     pub async fn certificate_rows(
         &self,
-    ) -> Result<ReplicatedObservations<(IngressHost, CertificateRow), IngressHost>, Error> {
+    ) -> Result<ReplicatedObservations<(CertificateHost, CertificateRow), CertificateHost>, Error>
+    {
         let query = self
             .api
             .query(Statement::new(
@@ -668,7 +714,7 @@ impl ReplicatedStore {
         let mut observations = Vec::new();
         let mut incomplete_ids = Vec::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
+            let hostname = CertificateHost::parse(text(&hostname, "certificate hostname")?)?;
             let encoded = text(&encoded, "certificate body")?;
             if is_incomplete_document(encoded) {
                 incomplete_ids.push(hostname);
@@ -682,7 +728,9 @@ impl ReplicatedStore {
         })
     }
 
-    pub async fn certificate_state(&self) -> Result<BTreeMap<IngressHost, CertificateRow>, Error> {
+    pub async fn certificate_state(
+        &self,
+    ) -> Result<BTreeMap<CertificateHost, CertificateRow>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -692,7 +740,7 @@ impl ReplicatedStore {
             .await?;
         let mut rows = BTreeMap::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
+            let hostname = CertificateHost::parse(text(&hostname, "certificate hostname")?)?;
             rows.insert(
                 hostname,
                 CertificateRow::decode(text(&encoded, "certificate body")?)?,

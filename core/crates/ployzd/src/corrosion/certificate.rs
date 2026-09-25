@@ -3,7 +3,7 @@
 use std::time::SystemTime;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use ployz_core::{IssuanceClock, IssuanceFailure};
+use ployz_core::{CertificateHost, IssuanceClock, IssuanceFailure};
 use serde::{Deserialize, Serialize};
 
 use super::Error;
@@ -29,6 +29,9 @@ pub enum CertificateMaterialError {
     /// The leaf certificate belongs to another key.
     #[error("certificate does not match its private key")]
     KeyMismatch,
+    /// No DNS name on the leaf certificate serves the hostname.
+    #[error("certificate does not cover the hostname")]
+    HostnameNotCovered,
 }
 
 impl CertificateMaterial {
@@ -75,6 +78,46 @@ impl CertificateMaterial {
             certificate,
             private_key,
         })
+    }
+
+    /// Keep this material only if a DNS subject alternative name on its leaf
+    /// serves `hostname`: the same name, or a wildcard one label above it.
+    ///
+    /// # Errors
+    /// Returns `HostnameNotCovered` when no leaf DNS name serves the hostname.
+    pub fn covering(self, hostname: &CertificateHost) -> Result<Self, CertificateMaterialError> {
+        use x509_parser::extensions::GeneralName;
+
+        let host = hostname.as_str();
+        let serves = |name: &str| {
+            let name = name.to_ascii_lowercase();
+            name == host
+                || (!hostname.is_wildcard()
+                    && name.strip_prefix("*.").is_some_and(|parent| {
+                        host.split_once('.').is_some_and(|(_, rest)| rest == parent)
+                    }))
+        };
+        let (_, leaf) = x509_parser::pem::parse_x509_pem(self.certificate.as_bytes())
+            .map_err(|_| CertificateMaterialError::InvalidChain)?;
+        let leaf = leaf
+            .parse_x509()
+            .map_err(|_| CertificateMaterialError::InvalidChain)?;
+        let covered = leaf
+            .subject_alternative_name()
+            .ok()
+            .flatten()
+            .is_some_and(|names| {
+                names
+                    .value
+                    .general_names
+                    .iter()
+                    .any(|name| matches!(name, GeneralName::DNSName(name) if serves(name)))
+            });
+        if covered {
+            Ok(self)
+        } else {
+            Err(CertificateMaterialError::HostnameNotCovered)
+        }
     }
 
     /// Borrow the admitted PEM certificate chain.
@@ -174,12 +217,14 @@ struct RecordedRefusal {
     clock: Option<IssuanceClock>,
 }
 
-/// Replicated certificate row for one Ingress Hostname.
+/// Replicated certificate row for one certificate hostname.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
     refusal: Option<RecordedRefusal>,
+    /// Operator- or Cloud-supplied material that ACME never orders, renews, or overwrites.
+    published: bool,
 }
 
 impl CertificateRow {
@@ -193,6 +238,7 @@ impl CertificateRow {
             material,
             challenge,
             refusal: None,
+            published: false,
         }
     }
 
@@ -203,7 +249,23 @@ impl CertificateRow {
             material: Some(material),
             challenge: None,
             refusal: None,
+            published: false,
         }
+    }
+
+    /// Row that holds published material, which ACME leaves alone.
+    #[must_use]
+    pub fn published(material: CertificateMaterial) -> Self {
+        Self {
+            published: true,
+            ..Self::issued(material)
+        }
+    }
+
+    /// Whether this row holds published rather than ACME-issued material.
+    #[must_use]
+    pub fn is_published(&self) -> bool {
+        self.published && self.material.is_some()
     }
 
     /// Attach a complete refusal clock, or leave the row unchanged if the text is empty.
@@ -306,6 +368,7 @@ impl CertificateRow {
                 reason: last_error,
                 clock,
             }),
+            published: body.published,
         })
     }
 
@@ -334,6 +397,7 @@ impl CertificateRow {
                 .unwrap_or_default(),
             failures: clock.map_or(0, |clock| clock.failures()),
             last_failure: encode_failure(clock.map(|clock| clock.last_failure())).into(),
+            published: self.published,
         })?)
     }
 }
@@ -351,6 +415,7 @@ struct CertificateBody {
     next_attempt_at: String,
     failures: u32,
     last_failure: String,
+    published: bool,
 }
 
 fn encode_attempt(time: SystemTime) -> String {
@@ -519,6 +584,58 @@ mod tests {
         assert!(row.last_error().unwrap().contains("authority refused"));
         assert!(row.last_error().unwrap().contains("invalid"));
         assert_eq!(CertificateRow::decode(&row.encode().unwrap()).unwrap(), row);
+    }
+
+    fn material_for(names: &[&str]) -> CertificateMaterial {
+        let pair = rcgen::generate_simple_self_signed(
+            names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+    }
+
+    #[test]
+    fn material_covers_its_names_and_one_label_under_its_wildcards() {
+        let covers = |names: &[&str], hostname: &str| {
+            material_for(names)
+                .covering(&ployz_core::CertificateHost::parse(hostname).unwrap())
+                .is_ok()
+        };
+        assert!(covers(&["app.example.com"], "app.example.com"));
+        assert!(covers(&["*.example.com"], "app.example.com"));
+        assert!(covers(&["*.example.com"], "*.example.com"));
+        assert!(covers(&["other.test", "*.example.com"], "api.example.com"));
+        assert!(!covers(&["*.example.com"], "example.com"));
+        assert!(!covers(&["*.example.com"], "deep.app.example.com"));
+        assert!(!covers(&["*.example.com"], "*.app.example.com"));
+        assert!(!covers(&["app.example.com"], "*.example.com"));
+        assert_eq!(
+            material_for(&["app.example.com"])
+                .covering(&ployz_core::CertificateHost::parse("web.example.com").unwrap()),
+            Err(CertificateMaterialError::HostnameNotCovered)
+        );
+    }
+
+    #[test]
+    fn published_flag_round_trips_and_defaults_to_acme() {
+        let material = issued_material();
+        let row = CertificateRow::published(material.clone());
+        assert!(row.is_published());
+        let decoded = CertificateRow::decode(&row.encode().unwrap()).unwrap();
+        assert!(decoded.is_published());
+        assert_eq!(decoded.material(), Some(&material));
+        let body = serde_json::json!({
+            "certificate": material.certificate(), "private_key": material.private_key()
+        });
+        assert!(
+            !CertificateRow::decode(&body.to_string())
+                .unwrap()
+                .is_published()
+        );
+        assert!(!CertificateRow::issued(material).is_published());
     }
 
     #[test]

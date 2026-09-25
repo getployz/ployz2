@@ -9,10 +9,10 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_GOSSIP_PORT, CertificateAvailability, CertificateBackoff,
-    CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
+    CertificateFailureKind, CertificateHost, CertificateObservation, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, HealthObservation, IngressHost, IssuanceClock, IssuanceFailure, Machine,
-    MachineId, MachineName, MachineObservation, MachineRuntime, MembershipObservation, ProjectName,
+    DockerVolumeName, HealthObservation, IssuanceClock, IssuanceFailure, Machine, MachineId,
+    MachineName, MachineObservation, MachineRuntime, MembershipObservation, ProjectName,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
     SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
     derive_services, encode_runtime_watch_frame,
@@ -68,7 +68,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             volumes: observations(vec![volume.clone()]),
             certificates: ReplicatedObservations {
                 observations: vec![(
-                    IngressHost::parse("ok.example.com").unwrap(),
+                    CertificateHost::parse("ok.example.com").unwrap(),
                     CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: Vec::new(),
@@ -100,7 +100,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
     assert_eq!(
         frame.certificates,
         vec![CertificateObservation {
-            hostname: IngressHost::parse("ok.example.com").unwrap(),
+            hostname: CertificateHost::parse("ok.example.com").unwrap(),
             status: CertificateAvailability::Available,
             last_error: None,
             backoff: None,
@@ -124,7 +124,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
         machine_id: incomplete_machine,
         name: DockerVolumeName::parse("scratch").unwrap(),
     };
-    let incomplete_cert = IngressHost::parse("pending.example.com").unwrap();
+    let incomplete_cert = CertificateHost::parse("pending.example.com").unwrap();
 
     let frame = assemble_runtime_watch_frame(
         RuntimeWatchSnapshot {
@@ -142,7 +142,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
             },
             certificates: ReplicatedObservations {
                 observations: vec![(
-                    IngressHost::parse("ok.example.com").unwrap(),
+                    CertificateHost::parse("ok.example.com").unwrap(),
                     CertificateRow::issued(crate::ingress::tests::test_material()),
                 )],
                 incomplete_ids: vec![incomplete_cert.clone()],
@@ -192,13 +192,13 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
             certificates: ReplicatedObservations {
                 observations: vec![
                     (
-                        IngressHost::parse("ok.example.com").unwrap(),
+                        CertificateHost::parse("ok.example.com").unwrap(),
                         CertificateRow::issued(crate::ingress::tests::test_material()),
                     ),
-                    (IngressHost::parse("new.example.com").unwrap(), pending),
-                    (IngressHost::parse("app.example.com").unwrap(), failed),
+                    (CertificateHost::parse("new.example.com").unwrap(), pending),
+                    (CertificateHost::parse("app.example.com").unwrap(), failed),
                     (
-                        IngressHost::parse("maybe.example.com").unwrap(),
+                        CertificateHost::parse("maybe.example.com").unwrap(),
                         CertificateRow::default(),
                     ),
                 ],
@@ -215,19 +215,19 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         frame.certificates,
         vec![
             CertificateObservation {
-                hostname: IngressHost::parse("ok.example.com").unwrap(),
+                hostname: CertificateHost::parse("ok.example.com").unwrap(),
                 status: CertificateAvailability::Available,
                 last_error: None,
                 backoff: None,
             },
             CertificateObservation {
-                hostname: IngressHost::parse("new.example.com").unwrap(),
+                hostname: CertificateHost::parse("new.example.com").unwrap(),
                 status: CertificateAvailability::Pending,
                 last_error: None,
                 backoff: None,
             },
             CertificateObservation {
-                hostname: IngressHost::parse("app.example.com").unwrap(),
+                hostname: CertificateHost::parse("app.example.com").unwrap(),
                 status: CertificateAvailability::Failure,
                 last_error: Some(
                     "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
@@ -240,7 +240,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                 }),
             },
             CertificateObservation {
-                hostname: IngressHost::parse("maybe.example.com").unwrap(),
+                hostname: CertificateHost::parse("maybe.example.com").unwrap(),
                 status: CertificateAvailability::Unknown,
                 last_error: None,
                 backoff: None,
