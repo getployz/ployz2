@@ -4,7 +4,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
+    os::unix::{
+        fs::{OpenOptionsExt, PermissionsExt},
+        net as std_net,
+    },
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -32,7 +35,7 @@ use crate::{
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
-    filesystem::{PLOYZ_DIR_MODE, SOCKET_MODE, set_ployz_group},
+    filesystem::{PLOYZ_DIR_MODE, set_ployz_group},
     ingress,
     machine::{
         LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped,
@@ -106,6 +109,7 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        let socket = claim_machine_api_socket(&config.socket)?;
         let run_dir = config
             .socket
             .parent()
@@ -116,11 +120,12 @@ impl Daemon {
             .map_err(io::Error::other)?;
         let build_policy = ployz_build::HostPolicy::from_environment()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        Self::start_with_build_policy(config, build_policy, run_dir).await
+        Self::start_with_build_policy(config, socket, build_policy, run_dir).await
     }
 
     async fn start_with_build_policy(
         config: DaemonConfig,
+        (socket_lock, rpc_listener): (File, std_net::UnixListener),
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
@@ -128,7 +133,6 @@ impl Daemon {
             &config.data_dir,
             run_dir,
         )?)?;
-        let socket_lock = claim_socket(&config.socket)?;
         let cleanup = tokio::task::spawn_blocking({
             let policy = build_policy.clone();
             move || ployz_build::Admission::cleanup_abandoned(&policy)
@@ -215,13 +219,9 @@ impl Daemon {
             .with_image_ingest(Arc::clone(&ingest))
             .build();
 
-        let rpc_listener = match socket_activation::listen_socket(&config.socket)? {
-            Some(listener) => listener,
-            None => bind_socket(&config.socket)?,
-        };
         let rpc = Server::builder().serve_with_incoming_shutdown(
             machine_api.clone(),
-            UnixListenerStream::new(rpc_listener),
+            UnixListenerStream::new(UnixListener::from_std(rpc_listener)?),
             shutdown.clone().cancelled_owned(),
         );
         let publisher =
@@ -651,6 +651,13 @@ enum StopKind {
     WatchFailed(&'static str),
 }
 
+/// Claims the Machine API socket and takes its listener, before startup spawns
+/// any thread or subprocess that could inherit the systemd socket.
+fn claim_machine_api_socket(path: &Path) -> io::Result<(File, std_net::UnixListener)> {
+    let lock = claim_socket(path)?;
+    Ok((lock, socket_activation::machine_api_listener(path)?))
+}
+
 fn claim_socket(path: &Path) -> io::Result<File> {
     let parent = path
         .parent()
@@ -681,24 +688,6 @@ fn claim_socket(path: &Path) -> io::Result<File> {
         }
     })?;
     Ok(lock)
-}
-
-fn bind_socket(path: &Path) -> io::Result<UnixListener> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "refusing to replace a non-socket path",
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = UnixListener::bind(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(SOCKET_MODE))?;
-    set_ployz_group(path)?;
-    Ok(listener)
 }
 
 fn notify(state: NotifyState<'_>) {
@@ -759,8 +748,8 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, ManagementConfig, bind_socket, claim_socket,
-        wait_for_participation, wait_until_socket_accepts,
+        ContainerMode, Daemon, DaemonConfig, ManagementConfig, claim_machine_api_socket,
+        claim_socket, wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -848,7 +837,8 @@ mod tests {
         .unwrap();
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
         let run_dir = config.socket.parent().unwrap().to_owned();
-        let daemon = Daemon::start_with_build_policy(config, policy.clone(), run_dir)
+        let claimed = claim_machine_api_socket(&config.socket).unwrap();
+        let daemon = Daemon::start_with_build_policy(config, claimed, policy.clone(), run_dir)
             .await
             .unwrap();
         assert!(
@@ -1042,7 +1032,7 @@ mod tests {
             ),
             "{error}"
         );
-        let _listener = bind_socket(&path).unwrap();
+        let _listener = crate::socket_activation::machine_api_listener(&path).unwrap();
         tokio::net::UnixStream::connect(&path)
             .await
             .expect("listen must queue connections");

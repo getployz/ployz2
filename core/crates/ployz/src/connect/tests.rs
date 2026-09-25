@@ -436,7 +436,10 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
     };
     let error = match tokio::time::timeout(
         Duration::from_secs(30),
-        connect_selected_with(selected, Arc::new(SystemConnector::default())),
+        connect_selected_with(
+            selected,
+            Arc::new(SystemConnector::default().with_confirm_timeout(Duration::from_millis(100))),
+        ),
     )
     .await
     .expect("connect must bound its wait for a starting daemon")

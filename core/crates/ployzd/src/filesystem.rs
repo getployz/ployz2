@@ -6,7 +6,7 @@ use std::{
 };
 
 /// Mode of the Machine API socket, whether systemd or ployzd binds it.
-pub(crate) const SOCKET_MODE: u32 = 0o660;
+pub(crate) const MACHINE_API_SOCKET_MODE: u32 = 0o660;
 /// Mode of the Ployz runtime and data directories.
 pub(crate) const PLOYZ_DIR_MODE: u32 = 0o750;
 

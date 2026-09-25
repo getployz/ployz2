@@ -67,6 +67,11 @@ pub type BoxProxyStream = Box<dyn ProxyStream>;
 pub trait Connector: Send + Sync {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError>;
 
+    /// How long a connect waits for the entry daemon to confirm itself.
+    fn confirm_timeout(&self) -> Duration {
+        crate::cluster::CONNECT_CONFIRM_TIMEOUT
+    }
+
     async fn dial_proxy(
         &self,
         connection: &Connection,
@@ -79,6 +84,7 @@ pub trait Connector: Send + Sync {
 pub struct SystemConnector {
     ssh_program: PathBuf,
     ssh_timeout: Duration,
+    confirm_timeout: Duration,
     relay: ManagementRelay,
 }
 
@@ -93,6 +99,7 @@ impl SystemConnector {
         Self {
             ssh_program: ssh_program.into(),
             ssh_timeout: Duration::from_secs(5),
+            confirm_timeout: crate::cluster::CONNECT_CONFIRM_TIMEOUT,
             relay: ManagementRelay::default(),
         }
     }
@@ -110,10 +117,21 @@ impl SystemConnector {
         self.ssh_timeout = timeout;
         self
     }
+
+    /// Set how long a connect waits for the entry daemon to confirm itself.
+    #[must_use]
+    pub fn with_confirm_timeout(mut self, timeout: Duration) -> Self {
+        self.confirm_timeout = timeout;
+        self
+    }
 }
 
 #[tonic::async_trait]
 impl Connector for SystemConnector {
+    fn confirm_timeout(&self) -> Duration {
+        self.confirm_timeout
+    }
+
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(
@@ -419,6 +437,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             }
         }
         error @ (ConnectError::Attempt(_)
+        | ConnectError::EntryNotReady { .. }
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
@@ -617,6 +636,11 @@ pub enum ConnectError {
     },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
+    /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
+    #[error(
+        "connection attempt failed: entry Machine daemon did not answer within {waited:?}; it may still be starting, retry shortly"
+    )]
+    EntryNotReady { waited: Duration },
     #[error("connection attempt failed: {0}")]
     Io(#[from] io::Error),
     #[error("connection attempt failed: {0}")]
@@ -695,6 +719,7 @@ impl ConnectError {
             | Self::Join(_) => true,
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
+            | Self::EntryNotReady { .. }
             | Self::IdentityMismatch { .. }
             | Self::RefusedByIdentity
             | Self::PairingCleared
@@ -757,7 +782,11 @@ impl ConnectError {
     pub(crate) fn is_unreachable(&self) -> bool {
         matches!(
             self,
-            Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
+            Self::Attempt(_)
+                | Self::EntryNotReady { .. }
+                | Self::Io(_)
+                | Self::Dial(_)
+                | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
 }

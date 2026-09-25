@@ -49,7 +49,7 @@ const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 ///
 /// A socket-activated daemon accepts connects before it serves; this bound is
 /// what keeps a starting daemon from hanging the CLI.
-const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct Client {
@@ -97,8 +97,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns a transport or codec error when the daemon does not answer
-    /// within five seconds.
+    /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
+    /// when the daemon does not answer within the connector's confirm timeout
+    /// ([`CONNECT_CONFIRM_TIMEOUT`] by default).
     pub(crate) async fn confirm_entry(&self) -> Result<(), ConnectError> {
         let confirm = async {
             let payload =
@@ -127,15 +128,10 @@ impl Client {
                 Err(error) => Err(error),
             }
         };
-        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
+        let waited = self.connector.confirm_timeout();
+        tokio::time::timeout(waited, confirm)
             .await
-            .map_err(|_| {
-                let message = format!(
-                    "entry Machine daemon did not answer within {}s; it may still be starting, retry shortly",
-                    CONNECT_CONFIRM_TIMEOUT.as_secs()
-                );
-                ConnectError::Attempt(message.into())
-            })?
+            .map_err(|_| ConnectError::EntryNotReady { waited })?
     }
 
     /// Issue one unary RPC. The response type is derived from the RPC, so a request

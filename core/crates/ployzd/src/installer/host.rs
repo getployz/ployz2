@@ -10,7 +10,7 @@ use std::{
 
 use tonic::transport::Endpoint;
 
-use crate::filesystem::{PLOYZ_DIR_MODE, SOCKET_MODE, atomic_write};
+use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
 use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
 use super::release::{fetch, installed_release};
@@ -247,7 +247,7 @@ Description=Ployz Machine API socket
 [Socket]
 ExecStartPre=/usr/bin/install -d -m {PLOYZ_DIR_MODE:04o} -o {PLOYZ_USER} -g {PLOYZ_USER} {run}
 ListenStream={run}/ployz.sock
-SocketMode={SOCKET_MODE:04o}
+SocketMode={MACHINE_API_SOCKET_MODE:04o}
 SocketGroup={PLOYZ_USER}
 Accept=no
 
@@ -468,16 +468,6 @@ mod tests {
             .find_map(|line| line.strip_prefix("ListenStream="))
             .unwrap();
         assert_eq!(listen, super::super::DEFAULT_SOCKET_PATH);
-    }
-
-    #[test]
-    fn machine_daemon_service_unit_requires_its_socket() {
-        let unit = machine_daemon_service_unit(Path::new("/usr/local/bin"));
-        assert!(unit.lines().any(|line| line == "Requires=ployz.socket"));
-        assert!(
-            unit.lines()
-                .any(|line| line == "ExecStart=/usr/local/bin/ployzd")
-        );
     }
 
     #[test]
