@@ -4,24 +4,21 @@ import {
   ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon,
 } from "lucide-react";
 import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
-import { useRetryDeployment } from "#/components/deployment-row";
 import { Button } from "#/components/ui/button";
+import { buttonVariants } from "#/components/ui/button-variants";
 import { Drawer, DrawerContent, DrawerTitle, DrawerTrigger } from "#/components/ui/drawer";
+import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { useIsMobile } from "#/hooks/use-mobile";
-import { cn } from "#/lib/utils";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
+import { isQueuedForNextTrigger, useDeployQueuedNow, useRetryDeployment } from "#/modules/deployments/deployment-commands";
 import { useEnvironmentDeployments, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { deploymentStatusLabel, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { deploymentStatusLabel, shortDeploymentId, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { formatRelativeTime } from "#/utils/relative-time";
 import { CANVAS_ROUTE_ID, useDeploymentMode } from "./deployment-mode";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
-
-const isActive = ({ deployment }: DeploymentAttempt) =>
-  deployment.status === "queued" || deployment.status === "planning" || deployment.status === "deploying";
-const shortId = (id: string) => id.slice(0, 8);
-const segment = "inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 data-[active=true]:bg-background data-[active=true]:text-foreground data-[active=true]:shadow-xs [&_svg]:size-3.5 [&_svg]:shrink-0";
 
 function StatusIcon({ view }: { view: DeploymentView }) {
   switch (view.status) {
@@ -51,7 +48,7 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   const isMobile = useIsMobile();
   const barRef = useRef<HTMLDivElement>(null);
   // The oldest queued or running attempt holds, or is next for, the Environment execution slot; the rest wait behind it.
-  const active = attempts.filter(isActive);
+  const active = attempts.filter(({ deployment }) => isActiveDeployment(deployment.status));
   const running = active.at(-1);
   const queued = active.length > 1 ? active[0] : undefined;
   const latest = attempts[0];
@@ -74,25 +71,27 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   }, [viewed, listOpen, selectedNodeId, navigate]);
 
   const listTrigger = (
-    <button type="button" className={segment} data-active={viewed !== null} aria-label={viewed ? `Deployment ${shortId(viewed.deployment.id)}, all deployments` : "Deployments"}>
-      {viewed ? <><StatusIcon view={viewed.view} /><span className="font-mono">{shortId(viewed.deployment.id)}</span></>
+    <Button size="sm" variant={viewed ? "outline" : "ghost"} data-active={viewed !== null}
+      aria-label={viewed ? `Deployment ${shortDeploymentId(viewed.deployment.id)}, all deployments` : "Deployments"}>
+      {viewed ? <><StatusIcon view={viewed.view} /><span className="font-mono">{shortDeploymentId(viewed.deployment.id)}</span></>
         : <>Deployments{latest ? <span className="font-normal text-muted-foreground max-[860px]:hidden">
           · {latest.view.status} {formatRelativeTime(latest.deployment.finishedAt ?? latest.deployment.createdAt, undefined, "narrow")}
         </span> : null}</>}
       <ChevronDownIcon />
-    </button>
+    </Button>
   );
   // A queued or running attempt opens directly from Live Mode, with no list.
   const openRunning = !viewed && running ? (
     <Link to="." search={(previous) => ({ ...previous, deployment: running.deployment.id, deploymentList: undefined })}
-      className={cn(segment, "bg-info-soft text-info hover:text-info")}>
+      className={buttonVariants({ size: "sm", variant: "secondary" })}>
       <StatusIcon view={running.view} />
       <span className="tabular-nums">{running.view.status === "deploying" ? `Deploying ${running.view.deployed}/${running.view.changed}` : deploymentStatusLabel(running.view)}</span>
       <ChevronRightIcon />
     </Link>
   ) : null;
   const openQueued = !viewed && queued ? (
-    <Link to="." search={(previous) => ({ ...previous, deployment: queued.deployment.id, deploymentList: undefined })} className={segment}>
+    <Link to="." search={(previous) => ({ ...previous, deployment: queued.deployment.id, deploymentList: undefined })}
+      className={buttonVariants({ size: "sm", variant: "ghost" })}>
       <CircleDashedIcon />{active.length > 2 ? `${active.length - 1} queued` : "Queued"}
     </Link>
   ) : null;
@@ -100,9 +99,9 @@ export function DeployBar({ children }: { children?: ReactNode }) {
 
   return (
     <div ref={barRef} role="group" aria-label="Deploy bar" className="deploy-bar" data-deployment={viewed ? "" : undefined}>
-      <div className="flex min-w-0 items-center gap-0.5 rounded-lg bg-muted p-0.5">
+      <div className="flex min-w-0 items-center gap-0.5">
         <Link to="." search={(previous) => ({ ...previous, deployment: undefined, deploymentList: undefined })}
-          className={segment} data-active={viewed === null}>
+          className={buttonVariants({ size: "sm", variant: viewed === null ? "outline" : "ghost" })} data-active={viewed === null}>
           Live
         </Link>
         {openRunning}
@@ -128,14 +127,16 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   );
 }
 
-/** Retry on a failed attempt, Cancel on a queued or running one; both keep their existing semantics. */
+/** Retry on a failed attempt, Deploy now on one queued for the next trigger, Cancel on a queued or running one; all keep their existing semantics. */
 function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSummary }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { retryDeployment, isRetrying } = useRetryDeployment(deployment);
+  const [retry, isRetrying] = useRetryDeployment(deployment);
+  const [deployNow, isDispatching] = useDeployQueuedNow(deployment);
   const [cancelOpen, setCancelOpen] = useState(false);
-  const cancellable = !deployment.cancellationRequestedAt && ["queued", "planning", "deploying"].includes(deployment.status);
+  const cancellable = !deployment.cancellationRequestedAt && isActiveDeployment(deployment.status);
   return <>
-    {deployment.canRetry ? <Button size="sm" variant="outline" disabled={isRetrying} onClick={() => void retryDeployment()}>Retry</Button> : null}
+    {deployment.canRetry ? <Button size="sm" variant="outline" disabled={isRetrying} onClick={() => void retry()}>Retry</Button> : null}
+    {isQueuedForNextTrigger(deployment) ? <Button size="sm" variant="outline" disabled={isDispatching} onClick={() => void deployNow()}>Deploy now</Button> : null}
     {cancellable ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}
     <CancelDeploymentDialog open={cancelOpen} onOpenChange={setCancelOpen} organizationSlug={organizationSlug} deployment={deployment} />
   </>;
@@ -146,13 +147,13 @@ function DeploymentList({ attempts, viewedId, environmentSlug }: { attempts: Dep
   return (
     <nav aria-label="Deployments" className="max-h-[min(28rem,70dvh)] overflow-y-auto p-1.5">
       <ListRow current={viewedId === null} search={{ deployment: undefined }}
-        icon={<span className="mx-0.75 mt-1.5 size-2 shrink-0 rounded-full bg-success" />} title="Live" detail={`${environmentSlug} as it is now`} />
+        icon={<span className="size-2 rounded-full bg-success" />} title="Live" detail={`${environmentSlug} as it is now`} />
       <p className="px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground">Deployments</p>
       {attempts.length === 0 ? <p className="px-2.5 py-2 text-sm text-muted-foreground">No deployments yet</p> : null}
       {attempts.map(({ deployment, view }) => (
         <ListRow key={deployment.id} current={deployment.id === viewedId} search={{ deployment: deployment.id }}
           icon={<StatusIcon view={view} />}
-          title={<><span className="font-mono">{shortId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</>}
+          title={<><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</>}
           detail={`${deploymentStatusLabel(view)} · ${formatRelativeTime(deployment.createdAt)}`} />
       ))}
     </nav>
@@ -163,13 +164,13 @@ function ListRow({ current, search, icon, title, detail }: {
   current: boolean; search: { deployment: string | undefined }; icon: ReactElement; title: ReactNode; detail: string;
 }) {
   return (
-    <Link to="." search={(previous) => ({ ...previous, ...search, deploymentList: undefined })} data-current={current}
-      className="flex items-start gap-2.5 rounded-md px-2.5 py-2 text-sm outline-none hover:bg-muted focus-visible:bg-muted data-[current=true]:bg-muted [&_svg]:mt-0.5 [&_svg]:size-3.5 [&_svg]:shrink-0">
-      {icon}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-medium">{title}</span>
-        <span className="block truncate text-xs text-muted-foreground">{detail}</span>
-      </span>
-    </Link>
+    <Item size="xs" variant={current ? "muted" : "default"} data-current={current}
+      render={<Link to="." search={(previous) => ({ ...previous, ...search, deploymentList: undefined })} />}>
+      <ItemMedia variant="icon">{icon}</ItemMedia>
+      <ItemContent className="min-w-0">
+        <ItemTitle className="w-full truncate">{title}</ItemTitle>
+        <ItemDescription className="truncate">{detail}</ItemDescription>
+      </ItemContent>
+    </Item>
   );
 }
