@@ -18,6 +18,7 @@ import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database, ReportingDatabase } from "#/server/database.server";
+import { encodePublicError } from "#/server/public-error";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -118,14 +119,15 @@ function githubApi(fake: Fake) {
   };
 }
 
+/** The `n`th grant the fake Cluster mints. */
+const grantId = (n: number) => n.toString(16).padStart(64, "0");
+
 function fakeClient(fake: Fake) {
   return asTestDouble<Client>()({
     mintBuildGrant: async ({ repository }: { repository: string }) => {
       if (fake.mintFails) throw new Error("unknown method MintBuildGrant");
       fake.minted.push(repository);
-      // The first grant is `f…f`; a repeat check-in's grants are `f…f2`, `f…f3`, ….
-      const n = fake.minted.length;
-      return { id: n === 1 ? "f".repeat(64) : n.toString(16).padStart(64, "f"), grant: `ployzgrant1:secret${n}`, expires_in_seconds: 3600 };
+      return { id: grantId(fake.minted.length), grant: "ployzgrant1:secret", expires_in_seconds: 3600 };
     },
     endBuildGrant: async ({ id }: { id: string }) => {
       fake.ended.push(id);
@@ -278,7 +280,7 @@ describe("Image Builds on GitHub Actions", () => {
     });
   });
 
-  it("rejects a check-in from another repository, workflow ref, run, or event, and one after Build Steps", async () => {
+  it("rejects a check-in from another repository, workflow ref, run, or event, and a second use", async () => {
     await dispatch();
     expect(await rejection(oidcToken({ aud: "https://elsewhere.test" }))).toMatchObject({ _tag: "Unauthorized" });
     expect(await rejection(oidcToken({}, crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey))).toMatchObject({ _tag: "Unauthorized" });
@@ -290,33 +292,25 @@ describe("Image Builds on GitHub Actions", () => {
     expect(fake.minted).toEqual([]);
 
     const accepted = await checkIn(oidcToken());
-    expect(accepted).toMatchObject({ grant: "ployzgrant1:secret1", commit, fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(accepted).toMatchObject({ grant: "ployzgrant1:secret", commit, fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(accepted).toHaveProperty("deployment.snapshots.0.config.privateDns", "api");
     expect(fake.minted).toEqual(["ployz-build/api"]);
-    // The runner is past its check-in once it reports Build Steps.
-    await post({ from: 0, events: runnerEvents.slice(0, 1) });
-    expect(await rejection(oidcToken())).toMatchObject({ _tag: "Conflict", message: "This build already started or is no longer wanted." });
+    expect(await rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
     expect(fake.minted).toHaveLength(1);
   });
 
-  it("lets the same run check in again after the Cluster failed to mint, or after a lost response", async () => {
+  it("claims nothing when the Cluster can't mint, so the run checks in again", async () => {
     await dispatch();
     fake.mintFails = true;
-    expect(await rejection(oidcToken())).toMatchObject({
-      _tag: "BuildGrantUnavailable", message: expect.stringContaining("Your Cluster could not mint a Build Grant"),
-    });
+    const failed = await rejection(oidcToken());
+    expect(failed).toMatchObject({ _tag: "BuildGrantUnavailable" });
+    expect(encodePublicError(failed)).toEqual({ _tag: "PublicError", code: "BUILD_GRANT_UNAVAILABLE", message: "Your Cluster could not mint a Build Grant." });
     expect(await row()).toMatchObject({ checkedInAt: null, github: { grant: null } });
 
     fake.mintFails = false;
-    expect(await checkIn(oidcToken())).toMatchObject({ grant: "ployzgrant1:secret1" });
-    const checkedInAt = (await row())?.checkedInAt;
-    expect(checkedInAt).toEqual(expect.any(Date));
-    // The response was lost: the repeat gets a fresh grant, and the first one is ended.
-    expect(await checkIn(oidcToken())).toMatchObject({ grant: "ployzgrant1:secret2" });
-    expect(fake.ended).toEqual(["f".repeat(64)]);
-    expect(await row()).toMatchObject({ checkedInAt, machineId: machine.id, github: { grant: { id: `${"f".repeat(63)}2` } } });
-    // Another run of the same workflow is still refused.
-    expect(await rejection(oidcToken({ run_id: "9002" }))).toMatchObject({ _tag: "Forbidden" });
+    expect(await checkIn(oidcToken())).toMatchObject({ grant: "ployzgrant1:secret" });
+    expect(await row()).toMatchObject({ checkedInAt: expect.any(Date), machineId: machine.id, github: { grant: { id: grantId(1) } } });
+    expect(await rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
   });
 
   it("writes the receipt from the digest the Machine received, shows the runner's steps, and deploys with it", async () => {
@@ -334,7 +328,7 @@ describe("Image Builds on GitHub Actions", () => {
       machine_id: machine.id, fingerprint: built?.github?.grant?.fingerprint,
       image: { reference: pushed, platforms: ["linux/amd64"], tags: [`ployz-build/api:ployz-sha256-${"e".repeat(64)}`] },
     });
-    expect(fake.ended).toEqual(expect.arrayContaining(["f".repeat(64)]));
+    expect(fake.ended).toEqual(expect.arrayContaining([grantId(1)]));
     expect(fake.prepared.at(-1)).toEqual({ api: receipt });
 
     const log = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId, after: 0, limit: 50 }));
@@ -345,7 +339,6 @@ describe("Image Builds on GitHub Actions", () => {
     // The build ended: no more Build Steps are taken.
     expect(await run(Effect.flip(recordGithubBuildSteps(runnerRequest(oidcToken()), built?.id ?? "", JSON.stringify({ from: 3, events: [] })))))
       .toMatchObject({ _tag: "Conflict" });
-    expect(await rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
   }, 30_000);
 
   it("shows the runner's Build Steps as they arrive, once each, and only after check-in", async () => {
@@ -383,7 +376,7 @@ describe("Image Builds on GitHub Actions", () => {
     }).execute();
     expect(cancelled.error).toBeUndefined();
     expect(fake.github).toContainEqual({ operation: "cancel_run", url: "https://api.github.com/repos/owner/repo/actions/runs/9001/cancel", body: undefined });
-    expect(fake.ended).toEqual(["f".repeat(64)]);
+    expect(fake.ended).toEqual([grantId(1)]);
     expect(await row()).toMatchObject({ status: "cancelled" });
   });
 

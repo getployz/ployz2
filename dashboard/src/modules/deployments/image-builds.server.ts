@@ -151,24 +151,26 @@ export const skipUnstarted = (build: Build, reason: SkipReason) => skipImageBuil
     : Effect.succeed<ImageBuildAttempt>(skip)),
 );
 
+/** Whether the runner of `runId` may still check in: the same conditions `checkInImageBuild` claims under. */
+export const awaitsCheckIn = (row: ImageBuildRow, runId: number) =>
+  row.status === "building" && row.builder === "github" && row.githubRunId === runId && row.checkedInAt === null;
+
 /**
  * The runner of `runId` checks in with the Build Grant just minted for it: the build starts on GitHub.
- * Only while that run still holds the build and before it reported any Build Steps. A repeat from the
- * same run (a retry after a lost response) swaps in its new grant, guarded on the grant it saw, so
- * concurrent repeats can't both win. The "start within" skip clears the run in the same row, so
- * exactly one of it and the first check-in wins.
+ * Accepted once, while that run still holds the build. The grant is minted before this claim, so a
+ * failed mint claims nothing and the runner may check in again. The "start within" skip clears the
+ * run in the same row, so exactly one of it and the check-in wins.
  */
-export const checkInImageBuild = Effect.fn("Deployments.checkInImageBuild")(function* (
-  imageBuildId: string, runId: number, seenGrant: BuildGrantId | null, machineId: MachineId, grant: { id: BuildGrantId; fingerprint: string },
-) {
+export const checkInImageBuild = Effect.fn("Deployments.checkInImageBuild")(function* (checkIn: {
+  imageBuildId: string; runId: number; machineId: MachineId; grant: { id: BuildGrantId; fingerprint: string };
+}) {
   const { drizzle } = yield* Database;
-  const now = new Date();
   const [checkedIn] = yield* drizzle.update(table).set({
-    checkedInAt: sql`coalesce(${table.checkedInAt}, ${now.toISOString()}::timestamptz)`, machineId,
-    github: sql`jsonb_set(${table.github}, '{grant}', ${JSON.stringify(grant)}::jsonb)`, updatedAt: now,
+    checkedInAt: sql`now()`, machineId: checkIn.machineId,
+    github: sql`jsonb_set(${table.github}, '{grant}', ${JSON.stringify(checkIn.grant)}::jsonb)`, updatedAt: sql`now()`,
   }).where(and(
-    eq(table.id, imageBuildId), eq(table.status, "building"), eq(table.githubRunId, runId),
-    sql`${table.github}->>'report' is null`, sql`${table.github}->'grant'->>'id' is not distinct from ${seenGrant}`,
+    eq(table.id, checkIn.imageBuildId), eq(table.status, "building"), eq(table.builder, "github"),
+    eq(table.githubRunId, checkIn.runId), isNull(table.checkedInAt),
   )).returning({ id: table.id });
   return checkedIn !== undefined;
 });

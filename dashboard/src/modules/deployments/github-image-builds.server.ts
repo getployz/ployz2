@@ -1,15 +1,15 @@
 import "@tanstack/react-start/server-only";
 import type { BuildGrantId, BuildReceipt, MachineId, PreparationEvent } from "@ployz/sdk";
-import { Data, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { buildFingerprints, buildGrantTag, ployzVersion } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
-import { Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
+import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import type { BuildCandidate } from "./build-order";
 import { persistBuildLog } from "./deployment-events.server";
 import {
-  checkInImageBuild, claimForGithub, loadGithubImageBuilds, loadImageBuild, recordGithubReport, settleImageBuild, settled,
+  awaitsCheckIn, checkInImageBuild, claimForGithub, loadGithubImageBuilds, loadImageBuild, recordGithubReport, settleImageBuild, settled,
   skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
@@ -20,11 +20,11 @@ import { connectedRuntime, oneServiceDeployment } from "./runtime-session.server
 import { pinSourceCommit } from "./runtime-sources.server";
 
 /**
- * GitHub as a Builder. Cloud dispatches the repository's build workflow, the runner checks in
+ * GitHub as a Builder. Cloud dispatches the repository's build workflow, the runner checks in once
  * with its OIDC token for the build's grant and secrets, posts its Build Steps as it builds, and
  * when the run completes Cloud ends the grant and writes the receipt from the digest the Machine received.
  *
- *   dispatch ──▶ check-in ──▶ steps … ──▶ workflow_run completed ──▶ end grant ──▶ receipt
+ *   dispatch ──▶ check-in (once) ──▶ steps … ──▶ workflow_run completed ──▶ end grant ──▶ receipt
  *
  * Check-in is the build starting. Until then GitHub can still be skipped: at once when it can't take
  * the build, at the "start within" limit, or when the run ends first.
@@ -164,24 +164,17 @@ const authorizeRunner = Effect.fn("Deployments.authorizeGithubRunner")(function*
   return { row, context };
 });
 
-/** The Cluster couldn't mint the run's Build Grant; nothing was claimed, so the runner may check in again. */
-class BuildGrantUnavailable extends Data.TaggedError("BuildGrantUnavailable")<{ readonly message: string }> {
-  readonly publicErrorCategory = "internal" as const;
-}
-
 /**
- * The runner's check-in: the build starts. Mints a Build Grant on the Machine Cloud deploys through
- * and returns it with the commit, the expected fingerprint, and the frozen deployment whose
- * `resolvedEnv` carries the build secrets. Nothing secret is ever a workflow input.
- *
- * Mint first, then claim: a failed mint leaves the build unclaimed, and the same run may check in
- * again until it reported Build Steps (a lost response). A repeat replaces the grant and ends the one
- * before; a claim that loses ends its own. Another run, or a build settled or moved on, is refused.
+ * The runner's one check-in: the build starts. Accepted once, while GitHub still holds the build.
+ * Mints a Build Grant on the Machine Cloud deploys through and returns it with the commit, the
+ * expected fingerprint, and the frozen deployment whose `resolvedEnv` carries the build secrets.
+ * Nothing secret is ever a workflow input.
  */
 export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(function* (request: Request, imageBuildId: string) {
   const { row, context } = yield* authorizeRunner(request, imageBuildId);
-  const refused = new Conflict({ message: "This build already started or is no longer wanted." });
-  if (row.status !== "building" || row.github.report) return yield* refused;
+  const refused = new Conflict({ message: "This build already checked in or is no longer wanted." });
+  // Only an early exit, so a refused runner mints nothing; the claim below decides.
+  if (!awaitsCheckIn(row, row.githubRunId)) return yield* refused;
   const snapshot = context.snapshots.find((candidate) => candidate.serviceId === row.serviceId);
   const source = snapshot?.config.source;
   if (!snapshot || source?.type !== "git") return yield* new NotFound({ message: "No GitHub build has this id." });
@@ -189,17 +182,23 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
   const deployment = yield* oneServiceDeployment(context, row.serviceId);
   const fingerprint = buildFingerprints({ deployment, source_commits: { [row.image]: commit } })[row.image];
   if (!fingerprint) return yield* new Validation({ message: "The build has no fingerprint." });
-  const { minted, machine } = yield* connectedRuntime(context.organization.id).pipe(
-    Effect.flatMap((sdk) => Effect.all({ minted: sdk.mintBuildGrant(grantRepository(row.image)), machine: sdk.inspect() })),
-    Effect.scoped,
-    Effect.mapError((error) => new BuildGrantUnavailable({ message: `Your Cluster could not mint a Build Grant: ${error.message}` })),
-  );
-  const seen = row.github.grant;
-  if (!(yield* checkInImageBuild(row.id, row.githubRunId, seen?.id ?? null, machine.id, { id: minted.id, fingerprint }))) {
-    yield* endGrant(row.organizationId, machine.id, minted.id).pipe(Effect.ignore);
+  const { minted, machine } = yield* Effect.gen(function* () {
+    const sdk = yield* connectedRuntime(context.organization.id);
+    const minted = yield* sdk.mintBuildGrant(grantRepository(row.image)).pipe(
+      Effect.tapError((error) => Effect.logWarning("Could not mint a Build Grant.", error)),
+      Effect.mapError((cause) => new BuildGrantUnavailable({ cause })),
+    );
+    return { minted, machine: yield* sdk.inspect() };
+  }).pipe(Effect.scoped);
+  const grant = { id: minted.id, fingerprint };
+  if (!(yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant }))) {
+    // Lost to a second check-in or to the start-within skip during a slow mint (rare). The grant's
+    // secret never left Cloud, so a grant that fails to end is unusable anyway.
+    yield* endGrant(row.organizationId, machine.id, minted.id).pipe(
+      Effect.catch((error) => Effect.logWarning("Could not end an unclaimed Build Grant.", error)),
+    );
     return yield* refused;
   }
-  if (seen && row.machineId) yield* endGrant(row.organizationId, row.machineId, seen.id).pipe(Effect.ignore);
   return { grant: minted.grant, commit, fingerprint, deployment };
 });
 
