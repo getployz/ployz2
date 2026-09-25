@@ -181,9 +181,11 @@ esac
         .lines()
         .filter(|line| line.starts_with("scp "))
         .collect();
-    assert_eq!(transfers.len(), 1, "{setup_log}");
+    let [transfer] = transfers.as_slice() else {
+        panic!("expected one transfer: {setup_log}");
+    };
     assert!(
-        transfers[0].contains("/ployzd deploy@[2001:db8::1]:/tmp/ployz-bootstrap-"),
+        transfer.contains("/ployzd deploy@[2001:db8::1]:/tmp/ployz-bootstrap-"),
         "{setup_log}"
     );
     assert!(!setup_log.contains(" -P 1 "), "{setup_log}");
