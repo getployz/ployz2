@@ -42,6 +42,11 @@ pub const REVOKED: VarInt = VarInt::from_u32(0x51);
 /// Authenticated confirmation that the dialing key was cleared: a Cleared tombstone holds it.
 pub const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
 
+/// Paths whose in-flight responses still complete when their connection is revoked.
+/// Clearing its own slot revokes the caller, and the Clear response is the only
+/// confirmation it gets on that connection; every other stream ends at once.
+const DRAIN_EXEMPT: &[&str] = &[op::SetManagementClient::PATH];
+
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -334,13 +339,13 @@ where
     }
 
     fn call(&mut self, request: http::Request<hyper::body::Incoming>) -> Self::Future {
-        let delivered = request.uri().path() == op::SetManagementClient::PATH;
+        let drain_exempt = DRAIN_EXEMPT.contains(&request.uri().path());
         let mut request = request.map(Body::new);
         request
             .extensions_mut()
             .insert(self.connection.weak_handle());
         let response = self.api.call(request);
-        if delivered {
+        if drain_exempt {
             return Box::pin(response);
         }
         let drain = self.drain.clone();
