@@ -15,14 +15,24 @@ use crate::{
     socket_activation::inherited_unix_listener,
 };
 
+/// The claim lock on the Machine API socket path and the listener it serves.
 pub(crate) struct MachineApiSocket {
     pub(crate) lock: File,
     pub(crate) listener: UnixListener,
 }
 
 impl MachineApiSocket {
-    /// Claims the Machine API socket and takes its listener, before startup spawns
-    /// any thread or subprocess that could inherit the systemd socket.
+    /// Claims the Machine API socket and takes its listener: the socket
+    /// `ployz.socket` passed, which must be bound to `path`, or else `path`
+    /// bound here (development, tests, and the local testkit run without systemd).
+    ///
+    /// Call it early in startup, before spawning threads or subprocesses: taking
+    /// the inherited socket clears `LISTEN_FDS` and marks the fd close-on-exec.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another daemon holds the claim, when the inherited
+    /// socket is invalid or bound elsewhere, or when binding `path` fails.
     pub(crate) fn claim(path: &Path) -> io::Result<Self> {
         let lock = claim_socket(path)?;
         Ok(Self {
@@ -64,18 +74,7 @@ fn claim_socket(path: &Path) -> io::Result<File> {
     Ok(lock)
 }
 
-/// The Machine API listener: the socket `ployz.socket` passed, which must be
-/// bound to `path`, or else `path` bound here (development, tests, and the
-/// local testkit run without systemd).
-///
-/// Call it early in startup, before spawning threads or subprocesses: taking
-/// the inherited socket clears `LISTEN_FDS` and marks the fd close-on-exec.
-/// The caller must already hold the claim on `path`.
-///
-/// # Errors
-///
-/// Returns an error when the inherited socket is invalid or bound elsewhere,
-/// or when binding `path` fails.
+/// Inherited `ployz.socket` listener bound to `path`, else a fresh bind.
 fn machine_api_listener(path: &Path) -> io::Result<UnixListener> {
     let listener = match inherited_unix_listener()? {
         Some(listener) => {
