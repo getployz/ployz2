@@ -111,11 +111,21 @@ pub enum Output {
     Registry,
     /// Validate the recipe without producing an image.
     Validate,
-    /// Upload the build cache to the GitHub Actions cache service without
-    /// producing an image. Only `ployz build` on a runner asks for it, so no
-    /// remote caller can.
-    #[serde(skip)]
+}
+
+/// What an attempt's bake runs produce: the requested [`Output`], or only an
+/// upload to the GitHub Actions cache. Only a local caller asks for the upload,
+/// so it never travels in the remote Build protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Produce {
+    Output(Output),
     Cache,
+}
+
+/// Whether the captured environment exposes a GitHub Actions runner's cache
+/// service, which only `ployz build` passes through.
+fn github_cache(request: &Request<'_>) -> bool {
+    request.environment.contains_key("ACTIONS_RUNTIME_TOKEN")
 }
 
 /// A completed image in the execution host's Docker image store, identified by
@@ -265,8 +275,36 @@ pub fn execute(
     cancellation: &Cancellation,
     observe: &(dyn Fn(&Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
+    execute_local(
+        request,
+        Produce::Output(request.output),
+        cancellation,
+        observe,
+    )
+}
+
+/// Upload a captured Build's cache to the GitHub Actions cache service by
+/// running it again, producing no image; `request.output` is not consulted.
+/// Without that service in the captured environment it does nothing. Progress
+/// renders to stderr only.
+///
+/// # Errors
+/// Returns the same failures as [`execute`].
+pub fn export_cache(request: &Request<'_>, cancellation: &Cancellation) -> Result<(), BuildError> {
+    if !github_cache(request) {
+        return Ok(());
+    }
+    execute_local(request, Produce::Cache, cancellation, &|_| {}).map(drop)
+}
+
+fn execute_local(
+    request: &Request<'_>,
+    produce: Produce,
+    cancellation: &Cancellation,
+    observe: &(dyn Fn(&Progress) + Sync),
+) -> Result<Vec<BuiltImage>, BuildError> {
     let renderer = PlainRenderer::default();
-    execute_admitted(request, Admission::wait(cancellation)?, &|event| {
+    execute_produce(request, produce, Admission::wait(cancellation)?, &|event| {
         if let Some(text) = renderer.render(&event) {
             use std::io::Write as _;
             let _ = std::io::stderr().write_all(text.as_bytes());
@@ -283,6 +321,20 @@ pub fn execute(
 /// resources cannot be confirmed stopped. Uncertainty blocks competing work.
 pub fn execute_admitted(
     request: &Request<'_>,
+    admission: Admission,
+    progress: &(dyn Fn(Progress) + Sync),
+) -> Result<Vec<BuiltImage>, BuildError> {
+    execute_produce(
+        request,
+        Produce::Output(request.output),
+        admission,
+        progress,
+    )
+}
+
+fn execute_produce(
+    request: &Request<'_>,
+    produce: Produce,
     mut admission: Admission,
     progress: &(dyn Fn(Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
@@ -294,7 +346,7 @@ pub fn execute_admitted(
             ));
         }
     }
-    if matches!(request.output, Output::Registry | Output::Validate)
+    if produce != Produce::Output(Output::Load)
         && request.targets.iter().any(|t| t.platforms.len() > 1)
     {
         return Err(BuildError::Request(
@@ -351,37 +403,36 @@ pub fn execute_admitted(
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
-        // A cache export produces no image to assemble, so it solves each
-        // platform as its own run, as index assembly does.
-        let (multi, ordinary): (Vec<_>, Vec<_>) = planned.into_iter().partition(|target| {
-            target.target.platforms.len() > 1 && request.output != Output::Cache
-        });
+        let (multi, ordinary): (Vec<_>, Vec<_>) = planned
+            .into_iter()
+            .partition(|target| target.target.platforms.len() > 1);
         let mut images = Vec::new();
         // One image per Bake run, one run after another under the held builder
         // lock: each run's steps and output belong to one Image Build, and a
         // failed run cannot hide which earlier exports completed.
-        for (target, platform) in ordinary.iter().flat_map(|target| {
-            let platforms = target.target.platforms.as_slice();
-            let platforms = match (platforms.split_first(), request.output) {
-                (None, _) => std::slice::from_ref(&native),
-                (Some(_), Output::Cache) => platforms,
-                (Some((first, _)), _) => std::slice::from_ref(first),
-            };
-            platforms.iter().map(move |platform| (target, platform))
-        }) {
+        for target in &ordinary {
             // Per-run metadata, so a failed run never reads an earlier result.
             let metadata = request
                 .working_dir
                 .join(format!("build-metadata-{}.json", target.bake));
             let mut arguments = bake_arguments(
                 request,
+                produce,
                 builder.name(),
                 target,
                 &metadata,
                 overrides.as_deref(),
             );
             arguments.push("--set".into());
-            arguments.push(format!("{}.platform={platform}", target.bake));
+            arguments.push(format!(
+                "{}.platform={}",
+                target.bake,
+                target
+                    .target
+                    .platforms
+                    .first()
+                    .map_or(native.as_str(), String::as_str)
+            ));
             progress(Progress::Stage(Stage::Building));
             if let Err(error) = builder.run(&arguments, || {
                 progress(Progress::Target {
@@ -391,7 +442,7 @@ pub fn execute_admitted(
             }) {
                 // Bake may have imported the image before the run failed.
                 // Only verify after termination is known; keep the original failure.
-                if request.output == Output::Load
+                if produce == Produce::Output(Output::Load)
                     && !error.is_unknown()
                     && metadata.is_file()
                     && let Err(verification) =
@@ -402,20 +453,22 @@ pub fn execute_admitted(
                 return Err(error.at(Stage::Building));
             }
             progress(Progress::Stage(Stage::Output));
-            match request.output {
-                Output::Load => images.push(
+            match produce {
+                Produce::Output(Output::Load) => images.push(
                     built_image(&docker, &metadata, target, progress)
                         .map_err(|error| error.at(Stage::Output))?,
                 ),
-                Output::Cache => {}
-                Output::Registry | Output::Validate => progress(Progress::Target {
-                    name: target.target.name.clone(),
-                    outcome: if request.output == Output::Validate {
-                        TargetEvidence::Validated
-                    } else {
-                        TargetEvidence::Published
-                    },
-                }),
+                Produce::Output(output @ (Output::Registry | Output::Validate)) => {
+                    progress(Progress::Target {
+                        name: target.target.name.clone(),
+                        outcome: if output == Output::Validate {
+                            TargetEvidence::Validated
+                        } else {
+                            TargetEvidence::Published
+                        },
+                    });
+                }
+                Produce::Cache => {}
             }
         }
         for target in &multi {
@@ -476,6 +529,7 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
 
 fn bake_arguments(
     request: &Request<'_>,
+    produce: Produce,
     builder: &str,
     planned: &Planned<'_>,
     metadata: &Path,
@@ -495,18 +549,18 @@ fn bake_arguments(
             overrides.to_string_lossy().into_owned(),
         ]);
     }
-    match request.output {
+    match produce {
         // Check runs the frontend only; an image would contradict the result.
-        Output::Validate => arguments.push("--check".to_owned()),
+        Produce::Output(Output::Validate) => arguments.push("--check".to_owned()),
         // Publication leaves the image with its registry, so there is no local
         // result to bind and no metadata to read.
-        Output::Registry => arguments.push("--push".to_owned()),
-        Output::Load => {
+        Produce::Output(Output::Registry) => arguments.push("--push".to_owned()),
+        Produce::Output(Output::Load) => {
             arguments.push("--load".to_owned());
             arguments.push("--metadata-file".to_owned());
             arguments.push(metadata.to_string_lossy().into_owned());
         }
-        Output::Cache => {
+        Produce::Cache => {
             arguments.push("--set".to_owned());
             arguments.push(format!("{}.output=type=cacheonly", planned.bake));
         }
@@ -517,14 +571,13 @@ fn bake_arguments(
     if request.pull {
         arguments.push("--pull".to_owned());
     }
-    // A GitHub Actions runner's cache service, which only `ployz build` passes through.
     // Scoped per target so one repository's Services don't evict each other. Only a
     // cache export writes to it, so uploading cache never delays the image.
-    if request.environment.contains_key("ACTIONS_RUNTIME_TOKEN") {
+    if github_cache(request) {
         let bake = &planned.bake;
         arguments.push("--set".to_owned());
         arguments.push(format!("{bake}.cache-from=type=gha,scope={bake}"));
-        if request.output == Output::Cache {
+        if produce == Produce::Cache {
             arguments.push("--set".to_owned());
             arguments.push(format!("{bake}.cache-to=type=gha,scope={bake},mode=max"));
         }

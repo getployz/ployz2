@@ -123,6 +123,15 @@ export const checkGithubImageBuild = Effect.fn("Deployments.checkGithubImageBuil
   return waiting;
 });
 
+/**
+ * The build's result once it settled, which a final report may do before the walk begins a wait;
+ * null while it still builds.
+ */
+export const settledGithubImageBuild = Effect.fn("Deployments.settledGithubImageBuild")(function* (build: ImageBuildTarget) {
+  const row = yield* loadImageBuild(build.id);
+  return row?.status === "building" ? null : settled(build, row?.status ?? "failed");
+});
+
 /** Whether GitHub says the build's run completed; unknown (GitHub unreachable) reads as still running. */
 const githubRunEnded = (row: GithubRow) => githubRun(row).pipe(
   Effect.flatMap((run) => run ? githubRunCompleted(run) : Effect.succeed(false)),
@@ -270,7 +279,8 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
   }
   if (platforms) {
     // The runner reports its end once the image is pushed, before its run completes (it still
-    // uploads build cache), so the report settles the build and wakes the waiting walk.
+    // uploads build cache), so the report settles the build and wakes the waiting walk. A failure
+    // after the report was recorded leaves settling to the run's completion or the poll.
     yield* finishGithubImageBuild(row, { ...row, github: { ...github, report: recorded } }, false);
     yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${row.id}`, runId: row.githubRunId })).pipe(
       // The run's completion wakes it anyway.
@@ -296,10 +306,14 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
   const failed = (message: string) => settleImageBuild(build, { status: "failed", message, machineId: row.machineId });
   const grant = row.github.grant;
   if (!grant || !row.machineId) return yield* failed("GitHub: the run ended before it received its grant.");
-  const pushed = yield* endGrant(row.organizationId, row.machineId, grant.id).pipe(
-    Effect.map((ended) => ended.pushed ?? null),
-    Effect.orElseSucceed(() => null),
+  // Only the Machine's answer decides; while it can't be reached the build stays unsettled and the
+  // next check (the run's completion or the poll) ends the grant again.
+  const ended = yield* endGrant(row.organizationId, row.machineId, grant.id).pipe(
+    Effect.map((answer) => ({ pushed: answer.pushed ?? null })),
+    Effect.catch((error) => Effect.logWarning("Could not end a GitHub build's grant; the next check retries.", error).pipe(Effect.as(null))),
   );
+  if (!ended) return waiting;
+  const pushed = ended.pushed;
   const platforms = row.github.report?.platforms;
   if (!pushed || !platforms?.length) return yield* failed(timedOut ? "GitHub: the run didn't finish within 2 hours." : "GitHub: the run pushed no image.");
   const receipt: BuildReceipt = {

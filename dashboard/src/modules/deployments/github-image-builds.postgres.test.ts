@@ -71,6 +71,10 @@ type Fake = {
   /** Whether the Cluster refuses to mint Build Grants (a ployzd without the RPC). */
   mintFails: boolean;
   ended: string[];
+  /** Whether the Machine can't be reached to end a Build Grant. */
+  endFails: boolean;
+  /** How many times the walk began waiting for the run. */
+  waits: number;
   prepared: BuildReceipts[];
   /** The Service's Build Platform Requirement, as the Engine reads it from placement. */
   platforms: string[];
@@ -130,6 +134,7 @@ function fakeClient(fake: Fake) {
       return { id: grantId(fake.minted.length), grant: "ployzgrant1:secret", expires_in_seconds: 3600 };
     },
     endBuildGrant: async ({ id }: { id: string }) => {
+      if (fake.endFails) throw new Error("connection refused");
       fake.ended.push(id);
       return { pushed };
     },
@@ -177,7 +182,7 @@ describe("Image Builds on GitHub Actions", () => {
 
   beforeEach(async () => {
     vi.mocked(inngest.send).mockClear();
-    fake = { github: [], minted: [], mintFails: false, ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
+    fake = { github: [], minted: [], mintFails: false, ended: [], endFails: false, waits: 0, prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -256,8 +261,10 @@ describe("Image Builds on GitHub Actions", () => {
       // @inngest/test hands waitForEvent a lazy promise that inngest 4 then validates as an event,
       // so the run's completion is delivered by replacing the tool rather than mocking the step.
       // A GitHub Builder that isn't last waits its start limit first; the run completes after it.
-      const waitForEvent = async (_id: string, options: { timeout?: string | number }) => options.timeout === "3m" && !fake.runEndsBeforeLimit
-        ? null : { name: "github/build-run.completed", data: { runId: githubRunId } };
+      const waitForEvent = async (_id: string, options: { timeout?: string | number }) => {
+        fake.waits += 1;
+        return options.timeout === "3m" && !fake.runEndsBeforeLimit ? null : { name: "github/build-run.completed", data: { runId: githubRunId } };
+      };
       return { ...ctx, runId, step: { ...ctx.step, waitForEvent: asTestDouble<typeof ctx.step.waitForEvent>()(waitForEvent) } };
     },
   });
@@ -329,6 +336,8 @@ describe("Image Builds on GitHub Actions", () => {
     expect(inngest.send).toHaveBeenCalledWith(expect.objectContaining({ name: "github/build-run.completed", data: { runId: githubRunId } }));
     const output = await engine(runCompleted()).execute();
     expect(output.error).toBeUndefined();
+    // The report landed before the walk began waiting: it moves on without a wait.
+    expect(fake.waits).toBe(0);
     const built = await row();
     expect(built).toMatchObject({ status: "built", machineId: machine.id, github: { report: { platforms: ["linux/amd64"] } } });
     const receipt = JSON.parse(encryption.decrypt(built?.encryptedReceipt ?? encryption.encrypt("null")));
@@ -374,6 +383,21 @@ describe("Image Builds on GitHub Actions", () => {
     const output = await engine(runCompleted()).execute();
     expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
   });
+
+  it("leaves a reported build unsettled while the Machine can't end its grant, and settles it on the next check", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    fake.endFails = true;
+    await report(["linux/amd64"]);
+    expect(await row()).toMatchObject({ status: "building", github: { report: { platforms: ["linux/amd64"] } } });
+    // The report was taken: the runner can't send another.
+    expect(await refused({ from: 3, events: [] })).toMatchObject({ _tag: "Conflict" });
+    fake.endFails = false;
+    const output = await engine(runCompleted()).execute();
+    expect(output.error).toBeUndefined();
+    expect(await row()).toMatchObject({ status: "built" });
+    expect(fake.ended).toEqual([grantId(1)]);
+  }, 30_000);
 
   it("ignores the run failing after the final report settled the build", async () => {
     await dispatch();

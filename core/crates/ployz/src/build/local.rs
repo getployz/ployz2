@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use ployz_build::{BuiltImage, Output, remote::Definition};
+use ployz_build::{BuildError, BuiltImage, Output, remote::Definition};
 
 use super::{CapturedBuild, CapturedTarget, Error, invalid};
 
@@ -32,7 +32,8 @@ impl CapturedBuild {
         cancellation: &ployz_build::Cancellation,
         observe: &(dyn Fn(&ployz_build::Progress) + Sync),
     ) -> Result<LocalImage, Error> {
-        let (captured, images) = self.run_local(Output::Load, cancellation, observe)?;
+        let (captured, images) =
+            self.run_local(|request| ployz_build::execute(request, cancellation, observe))?;
         let image = images
             .into_iter()
             .next()
@@ -56,18 +57,16 @@ impl CapturedBuild {
         &self,
         cancellation: &ployz_build::Cancellation,
     ) -> Result<(), Error> {
-        if std::env::var_os("ACTIONS_RUNTIME_TOKEN").is_none() {
-            return Ok(());
-        }
-        self.run_local(Output::Cache, cancellation, &|_| {})
-            .map(drop)
+        self.run_local(|request| {
+            ployz_build::export_cache(request, cancellation).map(|()| Vec::new())
+        })
+        .map(drop)
     }
 
+    /// Run `execute` on the single captured target, with the runner's cache service variables.
     fn run_local(
         &self,
-        output: Output,
-        cancellation: &ployz_build::Cancellation,
-        observe: &(dyn Fn(&ployz_build::Progress) + Sync),
+        execute: impl FnOnce(&ployz_build::Request<'_>) -> Result<Vec<BuiltImage>, BuildError>,
     ) -> Result<(&CapturedTarget, Vec<BuiltImage>), Error> {
         let [captured] = self.targets.as_slice() else {
             return Err(invalid(
@@ -79,7 +78,7 @@ impl CapturedBuild {
             retained_tags: Vec::new(),
             image_contexts: BTreeMap::new(),
             targets: vec![captured.target.clone()],
-            output,
+            output: Output::Load,
             no_cache: false,
             pull: false,
         };
@@ -101,23 +100,19 @@ impl CapturedBuild {
                 environment.insert(name.to_owned(), value);
             }
         }
-        let images = ployz_build::execute(
-            &ployz_build::Request {
-                image_contexts: &definition.image_contexts,
-                compose_file: Path::new("compose.yaml"),
-                working_dir: root,
-                environment: &environment,
-                docker: None,
-                targets: &definition.targets,
-                railpack: &railpack,
-                build_args: &[],
-                output,
-                no_cache: false,
-                pull: false,
-            },
-            cancellation,
-            observe,
-        )
+        let images = execute(&ployz_build::Request {
+            image_contexts: &definition.image_contexts,
+            compose_file: Path::new("compose.yaml"),
+            working_dir: root,
+            environment: &environment,
+            docker: None,
+            targets: &definition.targets,
+            railpack: &railpack,
+            build_args: &[],
+            output: definition.output,
+            no_cache: false,
+            pull: false,
+        })
         .map_err(|source| Error::Build {
             service: captured.name.clone(),
             source,
