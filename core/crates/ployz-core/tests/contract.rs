@@ -13,20 +13,20 @@ use ployz_core::{
     FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
     GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
-    ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressHostname,
-    IngressProxyConfig, IngressProxyFragment, InspectMachineUpgradeRequest,
-    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
-    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachineRelease,
-    MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
-    ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, ProjectName,
-    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
-    PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest,
-    RequestedServiceSpec, ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
-    UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig,
+    IngressProxyFragment, InspectMachineUpgradeRequest, InspectWireGuardRequest,
+    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
+    MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess,
+    MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NameMatches,
+    OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    PartialResult, PortPublication, ProjectName, PublicIpDiscovery, PublicIpUpdate,
+    PublishCertificateMaterialRequest, PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY,
+    RemoveImagesRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestMachineUpgradeRequest, RequestedServiceSpec, ResetAccepted, ResetRequest,
+    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource, encode_grpc_frame,
+    grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -407,14 +407,16 @@ fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
 }
 
 #[test]
-fn ingress_hostname_is_explicit_on_the_wire() {
-    assert_eq!(
-        serde_json::to_value(IngressHostname::explicit("app.example.com").unwrap()).unwrap(),
-        json!({ "kind": "explicit", "hostname": "app.example.com" })
-    );
-    assert!(
-        serde_json::from_value::<IngressHostname>(json!({ "kind": "cluster_domain" })).is_err()
-    );
+fn ingress_publication_carries_a_plain_hostname_on_the_wire() {
+    let publication = json!({
+        "mode": "ingress",
+        "hostname": "app.example.com",
+        "load_balancer_port": 80,
+        "container_port": 8080,
+        "http_protocol": "http"
+    });
+    let parsed = serde_json::from_value::<PortPublication>(publication.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), publication);
     assert!(
         serde_json::from_value::<PortPublication>(json!({
             "mode": "ingress",

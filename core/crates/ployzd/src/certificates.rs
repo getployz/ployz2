@@ -29,7 +29,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
+    corrosion::{
+        CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore, published_cover,
+    },
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -325,11 +327,6 @@ pub(crate) fn wanted_certificate_hosts<'a>(
     observations: impl IntoIterator<Item = &'a ContainerObservation>,
     rows: &BTreeMap<CertificateHost, CertificateRow>,
 ) -> BTreeSet<IngressHost> {
-    let published: Vec<&CertificateHost> = rows
-        .iter()
-        .filter(|(_, row)| row.is_published())
-        .map(|(hostname, _)| hostname)
-        .collect();
     let mut wanted = BTreeSet::new();
     for observation in observations {
         if observation.kind != ContainerKind::ServiceContainer {
@@ -344,11 +341,9 @@ pub(crate) fn wanted_certificate_hosts<'a>(
             else {
                 continue;
             };
-            let hostname = hostname.host();
-            if published.iter().any(|name| name.covers(hostname)) {
-                continue;
+            if published_cover(hostname, rows).is_none() {
+                wanted.insert(hostname.clone());
             }
-            wanted.insert(hostname.clone());
         }
     }
     wanted

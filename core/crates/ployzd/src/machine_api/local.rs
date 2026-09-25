@@ -690,7 +690,7 @@ impl MachineRpc for MachineService {
                     }
                 };
                 replicated
-                    .publish_certificate_material(&hostname, &material)
+                    .publish_certificate_material(&hostname, material)
                     .await
             }
             CertificateMaterialChange::Clear => {

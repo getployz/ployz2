@@ -261,7 +261,7 @@ fn deploy_warning_display_is_the_cli_line_body() {
         "container": { "image": "nginx", "pull_policy": "missing" },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "app.example.com" },
+            "hostname": "app.example.com",
             "load_balancer_port": 443,
             "container_port": 8080,
             "http_protocol": "https"

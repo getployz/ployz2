@@ -34,7 +34,6 @@ fn ingress_targets_from_ports<'a>(
         else {
             continue;
         };
-        let hostname = hostname.host();
         let mentions_certificates = *http_protocol == HttpProtocol::Https;
         targets
             .entry(hostname)
@@ -129,7 +128,7 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
 mod tests {
     use std::num::NonZeroU16;
 
-    use ployz_core::{HttpProtocol, IngressHostname, PortPublication, RequestedServiceSpec};
+    use ployz_core::{HttpProtocol, IngressHost, PortPublication, RequestedServiceSpec};
 
     use super::{ingress_dns_warnings, resolve_ingress_addresses};
 
@@ -143,11 +142,11 @@ mod tests {
         .unwrap()
     }
 
-    fn explicit(hostname: &str) -> IngressHostname {
-        IngressHostname::explicit(hostname).unwrap()
+    fn explicit(hostname: &str) -> IngressHost {
+        IngressHost::parse(hostname).unwrap()
     }
 
-    fn ingress(hostname: IngressHostname, http_protocol: HttpProtocol) -> PortPublication {
+    fn ingress(hostname: IngressHost, http_protocol: HttpProtocol) -> PortPublication {
         PortPublication::Ingress {
             hostname,
             load_balancer_port: NonZeroU16::new(80).unwrap(),

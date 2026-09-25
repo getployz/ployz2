@@ -43,7 +43,7 @@ pub fn hostname_owners<'a>(
 /// Explicit Ingress Hostnames published by these ports.
 pub fn explicit_ingress_hosts(ports: &[PortPublication]) -> impl Iterator<Item = &IngressHost> {
     ports.iter().filter_map(|port| match port {
-        PortPublication::Ingress { hostname, .. } => Some(hostname.host()),
+        PortPublication::Ingress { hostname, .. } => Some(hostname),
         PortPublication::Host { .. } => None,
     })
 }
@@ -154,7 +154,7 @@ mod tests {
             "container": { "image": "example.test/image", "pull_policy": "missing" },
             "ports": [{
                 "mode": "ingress",
-                "hostname": { "kind": "explicit", "hostname": hostname },
+                "hostname": hostname,
                 "load_balancer_port": 80,
                 "container_port": 80,
                 "http_protocol": "http"

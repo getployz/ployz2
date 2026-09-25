@@ -1,8 +1,8 @@
 use super::support::*;
 use ployz::deploy::preview_deploy;
 use ployz_core::{
-    DeployWarning, HttpProtocol, IngressHost, IngressHostname, PortPublication, ProjectName,
-    QualifiedService, ServiceAttempt,
+    DeployWarning, HttpProtocol, IngressHost, PortPublication, ProjectName, QualifiedService,
+    ServiceAttempt,
 };
 
 fn plan_ingress<'a>(
@@ -158,14 +158,14 @@ fn preview_does_not_mutate_the_intent() {
 }
 
 fn custom_web() -> RequestedServiceSpec {
-    ingress_web(IngressHostname::explicit("api.example.com").unwrap())
+    ingress_web(IngressHost::parse("api.example.com").unwrap())
 }
 
 fn named_web(hostname: &str) -> RequestedServiceSpec {
-    ingress_web(IngressHostname::explicit(hostname).unwrap())
+    ingress_web(IngressHost::parse(hostname).unwrap())
 }
 
-fn ingress_web(hostname: IngressHostname) -> RequestedServiceSpec {
+fn ingress_web(hostname: IngressHost) -> RequestedServiceSpec {
     let mut spec = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });

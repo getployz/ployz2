@@ -75,7 +75,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "example.test" },
+            "hostname": "example.test",
             "load_balancer_port": 80,
             "container_port": 8080,
             "http_protocol": "http"
@@ -196,7 +196,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
         },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "secure.example.test" },
+            "hostname": "secure.example.test",
             "load_balancer_port": 443,
             "container_port": 8080,
             "http_protocol": "https"
@@ -476,7 +476,7 @@ async fn assert_start_first_gap(
             "placement": { "machines": [machine.id] },
             "ports": [{
                 "mode": "ingress",
-                "hostname": { "kind": "explicit", "hostname": "switch.test" },
+                "hostname": "switch.test",
                 "load_balancer_port": 80,
                 "container_port": 8081,
                 "http_protocol": "http"

@@ -278,8 +278,6 @@ export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use"
 
 export type IngressHost = string;
 
-export type IngressHostname = { "kind": "explicit", hostname: IngressHost, };
-
 export type IngressProxyFragment = string;
 
 export type InitialMachinePolicy = {
@@ -524,7 +522,7 @@ placement_seed: number,
  */
 selected: Array<ServiceAttempt>, };
 
-export type PortPublication = { "mode": "ingress", hostname: IngressHostname, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
+export type PortPublication = { "mode": "ingress", hostname: IngressHost, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
 
 export type PreDeployCommand = [string, ...string[]];
 

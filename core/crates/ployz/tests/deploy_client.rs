@@ -604,7 +604,7 @@ async fn preview_includes_dns_warnings() {
         "ports": [
             {
                 "mode": "ingress",
-                "hostname": { "kind": "explicit", "hostname": "preview-deploy.invalid" },
+                "hostname": "preview-deploy.invalid",
                 "load_balancer_port": 80,
                 "container_port": 8080,
                 "http_protocol": "http"
@@ -655,7 +655,7 @@ async fn preview_rejects_a_visible_owner_of_the_hostname() {
         "container": { "image": "nginx", "pull_policy": "always" },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "api.opaque.ployz.example" },
+            "hostname": "api.opaque.ployz.example",
             "load_balancer_port": 80,
             "container_port": 8080,
             "http_protocol": "http"

@@ -12,8 +12,8 @@ use crate::{
 use ployz_core::{
     AdvertisedEndpoint, CertificateHost, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
-    INGRESS_VERIFY_PATH, IngressHostname, IngressProxyFragment, MACHINE_API_PORT, Machine,
-    MachineId, MachineName, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
+    INGRESS_VERIFY_PATH, IngressHost, IngressProxyFragment, MACHINE_API_PORT, Machine, MachineId,
+    MachineName, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
     ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
     service_containers,
 };
@@ -432,7 +432,7 @@ fn published_wildcard_serves_covered_https_sites_over_acme_material() {
     let certificates = BTreeMap::from([
         (
             CertificateHost::parse("*.apps.example.com").unwrap(),
-            CertificateRow::published(wildcard.clone()),
+            CertificateRow::Published(wildcard.clone()),
         ),
         (
             CertificateHost::parse("web.apps.example.com").unwrap(),
@@ -750,7 +750,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_host_ports() {
     assert!(
         serde_json::from_value::<PortPublication>(json!({
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "invalid.example" },
+            "hostname": "invalid.example",
             "load_balancer_port": 0,
             "container_port": 0,
             "http_protocol": "http"
@@ -1339,7 +1339,7 @@ impl CaddyAdmin for FakeAdmin {
 
 fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublication {
     PortPublication::Ingress {
-        hostname: IngressHostname::explicit(hostname).unwrap(),
+        hostname: IngressHost::parse(hostname).unwrap(),
         load_balancer_port: port.try_into().unwrap(),
         container_port: port.try_into().unwrap(),
         http_protocol,

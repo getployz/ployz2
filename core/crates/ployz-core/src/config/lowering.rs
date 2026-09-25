@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::{ConfigError, ServiceHealthcheck, ServiceSource, parse_service_config};
 use crate::{
     ByteQuantity, ContainerResources, CpuNanos, DeployIntent, HealthcheckSpec, HttpHealthcheck,
-    HttpProtocol, IngressHostname, PlanOptions, PortPublication, PreDeployCommand, PreDeployHook,
+    HttpProtocol, IngressHost, PlanOptions, PortPublication, PreDeployCommand, PreDeployHook,
     ProjectName, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy, ServiceAttempt,
     ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
     ServiceVolumeGraph, VolumeDriver,
@@ -176,8 +176,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         let mut ports = Vec::new();
         for route in &config.routes {
             ports.push(PortPublication::Ingress {
-                hostname: IngressHostname::explicit(route.hostname.clone())
-                    .map_err(lowering_error)?,
+                hostname: IngressHost::parse(route.hostname.clone()).map_err(lowering_error)?,
                 load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
                 container_port: target_port(route.target_port, &environment, "routes")?,
                 http_protocol: HttpProtocol::Https,

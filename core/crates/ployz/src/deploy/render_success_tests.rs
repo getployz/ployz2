@@ -10,7 +10,7 @@ fn success_with_ingress_deduplicates_endpoints() {
         "container": { "image": "excalidraw/excalidraw:latest", "pull_policy": "missing" },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "excalidraw.example.uncld.dev" },
+            "hostname": "excalidraw.example.uncld.dev",
             "load_balancer_port": 443,
             "container_port": 80,
             "http_protocol": "https"
@@ -44,7 +44,7 @@ fn success_with_ingress_deduplicates_endpoints() {
 }
 
 #[test]
-fn success_groups_unique_urls_by_service_and_target_port_with_custom_domains_first() {
+fn success_groups_unique_urls_by_service_and_target_port_in_hostname_order() {
     let mut spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": "a".repeat(32),
         "name": "web",
@@ -64,7 +64,7 @@ fn success_groups_unique_urls_by_service_and_target_port_with_custom_domains_fir
         spec.ports.push(
             serde_json::from_value(serde_json::json!({
                 "mode": "ingress",
-                "hostname": { "kind": "explicit", "hostname": host },
+                "hostname": host,
                 "load_balancer_port": published,
                 "container_port": target,
                 "http_protocol": protocol

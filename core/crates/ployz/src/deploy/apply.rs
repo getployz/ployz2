@@ -390,14 +390,14 @@ mod tests {
             "ports": [
                 {
                     "mode": "ingress",
-                    "hostname": { "kind": "explicit", "hostname": "app.example.com" },
+                    "hostname": "app.example.com",
                     "load_balancer_port": 443,
                     "container_port": 8080,
                     "http_protocol": "https"
                 },
                 {
                     "mode": "ingress",
-                    "hostname": { "kind": "explicit", "hostname": "plain.example.com" },
+                    "hostname": "plain.example.com",
                     "load_balancer_port": 80,
                     "container_port": 8080,
                     "http_protocol": "http"

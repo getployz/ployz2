@@ -490,14 +490,17 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         material: &CertificateMaterial,
     ) -> Result<(), Error> {
-        let latest = self.certificate_row(hostname).await?;
-        if latest.is_published()
-            || (latest.material() == Some(material) && latest.challenge().is_none())
-        {
+        let Some(latest) = self.acme_row(hostname).await? else {
+            return Ok(());
+        };
+        if latest.material() == Some(material) && latest.challenge().is_none() {
             return Ok(());
         }
-        self.upsert_certificate(hostname.as_str(), &CertificateRow::issued(material.clone()))
-            .await
+        self.upsert_certificate(
+            &CertificateHost::from(hostname.clone()),
+            &CertificateRow::issued(material.clone()),
+        )
+        .await
     }
 
     /// Hold published material for `hostname`; ACME leaves the row alone from now on.
@@ -508,17 +511,13 @@ impl ReplicatedStore {
     pub async fn publish_certificate_material(
         &self,
         hostname: &CertificateHost,
-        material: &CertificateMaterial,
+        material: CertificateMaterial,
     ) -> Result<(), Error> {
-        let latest = self.row(hostname.as_str()).await?;
-        if latest.is_published() && latest.material() == Some(material) {
+        if self.row(hostname).await?.published() == Some(&material) {
             return Ok(());
         }
-        self.upsert_certificate(
-            hostname.as_str(),
-            &CertificateRow::published(material.clone()),
-        )
-        .await
+        self.upsert_certificate(hostname, &CertificateRow::Published(material))
+            .await
     }
 
     /// Remove published material so ACME owns `hostname` again. ACME-issued rows stay.
@@ -530,7 +529,7 @@ impl ReplicatedStore {
         &self,
         hostname: &CertificateHost,
     ) -> Result<(), Error> {
-        if !self.row(hostname.as_str()).await?.is_published() {
+        if self.row(hostname).await?.published().is_none() {
             return Ok(());
         }
         self.api
@@ -552,15 +551,21 @@ impl ReplicatedStore {
         &self,
         hostname: &IngressHost,
     ) -> Result<CertificateRow, Error> {
-        self.row(hostname.as_str()).await
+        self.row(&CertificateHost::from(hostname.clone())).await
     }
 
-    async fn row(&self, hostname: &str) -> Result<CertificateRow, Error> {
+    /// The row ACME may write for `hostname`, or `None` when it holds published material.
+    async fn acme_row(&self, hostname: &IngressHost) -> Result<Option<CertificateRow>, Error> {
+        let row = self.certificate_row(hostname).await?;
+        Ok(row.published().is_none().then_some(row))
+    }
+
+    async fn row(&self, hostname: &CertificateHost) -> Result<CertificateRow, Error> {
         let query = self
             .api
             .query(Statement::new(
                 "SELECT body FROM certificates WHERE hostname = ?",
-                [json!(hostname)],
+                [json!(hostname.as_str())],
             ))
             .await?;
         let rows = query.rows(["body"])?;
@@ -570,11 +575,15 @@ impl ReplicatedStore {
         CertificateRow::decode(text(encoded, "certificate body")?)
     }
 
-    async fn upsert_certificate(&self, hostname: &str, row: &CertificateRow) -> Result<(), Error> {
+    async fn upsert_certificate(
+        &self,
+        hostname: &CertificateHost,
+        row: &CertificateRow,
+    ) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
                 "INSERT INTO certificates (hostname, body) VALUES (?, ?) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body",
-                [json!(hostname), json!(row.encode()?)],
+                [json!(hostname.as_str()), json!(row.encode()?)],
             )])
             .await
     }
@@ -584,12 +593,17 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
-        let latest = self.certificate_row(hostname).await?;
-        if latest.is_published() || latest.challenge() == Some(challenge) {
+        let Some(latest) = self.acme_row(hostname).await? else {
+            return Ok(());
+        };
+        if latest.challenge() == Some(challenge) {
             return Ok(());
         }
-        self.upsert_certificate(hostname.as_str(), &latest.with_challenge(challenge.clone()))
-            .await
+        self.upsert_certificate(
+            &CertificateHost::from(hostname.clone()),
+            &latest.with_challenge(challenge.clone()),
+        )
+        .await
     }
 
     /// Record why a hostname has no certificate and when the Cluster may try again.
@@ -603,12 +617,17 @@ impl ReplicatedStore {
         last_error: impl Into<String>,
         clock: IssuanceClock,
     ) -> Result<(), Error> {
-        let latest = self.certificate_row(hostname).await?;
+        let Some(latest) = self.acme_row(hostname).await? else {
+            return Ok(());
+        };
         if latest.material().is_some() {
             return Ok(());
         }
-        self.upsert_certificate(hostname.as_str(), &latest.with_backoff(last_error, clock))
-            .await
+        self.upsert_certificate(
+            &CertificateHost::from(hostname.clone()),
+            &latest.with_backoff(last_error, clock),
+        )
+        .await
     }
 
     pub async fn record_certificate_error(
@@ -616,12 +635,17 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         reason: &str,
     ) -> Result<(), Error> {
-        let latest = self.certificate_row(hostname).await?;
-        if latest.is_published() || latest.last_error() == Some(reason) {
+        let Some(latest) = self.acme_row(hostname).await? else {
+            return Ok(());
+        };
+        if latest.last_error() == Some(reason) {
             return Ok(());
         }
-        self.upsert_certificate(hostname.as_str(), &latest.with_error(reason))
-            .await
+        self.upsert_certificate(
+            &CertificateHost::from(hostname.clone()),
+            &latest.with_error(reason),
+        )
+        .await
     }
 
     pub async fn certificate_policy(&self) -> Result<Option<String>, Error> {

@@ -21,7 +21,7 @@ use api::Statement;
 pub(crate) use api::{ApiClient, Subscription};
 pub use certificate::{
     CertificateChallenge, CertificateChallengeError, CertificateMaterial, CertificateMaterialError,
-    CertificateRow,
+    CertificateRow, published_cover,
 };
 pub use machine_view::{MachineView, MachinesSnapshot};
 pub use publisher::{run_machine_publisher, wait_for_catch_up};

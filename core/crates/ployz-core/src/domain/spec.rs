@@ -106,40 +106,11 @@ pub enum HostBind {
     },
 }
 
-/// The hostname an HTTP ingress publication serves. Core only knows explicit
-/// hostnames; Cloud expands its own generated names before they arrive.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum IngressHostname {
-    Explicit { hostname: IngressHost },
-}
-
-impl IngressHostname {
-    /// Parse a non-empty validated hostname as explicit ingress intent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ValueError`] when `hostname` is empty or not a lowercase DNS hostname.
-    pub fn explicit(hostname: impl Into<String>) -> Result<Self, ValueError> {
-        Ok(Self::Explicit {
-            hostname: IngressHost::parse(hostname)?,
-        })
-    }
-
-    /// The concrete Ingress Hostname.
-    #[must_use]
-    pub fn host(&self) -> &IngressHost {
-        match self {
-            Self::Explicit { hostname } => hostname,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "mode")]
 pub enum PortPublication {
     Ingress {
-        hostname: IngressHostname,
+        hostname: IngressHost,
         load_balancer_port: NonZeroU16,
         container_port: NonZeroU16,
         http_protocol: HttpProtocol,

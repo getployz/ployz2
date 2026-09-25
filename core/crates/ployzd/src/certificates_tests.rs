@@ -7,9 +7,9 @@ use std::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
-    HealthObservation, HttpProtocol, IngressHost, IngressHostname, IssuanceClock, IssuanceFailure,
-    IssuanceGate, MACHINE_API_PORT, Machine, MachineId, PortPublication, ProjectName,
-    ResolvedServiceSpec, ServiceId, ServiceName, resolve_certificate_policy,
+    HealthObservation, HttpProtocol, IngressHost, IssuanceClock, IssuanceFailure, IssuanceGate,
+    MACHINE_API_PORT, Machine, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
+    ServiceId, ServiceName, resolve_certificate_policy,
 };
 use serde_json::json;
 
@@ -113,11 +113,11 @@ fn published_material_and_published_wildcards_are_not_wanted() {
     let rows = BTreeMap::from([
         (
             certificate_host("pinned.example.com"),
-            CertificateRow::published(self_signed(&["pinned.example.com"])),
+            CertificateRow::Published(self_signed(&["pinned.example.com"])),
         ),
         (
             certificate_host("*.apps.example.com"),
-            CertificateRow::published(self_signed(&["*.apps.example.com"])),
+            CertificateRow::Published(self_signed(&["*.apps.example.com"])),
         ),
         (
             certificate_host("acme.example.com"),
@@ -704,7 +704,7 @@ fn machine_with_endpoint(seed: &str, address: &str) -> Machine {
 
 fn ingress(hostname: &str, http_protocol: HttpProtocol) -> PortPublication {
     PortPublication::Ingress {
-        hostname: IngressHostname::explicit(hostname).unwrap(),
+        hostname: IngressHost::parse(hostname).unwrap(),
         load_balancer_port: 443.try_into().unwrap(),
         container_port: 8080.try_into().unwrap(),
         http_protocol,

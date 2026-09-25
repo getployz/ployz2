@@ -858,7 +858,7 @@ async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
     };
     let published = material("app.example.com");
     store
-        .publish_certificate_material(&published_name, &published)
+        .publish_certificate_material(&published_name, published.clone())
         .await
         .unwrap();
 
@@ -881,16 +881,15 @@ async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
         .record_certificate_error(&hostname, "policy refused")
         .await
         .unwrap();
-    let row = store.certificate_row(&hostname).await.unwrap();
-    assert!(row.is_published());
-    assert_eq!(row.material(), Some(&published));
-    assert_eq!(row.challenge(), None);
-    assert_eq!(row.last_error(), None);
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::Published(published)
+    );
 
     let wildcard = CertificateHost::parse("*.example.com").unwrap();
     let wildcard_material = material("*.example.com");
     store
-        .publish_certificate_material(&wildcard, &wildcard_material)
+        .publish_certificate_material(&wildcard, wildcard_material.clone())
         .await
         .unwrap();
     assert_eq!(

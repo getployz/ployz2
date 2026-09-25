@@ -433,7 +433,6 @@ fn endpoints_footer(completed: &[DeployOperation]) -> String {
             else {
                 continue;
             };
-            let hostname = hostname.host();
             let (scheme, default_port) = match http_protocol {
                 HttpProtocol::Https => ("https", 443),
                 HttpProtocol::Http => ("http", 80),

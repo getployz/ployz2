@@ -725,7 +725,7 @@ fn service(
         },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": hostname },
+            "hostname": hostname,
             "load_balancer_port": load_balancer_port,
             "container_port": 8080,
             "http_protocol": http_protocol

@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        ReplicatedStore, Subscription,
+        ReplicatedStore, Subscription, published_cover,
     },
     filesystem::{atomic_write, set_ployz_group},
 };
@@ -104,7 +104,7 @@ pub(crate) struct IngressEndpoint {
 }
 
 /// Certificate state that can affect ingress behavior or generated output.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct ProjectedCertificate {
     /// Pending HTTP-01 challenge.
     pub(super) challenge: Option<CertificateChallenge>,
@@ -167,7 +167,6 @@ impl IngressProjection {
                 else {
                     continue;
                 };
-                let hostname = hostname.host();
                 if owners.get(hostname) == Some(&owner) {
                     sites
                         .entry(hostname.clone())
@@ -195,7 +194,6 @@ impl IngressProjection {
                 else {
                     continue;
                 };
-                let hostname = hostname.host();
                 if owners.get(hostname) == Some(&owner) {
                     sites
                         .get_mut(hostname)
@@ -220,33 +218,14 @@ impl IngressProjection {
                 last_error: row.last_error().map(ToOwned::to_owned),
             });
         }
-        let wildcards: Vec<_> = certificates
-            .iter()
-            .filter(|(hostname, row)| hostname.is_wildcard() && row.is_published())
-            .collect();
         for (hostname, site) in &mut sites {
-            if site.https.is_none()
-                || certificates
-                    .get(hostname.as_str())
-                    .is_some_and(CertificateRow::is_published)
-            {
+            if site.https.is_none() {
                 continue;
             }
             // Published wildcard material wins over ACME material, which stops renewing once covered.
-            let Some(material) = wildcards
-                .iter()
-                .find(|(wildcard, _)| wildcard.covers(hostname))
-                .and_then(|(_, row)| row.material())
-            else {
-                continue;
-            };
-            site.certificate
-                .get_or_insert(ProjectedCertificate {
-                    challenge: None,
-                    material: None,
-                    last_error: None,
-                })
-                .material = Some(material.clone());
+            if let Some(material) = published_cover(hostname, certificates) {
+                site.certificate.get_or_insert_default().material = Some(material.clone());
+            }
         }
         let sites = sites
             .into_iter()
