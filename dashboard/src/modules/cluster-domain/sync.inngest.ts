@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import {
   ensureClusterDomainCertificate,
   listClusterDomainOrganizationIds,
@@ -21,10 +21,10 @@ type EffectRunner = typeof runInngestEffect;
 const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
 /**
- * Keeps the Organization's Cluster Domain correct: reserve if missing → probe ingress Servers →
- * full-set records PUT when a frame was read and something answered (which renews the lease) →
- * otherwise renew the lease → replace the wildcard certificate when missing or near expiry →
- * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
+ * Keeps the Organization's Cluster Domain correct: skip when none is reserved → probe ingress Servers →
+ * full-set records PUT when a frame was read and something answered (which renews the lease), and the
+ * check recorded either way → otherwise renew the lease → replace the wildcard certificate when missing
+ * or near expiry → republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
  */
 export async function executeSyncClusterDomain(
   { event, step }: { event: { data: unknown }; step: StepTools },
@@ -36,12 +36,12 @@ export async function executeSyncClusterDomain(
   });
   if (organizationId === null) return { organizationId: null, skipped: true };
 
-  const name = await step.run("reserve", () =>
-    runEffect(reserveClusterDomain(organizationId).pipe(Effect.map((row) => row.name))));
+  // Only a deployment that needs a generated hostname reserves the name.
+  const name = await step.run("load-name", () =>
+    runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
+  if (name === null) return { organizationId, skipped: true };
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
-  const recordsPut = probe === null
-    ? false
-    : await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, probe)));
+  const recordsPut = await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, probe)));
   if (!recordsPut) await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
   // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
   const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
