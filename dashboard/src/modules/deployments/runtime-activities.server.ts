@@ -4,6 +4,7 @@ import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import type { DeployEvent, ImageRemovalOutcome, PreparedDeploy, PruneTarget } from "@ployz/sdk";
 import { Cause, Data, Effect, Exit, Redacted, Schema } from "effect";
 import { eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { environmentDeployment } from "./tables";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
 import {
@@ -31,6 +32,8 @@ import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 
 export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof confirmRuntimeIntent>>["outcome"];
 
@@ -72,15 +75,50 @@ export class DeploymentRuntimeInvalid extends Data.TaggedError(
   readonly retriable = false as const;
 }
 
-function compileRuntimeIntent(context: DeploymentContext, hostedDnsHostname: string | null) {
+/** The Organization's Cluster Domain name. With no row, one inline reserve; a Hosted DNS failure refuses the deploy. */
+const requireClusterDomain = (organizationId: string) =>
+  reserveClusterDomain(organizationId).pipe(
+    Effect.map((row) => row.name),
+    Effect.catchTag("HostedDnsError", (cause) => Effect.fail(new DeploymentExecutionError({
+      failureCode: "cluster_domain_unreserved",
+      message: "The Organization has no generated domain yet. Open Server Settings and choose Publish now, then deploy again.",
+      cause,
+    }))),
+  );
+
+/** Managed hostnames reach the daemon as explicit `prefix.name` routes, never as bare prefixes. */
+export function expandManagedHostnames(config: ServiceDeploymentConfig, clusterDomain: string | null): ServiceDeploymentConfig {
+  if (config.managedHostnames.length === 0) return config;
+  if (clusterDomain === null) throw new Error("Managed hostnames need the Organization's Cluster Domain.");
+  return {
+    ...config,
+    routes: [...config.routes, ...config.managedHostnames.map(({ prefix, targetPort }) => {
+      const hostname = `${prefix}.${clusterDomain}`;
+      return { id: hostnameRouteId(hostname), hostname, targetPort };
+    })],
+    managedHostnames: [],
+  };
+}
+
+/** A route id that is stable per hostname: an RFC 4122 v5-shaped UUID over its SHA-1, as core route validation requires a UUID. */
+function hostnameRouteId(hostname: string) {
+  const bytes = createHash("sha1").update(`ployz.managed-hostname:${hostname}`).digest().subarray(0, 16);
+  bytes.writeUInt8((bytes.readUInt8(6) & 0x0f) | 0x50, 6);
+  bytes.writeUInt8((bytes.readUInt8(8) & 0x3f) | 0x80, 8);
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function compileRuntimeIntent(context: DeploymentContext, clusterDomain: string | null) {
   return Effect.gen(function* () {
-    const resolvedEnv = yield* loadResolvedDeployEnv(context, hostedDnsHostname);
+    const resolvedEnv = yield* loadResolvedDeployEnv(context, clusterDomain);
     return yield* Effect.try({
       try: () =>
         compileSdkPreparationInput({
           projectName: context.environment.namespace,
           snapshots: context.snapshots.map((snapshot) => ({
             ...snapshot,
+            config: expandManagedHostnames(snapshot.config, clusterDomain),
             resolvedEnv: resolvedEnv.get(snapshot.serviceId),
           })),
           volumes: context.volumes,
@@ -239,9 +277,9 @@ export const executeEnvironmentDeployment = Effect.fn(
       preparation: { ...collector.current(), phase: "source", serviceId, message: "Acquiring source" },
     }))).pipe(Effect.raceFirst(cancelled));
     const sdk = yield* connectedRuntime(context.organization.id);
-    const needsHostedDomain = context.snapshots.some(({ config }) => config.routes.length === 0 && config.managedHostnames.length > 0);
-    const hostedDnsHostname = needsHostedDomain ? (yield* sdk.watchFirstFrame(10_000)).hosted_dns_hostname : null;
-    const input = yield* compileRuntimeIntent(context, hostedDnsHostname);
+    const needsClusterDomain = context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
+    const clusterDomain = needsClusterDomain ? yield* requireClusterDomain(context.organization.id) : null;
+    const input = yield* compileRuntimeIntent(context, clusterDomain);
     if (cancellation.signal.aborted) return yield* Effect.interrupt;
     remoteStarted = true;
     const build_receipts = Object.keys(sources).length === 0 ? {} : yield* loadBuildReceipts(context);

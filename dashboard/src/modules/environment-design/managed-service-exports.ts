@@ -24,17 +24,17 @@ export interface ManagedServiceExportRecord {
 /** Domain lists preserve link order; editing a port does not change priority. */
 export function servicePublicDomain(
   service: Pick<ServiceExportContext, "routes" | "managedHostnames">,
-  hostedDnsHostname: string | null,
+  clusterDomain: string | null,
 ): string | null {
   const custom = service.routes.at(-1);
   if (custom) return custom.hostname;
   const managed = service.managedHostnames.at(-1);
-  return managed && hostedDnsHostname ? `${managed.prefix}.${hostedDnsHostname}` : null;
+  return managed && clusterDomain ? `${managed.prefix}.${clusterDomain}` : null;
 }
 
 export function getManagedServiceExports(
   service: ServiceExportContext,
-  hostedDnsHostname: string | null = null,
+  clusterDomain: string | null = null,
 ): ManagedServiceExportRecord[] {
   const definitions: Array<Pick<
     ManagedServiceExportRecord,
@@ -72,7 +72,7 @@ export function getManagedServiceExports(
     },
   ];
 
-  const publicDomain = servicePublicDomain(service, hostedDnsHostname);
+  const publicDomain = servicePublicDomain(service, clusterDomain);
   if (publicDomain) definitions.push({
     key: "PLOYZ_PUBLIC_DOMAIN",
     description: "The most recently linked custom domain, otherwise the most recently linked generated domain.",
