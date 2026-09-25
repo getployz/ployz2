@@ -39,14 +39,14 @@ export async function executeSyncClusterDomain(
   const name = await step.run("reserve", () =>
     runEffect(reserveClusterDomain(organizationId).pipe(Effect.map((row) => row.name))));
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
-  const published = probe === null
+  const recordsPut = probe === null
     ? false
     : await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, probe)));
-  if (!published) await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
+  if (!recordsPut) await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
   // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
   const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
   const certificatePublished = await step.run("publish-certificate", () => runEffect(publishClusterDomainCertificate(organizationId)));
-  return { organizationId, name, observed: probe !== null, published, certificateIssued, certificatePublished };
+  return { organizationId, name, observed: probe !== null, recordsPut, certificateIssued, certificatePublished };
 }
 
 export async function executeScheduleClusterDomainSync({ step }: { step: StepTools }, runEffect: EffectRunner) {

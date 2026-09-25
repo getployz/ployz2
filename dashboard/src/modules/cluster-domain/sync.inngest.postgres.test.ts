@@ -150,7 +150,7 @@ describe("sync-cluster-domain", () => {
       organizationId,
       name: "acme.ployz.test",
       observed: true,
-      published: true,
+      recordsPut: true,
       certificateIssued: true,
       certificatePublished: true,
     });
@@ -169,11 +169,11 @@ describe("sync-cluster-domain", () => {
 
   it("writes no records without a Cluster or with nothing reachable, and still renews the lease", async () => {
     const first = await sync();
-    expect(first.result).toMatchObject({ observed: false, published: false });
+    expect(first.result).toMatchObject({ observed: false, recordsPut: false });
 
     frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1")] });
     const second = await sync();
-    expect(second.result).toMatchObject({ observed: true, published: false });
+    expect(second.result).toMatchObject({ observed: true, recordsPut: false });
 
     expect(calls()).toEqual([
       "POST /domains",

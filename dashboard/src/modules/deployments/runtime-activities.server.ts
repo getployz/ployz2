@@ -88,12 +88,12 @@ const requireClusterDomain = (organizationId: string) =>
 function compileRuntimeIntent(context: DeploymentContext, clusterDomain: string | null) {
   return Effect.gen(function* () {
     const resolvedEnv = yield* loadResolvedDeployEnv(context, clusterDomain);
-    const snapshots = yield* Effect.forEach(context.snapshots, (snapshot) =>
-      expandManagedHostnames(snapshot.config, clusterDomain).pipe(Effect.map((config) => ({
-        ...snapshot,
-        config,
-        resolvedEnv: resolvedEnv.get(snapshot.serviceId),
-      })))).pipe(Effect.mapError((cause) => new DeploymentRuntimeInvalid({ failureCode: "sdk_preview_invalid", message: cause.message, cause })));
+    // requireClusterDomain already refused a deploy with managed hostnames and no Cluster Domain.
+    const snapshots = context.snapshots.map((snapshot) => ({
+      ...snapshot,
+      config: clusterDomain === null ? snapshot.config : expandManagedHostnames(snapshot.config, clusterDomain),
+      resolvedEnv: resolvedEnv.get(snapshot.serviceId),
+    }));
     return yield* Effect.try({
       try: () =>
         compileSdkPreparationInput({

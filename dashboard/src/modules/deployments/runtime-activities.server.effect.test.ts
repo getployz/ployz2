@@ -51,8 +51,8 @@ it("gives expanded managed hostnames the same core-valid route ids on every comp
   const config = projectServiceDeploymentConfig({ source: createImageServiceSource({ image: "nginx:1" }), privateDns: "api",
     managedHostnames: [{ prefix: "api", targetPort: null }, { prefix: "www", targetPort: 8080 }], preDeployCommand: null, startCommand: null,
     healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
-  const first = Effect.runSync(expandManagedHostnames(config, "acme.ployz.test"));
-  const second = Effect.runSync(expandManagedHostnames(config, "acme.ployz.test"));
+  const first = expandManagedHostnames(config, "acme.ployz.test");
+  const second = expandManagedHostnames(config, "acme.ployz.test");
   assert.deepStrictEqual(first.routes.map((route) => route.hostname), ["api.acme.ployz.test", "www.acme.ployz.test"]);
   assert.deepStrictEqual(second.routes, first.routes);
   assert.notStrictEqual(first.routes[0]?.id, first.routes[1]?.id);
