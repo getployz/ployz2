@@ -94,20 +94,20 @@ function Destination({
 }
 
 function ResourceNavigation({
-  scope, node, selected, tab, deployment, onNavigate,
+  scope, node, selected, tab, deployment, prebuilt, onNavigate,
 }: {
   scope: EnvironmentScope;
   node: NavigationNode;
   selected: boolean;
   tab?: string;
   deployment?: string;
+  /** The viewed attempt deployed a prebuilt image for this service: it has no Build logs. */
+  prebuilt: boolean;
   onNavigate?: (nodeId: string) => void;
 }) {
   const [open, setOpen] = useState(selected);
   const Icon = nodeIcons[node.type];
   const pages = node.type === "service" ? servicePagesFor(deployment) : SERVICE_PAGES.filter((page) => page.id === "settings");
-  // Inside Deployment Mode (the panel header's picker), Build logs is disabled for a prebuilt image, as in the panel's tabs.
-  const prebuilt = useDeploymentMode()?.view.nodes.find((candidate) => candidate.nodeId === node.id)?.build.state === "none";
   return (
     <SidebarMenuItem>
       <Collapsible open={open} onOpenChange={setOpen}>
@@ -153,6 +153,9 @@ export function EnvironmentNodeDirectory({
 }) {
   const [filter, setFilter] = useState("");
   const { tab, deployment } = useSearch({ strict: false });
+  // Inside Deployment Mode (the panel header's picker), Build logs is disabled for a prebuilt image, as in the panel's tabs.
+  // The shell's sidebar sits outside the mode's context and lists it plainly; the panel redirects a prebuilt image.
+  const prebuilt = new Set(useDeploymentMode()?.view.nodes.flatMap((view) => view.build.state === "none" ? [view.nodeId] : []));
   const selected = nodes.find((node) => node.id === selectedId);
   const others = nodes.filter((node) => node.id !== selectedId &&
     node.name.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -164,12 +167,12 @@ export function EnvironmentNodeDirectory({
       ) : null}
       {selected ? (
         <SidebarMenu>
-          <ResourceNavigation key={selected.id} scope={scope} node={selected} selected tab={tab} deployment={deployment} onNavigate={onNavigate} />
+          <ResourceNavigation key={selected.id} scope={scope} node={selected} selected tab={tab} deployment={deployment} prebuilt={prebuilt.has(selected.id)} onNavigate={onNavigate} />
         </SidebarMenu>
       ) : null}
       <SidebarMenu className="max-h-64 overflow-y-auto overscroll-contain">
         {others.map((node) => (
-          <ResourceNavigation key={node.id} scope={scope} node={node} selected={false} tab={tab} deployment={deployment} onNavigate={onNavigate} />
+          <ResourceNavigation key={node.id} scope={scope} node={node} selected={false} tab={tab} deployment={deployment} prebuilt={prebuilt.has(node.id)} onNavigate={onNavigate} />
         ))}
       </SidebarMenu>
       {!others.length && (!selected || filter) ? (

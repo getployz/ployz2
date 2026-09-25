@@ -6,7 +6,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Button } from "#/components/ui/button";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { useDeploymentAttempt, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { DEPLOYMENT_SEARCH_KEY, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 export const CANVAS_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas";
@@ -22,11 +22,8 @@ export const canvasRouteSearch = {
     deployment: Schema.optional(Schema.String),
     deploymentList: Schema.optional(Schema.Boolean),
   })),
-  search: { middlewares: [retainSearchParams<{ deployment?: string }>(["deployment"])] },
+  search: { middlewares: [retainSearchParams<{ deployment?: string }>([DEPLOYMENT_SEARCH_KEY])] },
 };
-
-/** The attempt a location's search string shows in Deployment Mode; null in Live Mode. */
-export const shownDeployment = (searchStr: string) => new URLSearchParams(searchStr).get("deployment");
 
 const DeploymentModeContext = createContext<DeploymentAttempt | null>(null);
 

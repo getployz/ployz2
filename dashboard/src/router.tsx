@@ -13,7 +13,7 @@ import { defaultShouldDehydrateQuery, environmentManager, QueryClient } from "@t
 import { NotFoundPage } from "./components/not-found-page";
 import { PloyzMark } from "./components/icons/ployz-logo";
 import { RouteContentSkeleton } from "./components/route-content-skeleton";
-import { shownDeployment } from "./routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
+import { shownDeployment } from "./routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 
 function AppPending() {
   const hydrated = useHydrated();
