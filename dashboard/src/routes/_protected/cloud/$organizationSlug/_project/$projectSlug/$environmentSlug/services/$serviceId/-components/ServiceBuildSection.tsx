@@ -1,4 +1,5 @@
 import { ServiceCommandField } from "./ServiceCommandField";
+import { ServiceBuildOnField } from "#/prototype/build-order/service-build-on";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
@@ -160,6 +161,7 @@ export function ServiceBuildSection({
         </Field>
       ) : null}
 
+      <ServiceBuildOnField serviceId={service.id} />
     </FieldGroup>
   );
 }

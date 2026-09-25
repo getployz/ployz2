@@ -148,6 +148,9 @@ function DeploymentList({ attempts, viewedId, environmentSlug }: { attempts: Dep
       <ListRow current={viewedId === null} search={{ deployment: undefined }}
         icon={<span className="size-2 rounded-full bg-success" />} title="Live" detail={`${environmentSlug} as it is now`} />
       <ItemSeparator />
+      {/* PROTOTYPE: replayable Build Order deployment. */}
+      <ListRow current={viewedId === "fake"} search={{ deployment: "fake" }}
+        icon={<span className="size-2 rounded-full bg-info" />} title="Prototype · Build order" detail="Replayable fake deployment" />
       {attempts.length === 0 ? <Empty variant="placeholder"><EmptyDescription>No deployments yet</EmptyDescription></Empty> : null}
       {attempts.map(({ deployment, view }) => (
         <ListRow key={deployment.id} current={deployment.id === viewedId} search={{ deployment: deployment.id }}

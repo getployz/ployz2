@@ -7,6 +7,7 @@ import { Button } from "#/components/ui/button";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { useDeploymentAttempt, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { DEPLOYMENT_SEARCH_KEY, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { FAKE_DEPLOYMENT_ID, FakeAttemptReplayBar, useFakeAttempt } from "#/prototype/build-order/fake-attempt";
 
 export const CANVAS_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas";
@@ -37,9 +38,13 @@ export function DeploymentModeProvider({ children }: { children: ReactNode }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deploymentId = useSearch({ from: CANVAS_ROUTE_ID, select: (search) => search.deployment ?? null });
-  const attempt = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
-  useOpenStartedDeploymentsSync(attempt, deploymentId);
-  return <DeploymentModeContext value={attempt}>{children}</DeploymentModeContext>;
+  const fake = deploymentId === FAKE_DEPLOYMENT_ID;
+  const real = useDeploymentAttempt(organizationSlug, environmentId, fake ? null : deploymentId, { buildLog: true });
+  // PROTOTYPE: `?deployment=fake` replays the Build Order without a backend.
+  const fakeAttempt = useFakeAttempt();
+  const attempt = fake ? fakeAttempt : real;
+  useOpenStartedDeploymentsSync(fake ? null : attempt, deploymentId);
+  return <DeploymentModeContext value={attempt}>{fake ? <FakeAttemptReplayBar /> : null}{children}</DeploymentModeContext>;
 }
 
 /** Keeps "open deployments I start" in step with how the user watches their own running attempts. */

@@ -1,4 +1,5 @@
 import { Navigate, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { evidenceOf, FAKE_DEPLOYMENT_ID, FakeBuildLog } from "#/prototype/build-order/fake-attempt";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Schema } from "effect";
 import type { ServiceConfig } from "@ployz/sdk/config";
@@ -78,11 +79,15 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
             <DeploymentServiceDetails view={view} config={config} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
           </TabsContent>
           <TabsContent value="build-logs" className="mt-4 overflow-y-auto">
-            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={config.privateDns} />
+            {deployment.id === FAKE_DEPLOYMENT_ID
+              ? <FakeBuildLog nodeId={serviceId} view={view} />
+              : <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={config.privateDns} />}
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             {view.outcome === "not_attempted" || view.outcome === "unchanged" ? <p className="mb-3 text-muted-foreground">{outcomeSentences[view.outcome]}</p> : null}
-            <ServiceDeployLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} serviceId={serviceId} finished={!isActiveDeployment(deployment.status)} />
+            {deployment.id === FAKE_DEPLOYMENT_ID
+              ? <p className="text-muted-foreground">Prototype: no deploy logs.</p>
+              : <ServiceDeployLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} serviceId={serviceId} finished={!isActiveDeployment(deployment.status)} />}
           </TabsContent>
         </Tabs>
       </div>
@@ -149,6 +154,12 @@ function DeploymentServiceDetails({ view, config, commitSha }: { view: Deploymen
           ["Root directory", source.rootDir || null],
         ]
         : [["Source", "None"]]} />
+      {evidenceOf(view) ? <Fields title="Builder" fields={[
+        ["Built on", evidenceOf(view)?.builder ?? null],
+        ["Why", evidenceOf(view)?.reason ?? null],
+        ["Skipped", evidenceOf(view)?.skipped.join(" · ") || null],
+        ["GitHub run", evidenceOf(view)?.runUrl ?? null],
+      ]} /> : null}
       {source.type === "git" ? <Fields title="Build" fields={[
         ["Build method", build.buildMethod === "dockerfile" ? "Dockerfile" : "Railpack"],
         ["Dockerfile", build.dockerfilePath],

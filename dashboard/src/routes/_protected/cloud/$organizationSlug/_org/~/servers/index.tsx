@@ -15,6 +15,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { AddServerDialog } from "./-components/add-server-dialog";
 import { RuntimeMachineRow } from "./-components/server-list-rows";
 import { ServersSkeleton } from "./-components/servers-skeleton";
+import { BuildOrderSection, FakeServerRows } from "#/prototype/build-order/servers";
 import {
   getServerListState,
   incompleteRuntimeObservationDescription,
@@ -93,6 +94,11 @@ function RouteComponent() {
 
       {listState.kind === "loading" ? (
         <ServersSkeleton listOnly />
+      ) : listState.kind === "empty" && !query ? (
+        // PROTOTYPE: fake servers stand in for an empty staging cluster.
+        <div className="flex flex-col gap-3">
+          <FakeServerRows />
+        </div>
       ) : listState.kind === "empty" ? (
         <Empty variant={listState.variant}>
           <EmptyHeader>
@@ -114,8 +120,10 @@ function RouteComponent() {
               organizationSlug={organizationSlug}
             />
           ))}
+          <FakeServerRows />
         </div>
       )}
+      <BuildOrderSection />
     </DashboardPage>
   );
 }
