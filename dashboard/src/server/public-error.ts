@@ -180,6 +180,16 @@ export function statusForPublicError(error: PublicErrorData): number {
   }
 }
 
+/**
+ * For a machine client that prints what went wrong (the GitHub runner): a typed public failure keeps
+ * the message its code wrote, instead of its category's generic one.
+ */
+export function authoredErrorResponse(cause: unknown) {
+  const error = encodePublicBoundaryError(cause);
+  const authored = Option.isSome(decodePublicFailure(cause)) && cause instanceof Error && cause.message ? cause.message : error.message;
+  return Response.json({ ...error, message: authored }, { status: statusForPublicError(error) });
+}
+
 export function publicErrorResponse(
   cause: unknown,
   init?: {
