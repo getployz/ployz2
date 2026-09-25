@@ -14,7 +14,10 @@ use crate::filesystem::atomic_write;
 use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
 use super::release::{fetch, installed_release};
-use super::{Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_host, systemctl};
+use super::{
+    Error, InstallPaths, PLOYZ_USER, RUN_DIR_MODE, SOCKET_MODE, command_exists, run_apt, run_host,
+    systemctl,
+};
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -111,11 +114,12 @@ pub(super) fn create_user_and_directories(
     }
     let data = paths.data_dir.to_string_lossy();
     let run = paths.run_dir.to_string_lossy();
+    let mode = format!("{RUN_DIR_MODE:04o}");
     run_host(
         "create Ployz directories",
         "install",
         [
-            "-d", "-m", "0750", "-o", PLOYZ_USER, "-g", PLOYZ_USER, &data, &run,
+            "-d", "-m", &mode, "-o", PLOYZ_USER, "-g", PLOYZ_USER, &data, &run,
         ],
     )?;
     Ok(())
@@ -175,15 +179,12 @@ pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Resul
     )?;
     write_file_atomically(
         &paths.systemd_dir.join("ployz-volume-plugin.socket"),
-        "[Unit]\nDescription=Ployz Docker Volume plugin socket\nBefore=docker.service\n\n[Socket]\nListenStream=/run/docker/plugins/ployz.sock\nSocketMode=0660\nDirectoryMode=0755\nAccept=no\nService=ployz-volume-plugin.service\n\n[Install]\nWantedBy=sockets.target\n",
+        volume_plugin_socket_unit(),
         "write Volume plugin socket unit",
     )?;
-    let bin = paths.bin_dir.display();
     write_file_atomically(
         &paths.systemd_dir.join("ployz-volume-plugin.service"),
-        &format!(
-            "[Unit]\nDescription=Ployz Docker Volume plugin\nBefore=docker.service\nAfter=zfs-import.target zfs-mount.service ployz-volume-plugin.socket\nRequires=ployz-volume-plugin.socket docker.service\n\n[Service]\nType=simple\nExecStart={bin}/ployzd volume-plugin\nSockets=ployz-volume-plugin.socket\nEnvironmentFile=-/etc/default/ployz\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nRestrictAddressFamilies=AF_UNIX\nRestrictNamespaces=true\n"
-        ),
+        &volume_plugin_service_unit(&paths.bin_dir),
         "write Volume plugin service unit",
     )?;
     if !install_only {
@@ -237,13 +238,67 @@ WantedBy=multi-user.target
 }
 
 /// Any connect starts `ployz.service`; stopping the daemon on purpose means
-/// stopping this socket too. Mode and group match the socket ployzd binds itself
-/// without systemd; `ExecStartPre` restores the `ployz` group on the runtime
-/// directory, which systemd would otherwise create as root-only on boot.
+/// stopping this socket too. `ExecStartPre` restores the `ployz` group on the
+/// runtime directory, which systemd would otherwise create as root-only on boot.
 fn machine_api_socket_unit(run_dir: &Path) -> String {
     let run = run_dir.display();
     format!(
-        "[Unit]\nDescription=Ployz Machine API socket\n\n[Socket]\nExecStartPre=/usr/bin/install -d -m 0750 -o {PLOYZ_USER} -g {PLOYZ_USER} {run}\nListenStream={run}/ployz.sock\nSocketMode=0660\nSocketGroup={PLOYZ_USER}\nAccept=no\n\n[Install]\nWantedBy=sockets.target\n"
+        "\
+[Unit]
+Description=Ployz Machine API socket
+
+[Socket]
+ExecStartPre=/usr/bin/install -d -m {RUN_DIR_MODE:04o} -o {PLOYZ_USER} -g {PLOYZ_USER} {run}
+ListenStream={run}/ployz.sock
+SocketMode={SOCKET_MODE:04o}
+SocketGroup={PLOYZ_USER}
+Accept=no
+
+[Install]
+WantedBy=sockets.target
+"
+    )
+}
+
+fn volume_plugin_socket_unit() -> &'static str {
+    "\
+[Unit]
+Description=Ployz Docker Volume plugin socket
+Before=docker.service
+
+[Socket]
+ListenStream=/run/docker/plugins/ployz.sock
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+Service=ployz-volume-plugin.service
+
+[Install]
+WantedBy=sockets.target
+"
+}
+
+fn volume_plugin_service_unit(bin_dir: &Path) -> String {
+    let bin = bin_dir.display();
+    format!(
+        "\
+[Unit]
+Description=Ployz Docker Volume plugin
+Before=docker.service
+After=zfs-import.target zfs-mount.service ployz-volume-plugin.socket
+Requires=ployz-volume-plugin.socket docker.service
+
+[Service]
+Type=simple
+ExecStart={bin}/ployzd volume-plugin
+Sockets=ployz-volume-plugin.socket
+EnvironmentFile=-/etc/default/ployz
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+"
     )
 }
 

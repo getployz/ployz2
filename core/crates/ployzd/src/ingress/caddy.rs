@@ -139,7 +139,7 @@ pub async fn run(
 ///
 /// # Errors
 ///
-/// Returns a filesystem, rendering, validation, or acknowledged-load error.
+/// Returns a filesystem, validation, or acknowledged-load error.
 pub(crate) async fn reconcile<A: CaddyAdmin>(
     projection: &IngressProjection,
     config_file: &Path,

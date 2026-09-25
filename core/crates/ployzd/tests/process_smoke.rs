@@ -107,6 +107,52 @@ fn volume_plugin_accepts_the_systemd_socket() {
 }
 
 #[test]
+fn volume_plugin_rejects_more_than_one_systemd_socket() {
+    let root = TestDir::new("ployzd-volume-plugin-two-sockets");
+    fs::create_dir_all(&root.0).unwrap();
+    let first = root.0.join("first.sock");
+    let second = root.0.join("second.sock");
+    let mut plugin = ChildGuard(
+        Command::new("systemd-socket-activate")
+            .arg(format!("--listen={}", first.display()))
+            .arg(format!("--listen={}", second.display()))
+            .args([env!("CARGO_BIN_EXE_ployzd"), "volume-plugin"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !first.exists() {
+        assert!(Instant::now() < deadline, "systemd socket was not created");
+        thread::sleep(Duration::from_millis(10));
+    }
+    // systemd-socket-activate execs ployzd only once a connection arrives.
+    let _stream = std::os::unix::net::UnixStream::connect(&first).unwrap();
+
+    let status = loop {
+        if let Some(status) = plugin.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "ployzd did not exit");
+        thread::sleep(Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    plugin
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(!status.success());
+    assert!(
+        stderr.contains("expected at most one systemd socket"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn volume_plugin_requires_exactly_one_systemd_socket() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .arg("volume-plugin")
