@@ -101,7 +101,7 @@ function ResourceNavigation({
 }) {
   const [open, setOpen] = useState(selected);
   const Icon = nodeIcons[node.type];
-  const pages = node.type === "service" ? SERVICE_PAGES : [SERVICE_PAGES[0]];
+  const pages = node.type === "service" ? SERVICE_PAGES : SERVICE_PAGES.filter((page) => page.id === "settings");
   return (
     <SidebarMenuItem>
       <Collapsible open={open} onOpenChange={setOpen}>

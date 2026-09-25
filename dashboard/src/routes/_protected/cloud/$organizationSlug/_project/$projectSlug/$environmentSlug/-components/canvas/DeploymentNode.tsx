@@ -9,7 +9,7 @@ import { nodeOutcomeLabels, type DeploymentNodeView } from "#/modules/deployment
 import { getServiceIcon, getServiceSubtitle } from "./service-node-helpers";
 import type { CanvasDeploymentNodeData } from "./types";
 
-const outcomeBadges = {
+export const outcomeBadges = {
   deployed: "success", removed: "secondary", failed: "destructive", not_attempted: "secondary", unchanged: "secondary",
   queued: "secondary", building: "info", deploying: "info",
 } as const satisfies Record<DeploymentNodeView["outcome"], "success" | "secondary" | "destructive" | "info">;

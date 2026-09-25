@@ -145,16 +145,11 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
 
 export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView };
 
-/** One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt. */
-export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null): DeploymentAttempt | null {
+/** An environment's attempt rows and node snapshots: what `attemptTarget` reads besides the attempt itself. */
+function useAttemptTargetInputs(organizationSlug: string, environmentId: string) {
   const scope = useCollectionScope();
-  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
   const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
   const snapshots = getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
-  const { data: attempts } = useLiveSuspenseQuery({
-    queryKey: ["deployment-attempt", summaries.id, deploymentId],
-    query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.id, deploymentId ?? "")),
-  });
   const { data: history } = useLiveSuspenseQuery({
     queryKey: ["deployment-attempt-history", deployments.id, environmentId],
     query: (q) => q.from({ deployment: deployments }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
@@ -165,8 +160,41 @@ export function useDeploymentAttempt(organizationSlug: string, environmentId: st
     query: (q) => q.from({ snapshot: snapshots }).where(({ snapshot }) => eq(snapshot.environmentId, environmentId))
       .select(({ snapshot }) => ({ environmentDeploymentId: snapshot.environmentDeploymentId, nodeType: snapshot.nodeType, nodeId: snapshot.nodeId, config: snapshot.config })),
   });
+  return { history, snapshots: snapshotRows };
+}
+
+function projectAttempt(deployment: EnvironmentDeploymentSummary, inputs: ReturnType<typeof useAttemptTargetInputs>): DeploymentAttempt {
+  const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, ...inputs });
+  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes }) };
+}
+
+/** One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt. */
+export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null): DeploymentAttempt | null {
+  const scope = useCollectionScope();
+  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
+  const { data: attempts } = useLiveSuspenseQuery({
+    queryKey: ["deployment-attempt", summaries.id, deploymentId],
+    query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.id, deploymentId ?? "")),
+  });
+  const inputs = useAttemptTargetInputs(organizationSlug, environmentId);
   const deployment = attempts[0];
   if (!deployment || deployment.environmentId !== environmentId) return null;
-  const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history, snapshots: snapshotRows });
-  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes }) };
+  return projectAttempt(deployment, inputs);
+}
+
+/** The environment's attempts whose target holds this node, newest first, each with the node's view. */
+// ponytail: projects every attempt of the environment on each change; window the history if it grows long.
+export function useNodeDeployments(organizationSlug: string, environmentId: string, nodeId: string) {
+  const scope = useCollectionScope();
+  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
+  const { data: attempts } = useLiveSuspenseQuery({
+    queryKey: ["node-deployments", summaries.id, environmentId],
+    query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
+      .orderBy(({ deployment }) => deployment.createdAt, "desc"),
+  });
+  const inputs = useAttemptTargetInputs(organizationSlug, environmentId);
+  return attempts.flatMap((deployment) => {
+    const node = projectAttempt(deployment, inputs).view.nodes.find((candidate) => candidate.nodeId === nodeId);
+    return node ? [{ deployment, node }] : [];
+  });
 }
