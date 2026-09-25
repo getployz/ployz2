@@ -1,7 +1,7 @@
 import type { BuildGrantId } from "@ployz/sdk";
 import { Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import type { CollectorCheckpoint } from "./preparation-progress";
+import { collectorCheckpointSchema } from "./preparation-progress";
 
 /**
  * Why a Builder is in an Image Build's walk: the Service prefers it, or the Build Order puts it
@@ -24,35 +24,43 @@ export const skipReasonSchema = Schema.Union([
 ]);
 export type SkipReason = typeof skipReasonSchema.Type;
 
+/** Why a Builder didn't take an Image Build, as the canvas, the build log and a failed build say it. */
+export function skipReasonText(reason: SkipReason): string {
+  const builder = reason.builder === "github" ? "GitHub" : "Your servers";
+  switch (reason.kind) {
+    case "not_connected": return `${builder}: the repository isn't connected through the GitHub App`;
+    case "no_permission": return `${builder}: no permission in ${reason.repository}`;
+    case "no_workflow": return `${builder}: no workflow in ${reason.repository}`;
+    case "multi_platform": return `${builder}: needs ${reason.platforms.join("+")}`;
+    case "dispatch_failed": return `${builder}: could not start the build (${reason.message})`;
+    case "ended_before_start": return `${builder}: the run ended before it started`;
+    case "preferred_unavailable": return reason.name === null ? "Preferred server: no longer in the Cluster" : `${reason.name}: no longer accepts builds`;
+    case "not_started": return reason.builder === "github"
+      ? `${builder}: no runner in ${reason.minutes} min`
+      : `${builder}: none started it in ${reason.minutes} min`;
+  }
+}
+
+/** Mirrors core's `BuildGrantId` (ployz-core `value.rs`): 64 lowercase hex, its key's public half. */
 const buildGrantIdSchema = Schema.declare<BuildGrantId>(
   (value): value is BuildGrantId => typeof value === "string" && /^[0-9a-f]{64}$/u.test(value),
 );
 
-const collectorCheckpointSchema = Schema.Struct({
-  build: Schema.Number,
-  open: Schema.NullOr(Schema.String),
-  stepFailed: Schema.Boolean,
-  rows: Schema.Array(Schema.Struct({
-    build: Schema.Number, key: Schema.String, name: Schema.String,
-    startedAt: Schema.NullOr(Schema.String), completedAt: Schema.NullOr(Schema.String),
-    cached: Schema.Boolean, error: Schema.NullOr(Schema.String),
-  })),
-}) satisfies Schema.Codec<CollectorCheckpoint>;
 
 /**
- * An Image Build GitHub Actions took: its dispatched run and why GitHub took it, then the runner's
- * one check-in and its Build Steps as they arrive. Present exactly while GitHub is the Builder.
+ * An Image Build GitHub Actions took: its dispatched run and why GitHub took it, then the Build
+ * Grant and Build Steps once it started. Present exactly while GitHub is the Builder; the run id and
+ * check-in time, which the race between check-in and a skip is decided on, are columns.
  */
 export const githubImageBuildSchema = Schema.Struct({
-  runId: Schema.Number,
   runUrl: Schema.String,
+  /** The repository the run is in, as `owner/name`. */
+  fullName: Schema.String,
   /** The `job_workflow_ref` the run's OIDC token must carry: the build workflow on the default branch. */
   workflowRef: Schema.String,
   reason: Schema.Literals(CANDIDATE_REASONS),
-  /** When (Unix ms) the runner checked in: the build started. */
-  checkedInAt: Schema.NullOr(Schema.Number),
   /** The Build Grant minted at check-in, and the fingerprint the runner was told to build. */
-  grant: Schema.NullOr(Schema.Struct({ id: buildGrantIdSchema, fingerprint: Schema.String })),
+  grant: Schema.NullOr(Schema.Struct({ id: buildGrantIdSchema, fingerprint: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)) })),
   /** The runner's Build Steps so far; `platforms` once it reported its end (empty: it failed). */
   report: Schema.NullOr(Schema.Struct({
     received: Schema.Number,

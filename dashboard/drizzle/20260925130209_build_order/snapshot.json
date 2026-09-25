@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "fbbeb81a-8b97-43c5-a0d9-bb642eb5c9d4",
+  "id": "dd8679d9-ed03-4f46-b387-d1107f43acda",
   "prevIds": [
     "9f4f9765-79be-49b7-9c87-9d75ba4a7cd7"
   ],
@@ -2951,6 +2951,32 @@
       "generated": null,
       "identity": null,
       "name": "builder",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_image_build"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "github_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_image_build"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "checked_in_at",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment_image_build"
@@ -10406,8 +10432,15 @@
       "table": "environment_deployment_image_build"
     },
     {
-      "value": "(\"builder\" = 'github') = (\"github\" is not null)",
+      "value": "(\"builder\" = 'github') = (\"github\" is not null and \"github_run_id\" is not null)",
       "name": "environment_deployment_image_build_github_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "environment_deployment_image_build"
+    },
+    {
+      "value": "\"checked_in_at\" is null or \"builder\" = 'github'",
+      "name": "environment_deployment_image_build_check_in_check",
       "entityType": "checks",
       "schema": "public",
       "table": "environment_deployment_image_build"

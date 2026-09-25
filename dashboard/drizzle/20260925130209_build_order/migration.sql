@@ -12,6 +12,8 @@ CREATE TABLE "environment_deployment_image_build" (
 	"inngest_run_id" text NOT NULL,
 	"finished_at" timestamp with time zone,
 	"builder" text DEFAULT 'server' NOT NULL,
+	"github_run_id" bigint,
+	"checked_in_at" timestamp with time zone,
 	"github" jsonb,
 	"skips" jsonb DEFAULT '[]' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -19,7 +21,8 @@ CREATE TABLE "environment_deployment_image_build" (
 	CONSTRAINT "environment_deployment_image_build_service_unique" UNIQUE("deployment_id","service_id"),
 	CONSTRAINT "environment_deployment_image_build_receipt_check" CHECK (("status" = 'built') = ("encrypted_receipt" is not null)),
 	CONSTRAINT "environment_deployment_image_build_builder_check" CHECK ("builder" in ('server', 'github')),
-	CONSTRAINT "environment_deployment_image_build_github_check" CHECK (("builder" = 'github') = ("github" is not null))
+	CONSTRAINT "environment_deployment_image_build_github_check" CHECK (("builder" = 'github') = ("github" is not null and "github_run_id" is not null)),
+	CONSTRAINT "environment_deployment_image_build_check_in_check" CHECK ("checked_in_at" is null or "builder" = 'github')
 );
 --> statement-breakpoint
 CREATE TABLE "organization_build_order" (

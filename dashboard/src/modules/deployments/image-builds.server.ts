@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { BuildGrantId, BuildReceipt, BuildReceipts, MachineId } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { organizationIdForDeployment } from "#/db/scope-values.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -51,7 +51,7 @@ export const START_WITHIN_MINUTES = 3;
 
 type Build = Pick<ImageBuildTarget, "id" | "image">;
 /** An Image Build that settled as `status`, as the walk reports it. */
-export const settled =(build: Build, status: ImageBuildStatus) =>
+export const settled = (build: Build, status: ImageBuildStatus) =>
   ({ kind: "settled", result: { imageBuildId: build.id, image: build.image, status } }) satisfies ImageBuildAttempt;
 
 /** The row's status once a guarded transition found it moved on. A vanished row reads failed. */
@@ -84,14 +84,34 @@ export const startImageBuilds = Effect.fn("Deployments.startImageBuilds")(functi
   return rows.map((row, buildIndex): ImageBuildTarget => ({ ...row, buildIndex }));
 });
 
-/** One Image Build as stored, its GitHub state decoded; undefined once gone. */
+type StoredImageBuild = typeof table.$inferSelect;
+/** An Image Build as stored, narrowed on its Builder: GitHub's has its run and decoded state. */
+export type ImageBuildRow =
+  | (StoredImageBuild & { builder: "server"; github: null })
+  | (StoredImageBuild & { builder: "github"; github: GithubImageBuild; githubRunId: number });
+
+/** Decodes a stored row's GitHub state. Cloud wrote it, so one that doesn't decode is a defect. */
+const decodeImageBuild = (row: StoredImageBuild) => Effect.gen(function* () {
+  if (row.builder === "server" || row.github === null || row.githubRunId === null) {
+    return { ...row, builder: "server", github: null } satisfies ImageBuildRow;
+  }
+  const github = yield* Schema.decodeUnknownEffect(githubImageBuildSchema)(row.github).pipe(Effect.orDie);
+  return { ...row, builder: "github", github, githubRunId: row.githubRunId } satisfies ImageBuildRow;
+}) satisfies Effect.Effect<ImageBuildRow>;
+
+/** One Image Build as stored; undefined once gone. */
 export const loadImageBuild = Effect.fn("Deployments.loadImageBuild")(function* (imageBuildId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select().from(table).where(eq(table.id, imageBuildId)).limit(1);
-  if (!row) return undefined;
-  // Cloud wrote it; a row that doesn't decode is a defect, not a user error.
-  const github = row.github === null ? null : yield* Schema.decodeUnknownEffect(githubImageBuildSchema)(row.github).pipe(Effect.orDie);
-  return { ...row, github };
+  return row && (yield* decodeImageBuild(row));
+});
+
+/** An attempt's Image Builds GitHub holds now, loaded in one read. */
+export const loadGithubImageBuilds = Effect.fn("Deployments.loadGithubImageBuilds")(function* (inngestRunId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(table).where(and(eq(table.inngestRunId, inngestRunId), eq(table.builder, "github")));
+  const decoded = yield* Effect.forEach(rows, decodeImageBuild);
+  return decoded.filter((row) => row.builder === "github");
 });
 
 /** Records the Server the Engine chose while the row still builds, so the choice shows during the build. */
@@ -102,15 +122,12 @@ export const recordServerChoice = Effect.fn("Deployments.recordServerChoice")(fu
 });
 
 /** GitHub takes a building row: its dispatched run. Settled meanwhile (cancelled): nothing is claimed. */
-export const claimForGithub = Effect.fn("Deployments.claimImageBuildForGithub")(function* (build: Build, github: GithubImageBuild) {
+export const claimForGithub = Effect.fn("Deployments.claimImageBuildForGithub")(function* (build: Build, runId: number, github: GithubImageBuild) {
   const { drizzle } = yield* Database;
-  const [claimed] = yield* drizzle.update(table).set({ builder: "github", github, machineId: null, serverChoice: null, updatedAt: new Date() })
+  const [claimed] = yield* drizzle.update(table).set({ builder: "github", githubRunId: runId, github, machineId: null, serverChoice: null, updatedAt: new Date() })
     .where(and(eq(table.id, build.id), eq(table.status, "building"))).returning({ id: table.id });
   return claimed ? { kind: "claimed" as const } : settled(build, yield* statusNow(build.id));
 });
-
-/** Not checked in yet: the build hasn't started on GitHub, so it may still move. */
-const notStarted = or(isNull(table.github), sql`${table.github} -> 'checkedInAt' = 'null'::jsonb`);
 
 /**
  * Adds the current Builder to the skip trail and clears what it left, so the next one starts clean.
@@ -120,8 +137,8 @@ export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(functi
   const { drizzle } = yield* Database;
   const [skipped] = yield* drizzle.update(table).set({
     skips: sql`${table.skips} || ${JSON.stringify([reason])}::jsonb`,
-    builder: "server", github: null, machineId: null, serverChoice: null, updatedAt: new Date(),
-  }).where(and(eq(table.id, build.id), eq(table.status, "building"), notStarted)).returning({ id: table.id });
+    builder: "server", githubRunId: null, github: null, machineId: null, serverChoice: null, updatedAt: new Date(),
+  }).where(and(eq(table.id, build.id), eq(table.status, "building"), isNull(table.checkedInAt))).returning({ id: table.id });
   if (skipped) return { kind: "skipped", reason } satisfies ImageBuildAttempt;
   const status = yield* statusNow(build.id);
   return status === "building" ? { kind: "started" as const } : settled(build, status);
@@ -140,11 +157,9 @@ export const skipUnstarted = (build: Build, reason: SkipReason) => skipImageBuil
  */
 export const checkInImageBuild = Effect.fn("Deployments.checkInImageBuild")(function* (imageBuildId: string, runId: number) {
   const { drizzle } = yield* Database;
-  const [checkedIn] = yield* drizzle.update(table).set({
-    github: sql`jsonb_set(${table.github}, '{checkedInAt}', ${JSON.stringify(Date.now())}::jsonb)`, updatedAt: new Date(),
-  }).where(and(
-    eq(table.id, imageBuildId), eq(table.status, "building"),
-    sql`(${table.github} ->> 'runId')::bigint = ${runId}`, sql`${table.github} -> 'checkedInAt' = 'null'::jsonb`,
+  const now = new Date();
+  const [checkedIn] = yield* drizzle.update(table).set({ checkedInAt: now, updatedAt: now }).where(and(
+    eq(table.id, imageBuildId), eq(table.status, "building"), eq(table.githubRunId, runId), isNull(table.checkedInAt),
   )).returning({ id: table.id });
   return checkedIn !== undefined;
 });

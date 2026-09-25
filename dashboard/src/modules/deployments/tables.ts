@@ -276,7 +276,11 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   finishedAt: timestamp("finished_at", { mode: "date", withTimezone: true }),
   /** The Builder that holds the build now. */
   builder: text("builder").notNull().default("server").$type<ImageBuilder>(),
-  /** GitHub's run, check-in and Build Steps; present exactly while GitHub is the Builder. */
+  /** GitHub's dispatched run: the check-in and the start-limit skip race on it. */
+  githubRunId: bigint("github_run_id", { mode: "number" }),
+  /** The runner checked in: the build started on GitHub and never moves. */
+  checkedInAt: timestamp("checked_in_at", { mode: "date", withTimezone: true }),
+  /** GitHub's run details, grant and Build Steps; present exactly while GitHub is the Builder. */
   github: jsonb("github").$type<GithubImageBuild>(),
   /** Why each Builder tried before this one didn't take the build, in order: the skip trail. */
   skips: jsonb("skips").notNull().default(sql`'[]'::jsonb`).$type<readonly SkipReason[]>(),
@@ -286,7 +290,8 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   unique("environment_deployment_image_build_service_unique").on(table.deploymentId, table.serviceId),
   check("environment_deployment_image_build_receipt_check", sql`(${table.status} = 'built') = (${table.encryptedReceipt} is not null)`),
   check("environment_deployment_image_build_builder_check", sql`${table.builder} in ('server', 'github')`),
-  check("environment_deployment_image_build_github_check", sql`(${table.builder} = 'github') = (${table.github} is not null)`),
+  check("environment_deployment_image_build_github_check", sql`(${table.builder} = 'github') = (${table.github} is not null and ${table.githubRunId} is not null)`),
+  check("environment_deployment_image_build_check_in_check", sql`${table.checkedInAt} is null or ${table.builder} = 'github'`),
 ]);
 
 export type ImageBuilder = "server" | "github";

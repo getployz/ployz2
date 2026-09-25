@@ -65,8 +65,7 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
       const writes = collector.event(event);
       await Effect.runPromiseWith(progressContext)(log(writes));
     }, { signal: cancellation.signal, startWithinMs });
-    const ended: ClusterBuild = result.kind === "queued" ? { kind: "queued" } : { kind: "built", receipt: result.receipt };
-    return ended;
+    return result.kind === "queued" ? { kind: "queued" as const } : { kind: "built" as const, receipt: result.receipt };
   }).pipe(
     Effect.scoped,
     Effect.raceFirst(watchDeploymentCancellation(imageBuildWanted(build.id), cancellation)),

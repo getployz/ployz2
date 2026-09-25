@@ -1,27 +1,23 @@
 import "@tanstack/react-start/server-only";
 import type { BuildGrantId, BuildReceipt, MachineId, PreparationEvent } from "@ployz/sdk";
-import { and, eq, isNotNull } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { buildFingerprints, buildGrantTag, ployzVersion } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
-import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import type { BuildCandidate } from "./build-order";
 import { persistBuildLog } from "./deployment-events.server";
-import type { GithubImageBuild } from "./image-build";
 import {
-  checkInImageBuild, claimForGithub, loadImageBuild, recordGithubGrant, recordGithubReport, settleImageBuild, settled,
+  checkInImageBuild, claimForGithub, loadGithubImageBuilds, loadImageBuild, recordGithubGrant, recordGithubReport, settleImageBuild, settled,
   skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
-  type ImageBuildAttempt, type ImageBuildTarget,
+  type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
 import { preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
 import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
 import { connectedRuntime, oneServiceDeployment } from "./runtime-session.server";
 import { pinSourceCommit } from "./runtime-sources.server";
-import { environmentDeploymentImageBuild as imageBuild } from "./tables";
 
 /**
  * GitHub as a Builder. Cloud dispatches the repository's build workflow, the runner checks in once
@@ -88,9 +84,8 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
     installationId: source.installationId, fullName: workflow.fullName, defaultBranch: workflow.defaultBranch,
     inputs: { build: build.id, cloud: config.app.url.origin, ployz_version: ployzVersion(), runner },
   });
-  const claim = yield* claimForGithub(build, {
-    runId: run.runId, runUrl: run.runUrl, workflowRef: run.workflowRef, reason: candidate.reason,
-    checkedInAt: null, grant: null, report: null,
+  const claim = yield* claimForGithub(build, run.runId, {
+    runUrl: run.runUrl, fullName: workflow.fullName, workflowRef: run.workflowRef, reason: candidate.reason, grant: null, report: null,
   });
   if (claim.kind === "settled") {
     // Settled (cancelled) while dispatching: the run must not build.
@@ -103,8 +98,7 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   Effect.catch((error) => skipUnstarted(build, { builder: "github", kind: "dispatch_failed", message: error.message })),
 ));
 
-type ImageBuildRow = NonNullable<Effect.Success<ReturnType<typeof loadImageBuild>>>;
-type GithubRow = ImageBuildRow & { github: GithubImageBuild };
+type GithubRow = Extract<ImageBuildRow, { builder: "github" }>;
 
 /**
  * One look at a dispatched build, after the Workflow run webhook reported its run `ended` or a wait
@@ -116,13 +110,11 @@ type GithubRow = ImageBuildRow & { github: GithubImageBuild };
 export const checkGithubImageBuild = Effect.fn("Deployments.checkGithubImageBuild")(function* (
   build: ImageBuildTarget, seen: { ended: boolean; startLimit: boolean },
 ) {
-  const loaded = yield* loadImageBuild(build.id);
-  if (loaded?.status !== "building" || loaded.github === null) return settled(build, loaded?.status ?? "failed") satisfies GithubBuildCheck;
-  const row: GithubRow = { ...loaded, github: loaded.github };
+  const row = yield* loadImageBuild(build.id);
+  if (row?.status !== "building" || row.builder !== "github") return settled(build, row?.status ?? "failed") satisfies GithubBuildCheck;
   if (seen.ended || (yield* githubRunEnded(row))) return yield* finishGithubImageBuild(build, row, false);
-  const checkedInAt = row.github.checkedInAt;
-  if (checkedInAt === null) return seen.startLimit ? yield* withdrawGithubImageBuild(build, row) : waiting;
-  if (Date.now() - checkedInAt > GITHUB_RUN_BUDGET_MS) return yield* finishGithubImageBuild(build, row, true);
+  if (row.checkedInAt === null) return seen.startLimit ? yield* withdrawGithubImageBuild(build, row) : waiting;
+  if (Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS) return yield* finishGithubImageBuild(build, row, true);
   return waiting;
 });
 
@@ -135,8 +127,7 @@ const githubRunEnded = (row: GithubRow) => githubRun(row).pipe(
 /** Where a build's run lives on GitHub, through the Service's GitHub App installation. */
 const githubRun = (row: GithubRow) => loadDeploymentContext(row.deploymentId).pipe(Effect.map((context) => {
   const source = installedSource(context?.snapshots.find((snapshot) => snapshot.serviceId === row.serviceId));
-  const fullName = row.github.workflowRef.split("/.github/")[0];
-  return source && fullName ? { installationId: source.installationId, fullName, runId: row.github.runId } : null;
+  return source ? { installationId: source.installationId, fullName: row.github.fullName, runId: row.githubRunId } : null;
 }));
 
 /**
@@ -162,15 +153,15 @@ const authorizeRunner = Effect.fn("Deployments.authorizeGithubRunner")(function*
   const config = yield* AppConfig;
   const claims = yield* verifyGithubOidcToken(token, config.app.url.origin).pipe(Effect.mapError(() => new Unauthorized()));
   const row = yield* loadImageBuild(imageBuildId);
-  if (!row || row.github === null) return yield* new NotFound({ message: "No GitHub build has this id." });
+  if (row?.builder !== "github") return yield* new NotFound({ message: "No GitHub build has this id." });
   const context = yield* loadDeploymentContext(row.deploymentId);
   const source = installedSource(context?.snapshots.find((snapshot) => snapshot.serviceId === row.serviceId));
   if (!context || !source) return yield* new NotFound({ message: "No GitHub build has this id." });
   if (claims.repository_id !== String(source.repositoryId)) return yield* new Forbidden({ message: "The token is for another repository." });
   if (claims.job_workflow_ref !== row.github.workflowRef) return yield* new Forbidden({ message: "The token is for another workflow or branch." });
-  if (claims.run_id !== String(row.github.runId)) return yield* new Forbidden({ message: "The token is for another run." });
+  if (claims.run_id !== String(row.githubRunId)) return yield* new Forbidden({ message: "The token is for another run." });
   if (claims.event_name !== "workflow_dispatch") return yield* new Forbidden({ message: "The run was not dispatched by Ployz." });
-  return { row, github: row.github, context };
+  return { row, context };
 });
 
 /**
@@ -180,9 +171,9 @@ const authorizeRunner = Effect.fn("Deployments.authorizeGithubRunner")(function*
  * Nothing secret is ever a workflow input.
  */
 export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(function* (request: Request, imageBuildId: string) {
-  const { row, github, context } = yield* authorizeRunner(request, imageBuildId);
+  const { row, context } = yield* authorizeRunner(request, imageBuildId);
   // The run must still hold the build: a skip at the start limit clears it in the same row.
-  if (!(yield* checkInImageBuild(row.id, github.runId))) {
+  if (!(yield* checkInImageBuild(row.id, row.githubRunId))) {
     return yield* new Conflict({ message: "This build already checked in or is no longer wanted." });
   }
   const snapshot = context.snapshots.find((candidate) => candidate.serviceId === row.serviceId);
@@ -230,11 +221,12 @@ const MAX_STEPS_REPORT_BYTES = 16 * 1024 * 1024;
  * batch repeating lines already taken (a retry) files only the new ones.
  */
 export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSteps")(function* (request: Request, imageBuildId: string, text: string) {
-  const { row, github } = yield* authorizeRunner(request, imageBuildId);
+  const { row } = yield* authorizeRunner(request, imageBuildId);
+  const github = row.github;
   if (text.length > MAX_STEPS_REPORT_BYTES) return yield* new Validation({ message: "The report is too large." });
   const report = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(stepsReportSchema))(text)
     .pipe(Effect.mapError(() => new Validation({ message: "The report is not Build Steps." })));
-  if (github.checkedInAt === null) return yield* new Conflict({ message: "This build has not checked in." });
+  if (row.checkedInAt === null) return yield* new Conflict({ message: "This build has not checked in." });
   if (row.status !== "building" || github.report?.platforms) return yield* new Conflict({ message: "This build already ended." });
   const received = github.report?.received ?? 0;
   if (report.from > received) return yield* new Conflict({ message: `Build Steps before line ${report.from} are missing; send from line ${received}.` });
@@ -264,7 +256,7 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
  * ended before it checked in never started, so GitHub is skipped. A started run that pushed nothing failed.
  */
 const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(function* (build: ImageBuildTarget, row: GithubRow, timedOut: boolean) {
-  if (row.github.checkedInAt === null) {
+  if (row.checkedInAt === null) {
     const skip = yield* skipImageBuilder(build, { builder: "github", kind: "ended_before_start" });
     // It checked in just now; the next check finds its run ended on GitHub and finishes it.
     return skip.kind === "started" ? waiting : skip;
@@ -303,11 +295,7 @@ const endGrant = (organizationId: string, machineId: MachineId, grantId: BuildGr
 
 /** An ended attempt's GitHub builds: cancel each run and end its grant. Idempotent. */
 export const cancelGithubImageBuilds = Effect.fn("Deployments.cancelGithubImageBuilds")(function* (inngestRunId: string) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ id: imageBuild.id }).from(imageBuild)
-    .where(and(eq(imageBuild.inngestRunId, inngestRunId), eq(imageBuild.builder, "github"), isNotNull(imageBuild.github)));
-  yield* Effect.forEach(rows, ({ id }) => loadImageBuild(id).pipe(
-    Effect.flatMap((row) => row?.github ? cancelGithubBuildRun({ ...row, github: row.github }) : Effect.void),
-  ), { concurrency: 4, discard: true });
+  const rows = yield* loadGithubImageBuilds(inngestRunId);
+  yield* Effect.forEach(rows, cancelGithubBuildRun, { concurrency: 4, discard: true });
   return rows.length;
 });

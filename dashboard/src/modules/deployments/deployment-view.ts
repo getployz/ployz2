@@ -4,7 +4,7 @@ import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
-import type { CandidateReason, SkipReason } from "./image-build";
+import { skipReasonText, type CandidateReason, type SkipReason } from "./image-build";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 import { isActiveDeployment } from "./runtime-contract";
@@ -53,23 +53,6 @@ export type BuildLog = {
   output: readonly { stepId: number; text: string }[];
   imageBuilds?: readonly ImageBuildEvidence[];
 };
-
-/** Why a Builder didn't take an Image Build, as the canvas, the build log and a failed build say it. */
-export function skipReasonText(reason: SkipReason): string {
-  const builder = reason.builder === "github" ? "GitHub" : "Your servers";
-  switch (reason.kind) {
-    case "not_connected": return `${builder}: the repository isn't connected through the GitHub App`;
-    case "no_permission": return `${builder}: no permission in ${reason.repository}`;
-    case "no_workflow": return `${builder}: no workflow in ${reason.repository}`;
-    case "multi_platform": return `${builder}: needs ${reason.platforms.join("+")}`;
-    case "dispatch_failed": return `${builder}: could not start the build (${reason.message})`;
-    case "ended_before_start": return `${builder}: the run ended before it started`;
-    case "preferred_unavailable": return reason.name === null ? "Preferred server: no longer in the Cluster" : `${reason.name}: no longer accepts builds`;
-    case "not_started": return reason.builder === "github"
-      ? `${builder}: no runner in ${reason.minutes} min`
-      : `${builder}: none started it in ${reason.minutes} min`;
-  }
-}
 
 /** Why GitHub Actions took an Image Build, as recorded when it did. */
 const githubReasonText = {

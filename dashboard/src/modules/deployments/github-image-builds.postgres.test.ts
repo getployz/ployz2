@@ -268,7 +268,8 @@ describe("Image Builds on GitHub Actions", () => {
     });
     expect(await row()).toMatchObject({
       status: "building", builder: "github",
-      github: { runId: githubRunId, workflowRef, reason: "first_in_build_order", checkedInAt: null, grant: null, report: null },
+      githubRunId, checkedInAt: null,
+      github: { fullName: "owner/repo", workflowRef, reason: "first_in_build_order", grant: null, report: null },
     });
   });
 
@@ -400,7 +401,7 @@ describe("Image Builds on GitHub Actions", () => {
     await dispatch();
     await checkIn(oidcToken());
     expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: true }))).toEqual({ kind: "waiting" });
-    expect(await row()).toMatchObject({ status: "building", builder: "github", github: { runId: githubRunId }, skips: [] });
+    expect(await row()).toMatchObject({ status: "building", builder: "github", githubRunId, checkedInAt: expect.any(Date), skips: [] });
     expect(fake.github.map(({ operation }) => operation)).not.toContain("cancel_run");
   });
 
@@ -427,7 +428,7 @@ describe("Image Builds on GitHub Actions", () => {
     expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false }))).toEqual({ kind: "waiting" });
     expect(await row()).toMatchObject({ status: "building", skips: [] });
     await checkIn(oidcToken());
-    await harness.pool.query(`update environment_deployment_image_build set github = jsonb_set(github, '{checkedInAt}', to_jsonb($1::bigint))`, [Date.now() - 3 * 60 * 60_000]);
+    await harness.db.update(schema.environmentDeploymentImageBuild).set({ checkedInAt: new Date(Date.now() - 3 * 60 * 60_000) });
     expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false })))
       .toMatchObject({ kind: "settled", result: { status: "failed" } });
     expect(await row()).toMatchObject({ failureMessage: "GitHub: the run didn't finish within 2 hours." });

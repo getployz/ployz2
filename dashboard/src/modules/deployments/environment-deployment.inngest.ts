@@ -35,8 +35,7 @@ import {
 } from "#/modules/deployments/image-builds.server";
 import type { BuildCandidate } from "#/modules/deployments/build-order";
 import { imageBuildCandidates } from "#/modules/deployments/build-order.server";
-import { skipReasonText } from "#/modules/deployments/deployment-view";
-import type { SkipReason } from "#/modules/deployments/image-build";
+import { skipReasonText, type SkipReason } from "#/modules/deployments/image-build";
 import { buildOnServers } from "#/modules/deployments/server-image-builds.server";
 import {
   cancelGithubImageBuilds,

@@ -1,4 +1,5 @@
 import type { PreparationEvent } from "@ployz/sdk";
+import { Schema } from "effect";
 import type { PreparationProgress } from "./deployment-progress";
 
 /** A build step as the engine reports it: a BuildKit vertex or a Ployz-owned phase. */
@@ -10,12 +11,17 @@ export type PreparationWrites = { progress: PreparationProgress | null; steps: B
  * Where a collector left off, as JSON: enough to fold a later batch of the same build's events as
  * if it had never stopped. A GitHub runner reports its Build Steps in batches.
  */
-export type CollectorCheckpoint = {
-  build: number;
-  open: string | null;
-  stepFailed: boolean;
-  rows: readonly (Omit<BuildStepWrite, "startedAt" | "completedAt"> & { startedAt: string | null; completedAt: string | null })[];
-};
+export const collectorCheckpointSchema = Schema.Struct({
+  build: Schema.Number,
+  open: Schema.NullOr(Schema.String),
+  stepFailed: Schema.Boolean,
+  rows: Schema.Array(Schema.Struct({
+    build: Schema.Number, key: Schema.String, name: Schema.String,
+    startedAt: Schema.NullOr(Schema.String), completedAt: Schema.NullOr(Schema.String),
+    cached: Schema.Boolean, error: Schema.NullOr(Schema.String),
+  })),
+});
+export type CollectorCheckpoint = typeof collectorCheckpointSchema.Type;
 
 /** Builder messages outside any BuildKit step, such as a Dockerfile parse error. */
 export const BUILD_OUTPUT_KEY = "build-output";
