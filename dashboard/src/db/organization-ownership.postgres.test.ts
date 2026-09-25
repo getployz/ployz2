@@ -24,7 +24,7 @@ const notOrganizationOwned = {
   github_branch_projection: "Belongs to a GitHub installation, which several Organizations can share.",
   github_check_suite_projection: "Belongs to a GitHub installation, which several Organizations can share.",
   github_webhook_delivery: "Belongs to a GitHub installation, which several Organizations can share.",
-  waitlist: "Belongs to no one.",
+  waitlist: "Retired; the baseline squash drops it.",
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
 } satisfies Record<string, string>;
 

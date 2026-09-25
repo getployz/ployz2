@@ -9,4 +9,3 @@ export * from "#/modules/runtime/tables";
 export * from "#/modules/machines/tables";
 export * from "#/modules/github/tables";
 export * from "#/modules/billing/tables";
-export * from "#/modules/waitlist/tables";
