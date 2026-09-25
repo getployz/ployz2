@@ -29,9 +29,9 @@ import { fingerprintReviewedEnvironmentWorkingState } from "#/modules/environmen
 import { savedEnvironmentIntentSchema } from "#/modules/environment-design/saved-intent";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import type { DatabaseService } from "#/server/database.server";
 import { Database } from "#/server/database.server";
 import { withMutationResult } from "#/server/mutation-result.server";
@@ -76,12 +76,12 @@ function saveManualEnvironmentStateSnapshot(input: {
 }
 
 describe("manual environment saved-state persistence", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
   const inngest = new Inngest({ id: "manual-admission-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterAll(async () => {
