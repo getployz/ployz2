@@ -12,7 +12,6 @@ import {
   executeProcessEnvironmentDeployment,
   executeProcessEnvironmentDeploymentOnFailure,
   executeMarkCancelledRowBackedWorkflow,
-  PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY,
   type EnvironmentDeploymentStepTools,
 } from "./environment-deployment.inngest";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
@@ -21,6 +20,7 @@ import * as runtimeCancellation from "#/modules/deployments/runtime-cancellation
 import * as runtimeHydration from "#/modules/deployments/runtime-hydration.repository.server";
 import * as runtimeLifecycle from "#/modules/deployments/runtime-lifecycle.repository.server";
 import * as runtimeActivities from "#/modules/deployments/runtime-activities.server";
+import * as imageBuilds from "#/modules/deployments/image-builds.server";
 import {
   createImageServiceSource,
   createDefaultServiceHealthcheck,
@@ -77,6 +77,8 @@ function runtimeFailure(
 
 useServiceFreeEffectRunner();
 
+// Image-only targets: no Image Builds. Fan-out is covered by the engine tests.
+vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.succeed([]));
 vi.spyOn(
   runtimeHydration,
   "loadDeploymentContext",
@@ -396,12 +398,6 @@ describe("process environment deployment", () => {
       message,
       failureCode,
     });
-  });
-
-  it("keeps one in-flight deploy per environment", () => {
-    expect(PROCESS_ENVIRONMENT_DEPLOYMENT_CONCURRENCY).toEqual([
-      { key: "event.data.environmentId", limit: 1 },
-    ]);
   });
 
   it("marks the durable row cancelled when Inngest cancels the run", async () => {

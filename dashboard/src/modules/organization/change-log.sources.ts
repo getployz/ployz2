@@ -26,6 +26,7 @@ export const changeSources = {
   enrollment_allocation: { key: ["cluster_key"] },
   environment_deployment_build_output: { key: ["id"] },
   environment_deployment_build_step: { key: ["id"] },
+  environment_deployment_image_build: { key: ["id"] },
   environment_deployment_secret: { key: ["environment_deployment_id"] },
   environment_node_config_snapshot_secret: { key: ["snapshot_id"] },
   environment_node_introduction_secret: { key: ["environment_id", "node_type", "node_id"] },

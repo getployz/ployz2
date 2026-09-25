@@ -27,9 +27,9 @@ import { deploymentProgressForEvent } from "./deployment-view";
 import { PloyzPreparationError, type PloyzPreparedDeploy } from "#/modules/runtime/ployz.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
-import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
+import { imageBuildWanted, loadBuildReceipts, settleImageBuild, type ImageBuildOutcome, type ImageBuildTarget } from "./image-builds.server";
 import { deploymentReporting } from "./deployment-reporting.server";
-import { preparationProgressCollector } from "./preparation-progress";
+import { preparationProgressCollector, type PreparationWrites } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
@@ -86,8 +86,11 @@ const requireClusterDomain = (organizationId: string) =>
     }))),
   );
 
-function compileRuntimeIntent(context: DeploymentContext, clusterDomain: string | null) {
+/** The attempt's whole frozen target; an Image Build compiles the same so its fingerprint matches deploy's. */
+function compileRuntimeIntent(context: DeploymentContext) {
   return Effect.gen(function* () {
+    const needsClusterDomain = context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
+    const clusterDomain = needsClusterDomain ? yield* requireClusterDomain(context.organization.id) : null;
     const resolvedEnv = yield* loadResolvedDeployEnv(context, clusterDomain);
     // requireClusterDomain already refused a deploy with managed hostnames and no Cluster Domain.
     const snapshots = context.snapshots.map((snapshot) => ({
@@ -185,13 +188,12 @@ const confirmRuntimeIntent = Effect.fn("Deployments.confirmRuntimeIntent")(
 
 /** Poll failure is fatal: a quiet operation must never outlive its cancellation observer. */
 export function watchDeploymentCancellation<E, R>(
-  readStatus: Effect.Effect<readonly { status: string; cancellationRequestedAt: Date | null }[], E, R>,
+  stillWanted: Effect.Effect<boolean, E, R>,
   cancellation: AbortController,
 ) {
   return Effect.gen(function* () {
     while (true) {
-      const [deployment] = yield* readStatus;
-      if (!deployment || deployment.status !== "deploying" || deployment.cancellationRequestedAt) {
+      if (!(yield* stillWanted)) {
         cancellation.abort();
         return yield* Effect.never;
       }
@@ -239,7 +241,8 @@ export const executeEnvironmentDeployment = Effect.fn(
     if (initial.cancellationRequestedAt) {
       return { outcome: { type: "failed" as const, completed: 0, unexecuted: 0, reason: "cancelled" as const }, evidence: null };
     }
-    const watchCancellation = watchDeploymentCancellation(readStatus, cancellation);
+    const watchCancellation = watchDeploymentCancellation(readStatus.pipe(
+      Effect.map(([deployment]) => deployment?.status === "deploying" && !deployment.cancellationRequestedAt)), cancellation);
     return yield* Effect.gen(function* () {
     const progressContext = yield* Effect.context<Database | ReportingDatabase>();
     const runReport = Effect.runPromiseWith(progressContext);
@@ -256,12 +259,11 @@ export const executeEnvironmentDeployment = Effect.fn(
       preparation: { ...collector.current(), phase: "source", serviceId, message: "Acquiring source" },
     }))).pipe(Effect.raceFirst(cancelled));
     const sdk = yield* connectedRuntime(context.organization.id);
-    const needsClusterDomain = context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
-    const clusterDomain = needsClusterDomain ? yield* requireClusterDomain(context.organization.id) : null;
-    const input = yield* compileRuntimeIntent(context, clusterDomain);
+    const input = yield* compileRuntimeIntent(context);
     if (cancellation.signal.aborted) return yield* Effect.interrupt;
     remoteStarted = true;
-    const build_receipts = Object.keys(sources).length === 0 ? {} : yield* loadBuildReceipts(context);
+    // The attempt's Image Builds already built every image; prepare reuses them and only delivers.
+    const build_receipts = Object.keys(sources).length === 0 ? {} : yield* loadBuildReceipts({ deploymentId: context.deployment.id });
     const native = Object.keys(sources).length === 0
       ? yield* Effect.try({
           try: () => lowerDeployment(input),
@@ -284,7 +286,6 @@ export const executeEnvironmentDeployment = Effect.fn(
                 : Effect.void),
             ));
           }));
-    if (Object.keys(sources).length > 0) yield* persistBuildReceipts(context, native.buildReceipts);
     const preview = yield* decodeSdkDeployPreview(preparedPreviewInput(native));
     yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, preview });
     const [beforeConfirm] = yield* readStatus;
@@ -327,6 +328,62 @@ export const executeEnvironmentDeployment = Effect.fn(
       message: confirmedCancelled ? "Cancelled before application execution." : failure.message || (remoteStarted ? "Runtime execution ended without a complete outcome; effects are unknown." : "Could not acquire deployment source."),
     }).pipe(Effect.asVoid);
   }));
+});
+
+/** A build that reused an image still leaves one Build Step as its evidence. */
+export const REUSED_KEY = "stage:Reused";
+
+/**
+ * One Image Build, the per-Image-Build unit of an attempt. The Organization Cluster is its only
+ * Builder so far; later Builders slot in here. It never fails: every exit settles the row, and it
+ * returns the settled status the attempt waits on. It stops when its attempt ends or is cancelled.
+ */
+export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(function* (build: ImageBuildTarget) {
+  const cancellation = new AbortController();
+  const collector = preparationProgressCollector();
+  const reporting = deploymentReporting();
+  let machineId: string | null = null;
+  let logged = false;
+  const log = (writes: PreparationWrites) => {
+    logged ||= writes.steps.length > 0;
+    return reporting.write(persistBuildLog(build.deploymentId, writes, build.image));
+  };
+  const outcome = yield* Effect.gen(function* () {
+    const context = yield* loadDeploymentContext(build.deploymentId);
+    const snapshot = context?.snapshots.find((candidate) => candidate.serviceId === build.serviceId);
+    if (!context || !snapshot) return { status: "failed", message: "The Service is no longer part of this deployment.", machineId } satisfies ImageBuildOutcome;
+    const { sources, source_commits } = yield* acquireDeploymentSources({ ...context, snapshots: [snapshot] }, () => Effect.void);
+    const sdk = yield* connectedRuntime(context.organization.id);
+    const intent = yield* compileRuntimeIntent(context);
+    const hint = (yield* loadBuildReceipts({ environmentId: context.environment.id }))[build.image];
+    const progressContext = yield* Effect.context<Database | ReportingDatabase>();
+    const result = yield* sdk.build({
+      // The SDK builds exactly one Git Service; ordering between Services is deploy's concern.
+      deployment: { ...intent, snapshots: intent.snapshots.filter((candidate) => candidate.serviceId === build.serviceId), dependencies: {} },
+      sources, source_commits, build_receipts: hint ? { [build.image]: hint } : {},
+    }, async (event) => {
+      if (event !== "Transfer" && "Selected" in event) machineId = event.Selected.machine.id;
+      await Effect.runPromiseWith(progressContext)(log(collector.event(event)));
+    }, { signal: cancellation.signal });
+    if (result.kind === "queued") return { status: "failed", message: "No Server started the build.", machineId } satisfies ImageBuildOutcome;
+    yield* log({ progress: null, steps: collector.finish(), output: [] });
+    if (!logged) {
+      const now = new Date();
+      yield* log({ progress: null, output: [], steps: [{ build: 0, key: REUSED_KEY, name: "Reused image", startedAt: now, completedAt: now, cached: true, error: null }] });
+    }
+    return { status: "built", receipt: result.receipt } satisfies ImageBuildOutcome;
+  }).pipe(
+    Effect.scoped,
+    Effect.raceFirst(watchDeploymentCancellation(imageBuildWanted(build.id), cancellation)),
+    Effect.catch((error) => Effect.gen(function* () {
+      const failure = errorEvidenceFrom(error);
+      const stage = error instanceof PloyzPreparationError ? error.stage ?? null : null;
+      yield* log({ progress: null, steps: collector.finish(failure.message || "Build failed.", stage), output: [] });
+      if (cancellation.signal.aborted || failure.failureCode === "sdk_preparation_cancelled") return { status: "cancelled" } satisfies ImageBuildOutcome;
+      return { status: "failed", message: failure.message || "Build failed.", machineId } satisfies ImageBuildOutcome;
+    })),
+  );
+  return { imageBuildId: build.id, image: build.image, status: yield* settleImageBuild(build.id, outcome) };
 });
 
 const cleanOutcomes: ReadonlySet<ImageRemovalOutcome["status"]> = new Set(["removed", "in_use", "not_found"]);

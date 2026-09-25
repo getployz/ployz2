@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type {
+  BuildOutcome,
   Client,
   LogOptions, LogEvent, LogHistoryOptions, LogHistoryPage,
   EnrollmentAssignment,
@@ -129,6 +130,12 @@ export interface PloyzSession {
     onEvent: (event: PreparationEvent) => Promise<void>,
     cancellation: AbortSignal,
   ) => Effect.Effect<PloyzPreparedDeploy, PloyzSdkError, Scope.Scope>;
+  /** One Image Build; `queued` only when `startWithinMs` passed before a Build Machine admitted it. */
+  readonly build: (
+    input: PreparationInput,
+    onEvent: (event: PreparationEvent) => Promise<void>,
+    options: { readonly signal: AbortSignal; readonly startWithinMs?: number },
+  ) => Effect.Effect<BuildOutcome, PloyzSdkError, Scope.Scope>;
   readonly preview: (
     intent: DeployIntent,
   ) => Effect.Effect<PloyzPreparedDeploy, PloyzSdkError>;
@@ -189,7 +196,7 @@ function safePreparationDiagnosis(message: string, secrets: readonly string[]) {
 
 function asSdkFailure(operation: string, cause: unknown, secrets: readonly string[] = []): PloyzSdkError {
   if (cause instanceof PloyzPreparationError) return cause;
-  if (operation === "prepare") {
+  if (operation === "prepare" || operation === "build") {
     const failure = Schema.decodeUnknownOption(preparationFailureSchema)(cause);
     if (Option.isSome(failure)) {
       const { kind, stage, work, message, rejections } = failure.value.details.preparation;
@@ -343,6 +350,27 @@ function wrapClient(client: Client): PloyzSession {
           }
           throw cause;
         }
+      }, secrets);
+    }),
+    build: (input, onEvent, options) => Effect.gen(function* () {
+      const secrets = input.deployment.snapshots.flatMap((snapshot) => Object.values(snapshot.resolvedEnv ?? {}));
+      const running = yield* Effect.acquireRelease(
+        Effect.try({ try: () => client.build(input, options), catch: (cause) => asSdkFailure("build", cause, secrets) }),
+        // Interruption waits for the build to settle so no work outlives the step.
+        (running) => Effect.promise(async () => {
+          running.abort();
+          await running.finished.catch(() => undefined);
+        }),
+      );
+      return yield* sdkPromise("build", async () => {
+        for await (const event of running) {
+          try { await onEvent(event); } catch (cause) {
+            running.abort();
+            await running.finished.catch(() => undefined);
+            throw new PloyzPreparationError({ failureCode: "sdk_preparation_failed", message: "Could not save build progress.", cause });
+          }
+        }
+        return running.finished;
       }, secrets);
     }),
     preview: (intent) =>

@@ -33,7 +33,7 @@ export type DeploymentView = {
   nodes: DeploymentNodeView[];
 };
 /** The attempt's Build Steps and their output, as the build log read returns them. */
-type BuildStep = { id: number; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null };
+type BuildStep = { id: number; image: string; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null };
 export type BuildLog = {
   steps: readonly BuildStep[];
   output: readonly { stepId: number; text: string }[];
@@ -137,13 +137,16 @@ export const stripAnsi = (text: string) => text.replaceAll(ansi, "");
 const logLines = (text: string) => stripAnsi(text).split("\n").filter((line) => line.trim());
 
 /**
- * One Image Build's steps: the runs whose Building heading names the image (a multi-platform image has several),
- * without the attempt-wide cleanup and delivery filed under the last run. Build 0 (upload, builder preparation)
- * is shared: it counts only when it failed, because that failure stopped every image.
+ * One Image Build's steps: every step it filed under its image. The deploy step's own preparation (image "")
+ * adds the runs whose Building heading names the image, when an image had to be rebuilt at delivery (a
+ * multi-platform image has several), without the attempt-wide cleanup and delivery filed under the last run.
+ * Its build 0 (upload, builder preparation) is shared: it counts only when it failed, because that stopped every image.
  */
 export function imageBuildSteps<Step extends BuildStep>(steps: readonly Step[], image: string): Step[] {
-  const runs = new Set(steps.filter((step) => step.key === BUILDING_KEY && step.name === image).map((step) => step.build));
-  return steps.filter((step) => step.build === 0 ? step.error !== null : runs.has(step.build) && step.key !== CLEANUP_KEY && step.key !== TRANSFER_KEY);
+  const deploy = steps.filter((step) => step.image === "");
+  const runs = new Set(deploy.filter((step) => step.key === BUILDING_KEY && step.name === image).map((step) => step.build));
+  return steps.filter((step) => step.image === image || step.image === "" && (step.build === 0
+    ? step.error !== null : runs.has(step.build) && step.key !== CLEANUP_KEY && step.key !== TRANSFER_KEY));
 }
 
 type ImageBuild = { failed: boolean; open: boolean; durationMs: number | undefined; lines: string[]; errorLines: string[] };
@@ -176,21 +179,21 @@ type AttemptFacts = {
   build: StageState;
   /** Every image is ready, or none was needed. */
   ready: boolean;
-  /** Some image has a build run: images build one after another. */
+  /** Some image has Build Steps. */
   building: boolean;
   /** Some image's build failed, so a pre-runtime failure is pinned on it. */
   blamed: boolean;
 };
 
-function attemptBuildStage({ deployment, progress, nodes }: DeploymentViewInput, succeeded: boolean): StageState {
+function attemptBuildStage({ deployment, progress, nodes }: DeploymentViewInput, succeeded: boolean, building: boolean): StageState {
   // Prebuilt images only: nothing to build.
   if (!nodes.some((node) => node.image)) return "none";
   // Preparation said ready, the Engine planned the rollout, or the attempt succeeded: every image exists.
   if (progress?.preparation?.phase === "ready" || deployment.deployPreview || succeeded) return "done";
   if (deployment.status === "failed") return "failed";
   if (deployment.status === "cancelled") return "skipped";
-  // Preparation reports progress once it starts; until then the attempt waits.
-  return progress?.preparation ? "running" : "queued";
+  // Image Builds report steps from admission, and preparation reports progress once deploy starts; until then the attempt waits.
+  return progress?.preparation || building ? "running" : "queued";
 }
 
 /** What the rules read about one node: its target entry, its Engine rows and its Image Build. */
@@ -211,7 +214,7 @@ function nodeBuildStage({ node, image }: NodeFacts, attempt: AttemptFacts): Stag
   if (image && (!image.open || attempt.build === "done")) return { state: "done", durationMs: image.durationMs };
   // An open run builds while the attempt is active; an ended attempt leaves it where preparation ended.
   if (image) return { state: attempt.active ? "running" : attempt.build };
-  // No run yet: it waits while another image builds, and is skipped once another image's build failed.
+  // No steps yet: it waits for a Builder while others build, and is skipped once a failure ended the attempt before it ran.
   if (attempt.build === "running" && attempt.building) return { state: "queued" };
   if (attempt.build === "failed" && attempt.blamed) return { state: "skipped" };
   // Without a build log, the image follows the attempt's preparation.
@@ -244,6 +247,8 @@ function nodeDeployStage({ node, own, done }: NodeFacts, preRuntimeFailure: bool
 function nodeFailure({ node, failedRow, done }: NodeFacts, preRuntimeFailure: boolean, build: Stage, attempt: AttemptFacts): DeploymentNodeView["failure"] {
   // The Engine's failed operation names the error and, when it has one, the container.
   if (failedRow) return { message: failedRow.error ?? "Deployment failed", containerId: failedRow.containerId };
+  // Image Builds run in parallel: one fails while the others finish, before the attempt fails.
+  if (attempt.active && build.state === "failed") return { message: "Image build failed", containerId: null };
   // A pre-runtime failure carries the attempt's message.
   if (node.changed && !done && preRuntimeFailure) {
     return { message: attempt.failureMessage ?? (build.state === "failed" ? "Image preparation failed" : "Deployment failed"), containerId: null };
@@ -273,9 +278,11 @@ function nodeTail({ own, failedRow, image }: NodeFacts, failure: DeploymentNodeV
   return image?.lines ?? [];
 }
 
-function attemptStatus(status: EnvironmentDeploymentStatus, ready: boolean): DeploymentViewStatus {
+function attemptStatus(status: EnvironmentDeploymentStatus, ready: boolean, buildingNow: boolean): DeploymentViewStatus {
   if (status === "applied") return "deployed";
-  if (status === "failed" || status === "cancelled" || status === "queued") return status;
+  // A queued attempt builds its images while it waits for the Environment execution slot.
+  if (status === "queued") return buildingNow ? "building" : "queued";
+  if (status === "failed" || status === "cancelled") return status;
   // Planning and deploying: images first, then the rollout.
   return ready ? "deploying" : "building";
 }
@@ -283,12 +290,13 @@ function attemptStatus(status: EnvironmentDeploymentStatus, ready: boolean): Dep
 export function deploymentView(input: DeploymentViewInput): DeploymentView {
   const { deployment, progress, nodes, buildLog } = input;
   const succeeded = progress?.outcome === "success" || deployment.status === "applied";
-  const build = attemptBuildStage(input, succeeded);
   const images = new Map(nodes.map((node) => [node.nodeId, buildLog && node.image ? imageBuild(buildLog, node.image) : null]));
+  const building = [...images.values()].some(Boolean);
+  const build = attemptBuildStage(input, succeeded, building);
   const attempt: AttemptFacts = {
     status: deployment.status, active: isActiveDeployment(deployment.status), noOutcome: !progress?.outcome, succeeded,
     failureMessage: deployment.failureMessage, build, ready: build === "none" || build === "done",
-    building: [...images.values()].some(Boolean), blamed: [...images.values()].some((image) => image?.failed),
+    building, blamed: [...images.values()].some((image) => image?.failed),
   };
   const rows = progress?.rows ?? [];
 
@@ -310,7 +318,7 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
 
   const changed = views.filter((node) => node.outcome !== "unchanged");
   return {
-    status: attemptStatus(deployment.status, attempt.ready),
+    status: attemptStatus(deployment.status, attempt.ready, views.some((node) => node.build.state === "running")),
     deployed: changed.filter((node) => node.outcome === "deployed" || node.outcome === "removed").length,
     changed: changed.length,
     nodes: views,
