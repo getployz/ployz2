@@ -8,7 +8,8 @@ import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
-import { nodeOutcomeLabels, outcomeBadges, type Stage } from "#/modules/deployments/deployment-view";
+import { outcomeBadges } from "#/components/deployment-outcome-badges";
+import { nodeOutcomeLabels, type Stage } from "#/modules/deployments/deployment-view";
 import { canvasNodeTransition } from "./constants";
 import { getServiceIcon, getServiceSubtitle } from "./service-node-helpers";
 import type { CanvasDeploymentNodeData } from "./types";
@@ -84,11 +85,11 @@ export function DeploymentNodeLink({ data, className, children }: { data: Canvas
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = useCollectionScope();
   const attempt = useDeploymentMode();
-  const style = canvasNodeTransition(data.node.nodeId);
-  if (data.node.nodeType !== "service") return <div style={style} className={className}>{children}</div>;
+  const transition = canvasNodeTransition(data.node.nodeId);
+  if (data.node.nodeType !== "service") return <div {...transition} className={className}>{children}</div>;
   const warm = () => { if (attempt) preloadDeploymentLogs(params.organizationSlug, attempt.deployment.id, scope); };
   return <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: data.node.nodeId }} search={(previous) => ({ ...previous, tab: undefined })}
-    onPointerEnter={warm} onFocus={warm} data-canvas-node={data.node.nodeId} style={style} draggable={false} className={cn("block", className)}>{children}</Link>;
+    onPointerEnter={warm} onFocus={warm} data-canvas-node={data.node.nodeId} {...transition} draggable={false} className={cn("block", className)}>{children}</Link>;
 }
 
 export function DeploymentNode({ data }: { data: CanvasDeploymentNodeData }) {

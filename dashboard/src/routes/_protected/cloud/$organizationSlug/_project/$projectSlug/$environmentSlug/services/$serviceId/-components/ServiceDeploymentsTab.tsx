@@ -5,7 +5,8 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { TabsContent } from "#/components/ui/tabs";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import { useNodeDeployments } from "#/modules/deployments/deployment.collection";
-import { nodeOutcomeLabels, outcomeBadges, shortDeploymentId } from "#/modules/deployments/deployment-view";
+import { outcomeBadges } from "#/components/deployment-outcome-badges";
+import { nodeOutcomeLabels, shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { formatRelativeTime } from "#/utils/relative-time";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../../../-components/environment-route-paths";
 
