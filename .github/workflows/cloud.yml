@@ -144,16 +144,6 @@ jobs:
             for (const file of [".output/server/index.mjs", ".output/worker/index.mjs", "node_modules/drizzle-kit/bin.cjs"]) assert.ok(fs.existsSync(file), file);
             require.resolve("inngest/connect");
           '
-      # PROTOTYPE branch only: publish a staging image. Never merge.
-      - name: Publish prototype staging image
-        if: github.ref == 'refs/heads/prototype/build-order-dashboard'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-cloud:prototype-build-order"
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker tag ployz-cloud:ci "$image"
-          docker push "$image"
       - name: Publish latest main and trigger Railway
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
