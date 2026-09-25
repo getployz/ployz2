@@ -82,6 +82,10 @@ class Client {
     return withRpcError(this._inner.buildPlatforms(deployment));
   }
 
+  reuseBuild(input) {
+    return withRpcError(this._inner.reuseBuild(input));
+  }
+
   mintBuildGrant(request) {
     return withRpcError(this._inner.mintBuildGrant(request));
   }

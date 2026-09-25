@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
-import type { BuildOptions, BuildOutcome, BuildReceipts, Client, Machine, MachineDetails, MachineId, PreparationEvent, PreparationInput, PreparedDeploy } from "@ployz/sdk";
+import type { BuildOptions, BuildOutcome, BuildReceipt, BuildReceipts, Client, Machine, MachineDetails, MachineId, PreparationEvent, PreparationInput, PreparedDeploy } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -91,6 +91,10 @@ type Fake = {
   machines: Machine[];
   /** Each server build's Preferred Server. */
   preferredMachines: (string | undefined)[];
+  /** Each reuse question: the commit and the receipt Cloud asked about. */
+  reuses: { source_commits: Record<string, string>; receipt: BuildReceipt }[];
+  /** The Machine still holding the asked-about image, which a build of this commit would reuse. */
+  reusableOn: MachineId | null;
 };
 
 const serverReceipt = {
@@ -140,6 +144,10 @@ function fakeClient(fake: Fake) {
     },
     inspect: async () => asTestDouble<MachineDetails>()({ id: machine.id }),
     buildPlatforms: async () => fake.platforms,
+    reuseBuild: async ({ source_commits, receipt }: { source_commits: Record<string, string>; receipt: BuildReceipt }) => {
+      fake.reuses.push({ source_commits, receipt });
+      return fake.reusableOn ? { ...receipt, machine_id: fake.reusableOn } : null;
+    },
     runtime: { watch: async function* () {
       yield runtimeWatchFrameFixture({ machines: fake.machines.map((observed) => runtimeWatchMachineObservationFixture({ machine: observed })) });
     } },
@@ -182,7 +190,7 @@ describe("Image Builds on GitHub Actions", () => {
 
   beforeEach(async () => {
     vi.mocked(inngest.send).mockClear();
-    fake = { github: [], minted: [], mintFails: false, ended: [], endFails: false, waits: 0, prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
+    fake = { github: [], minted: [], mintFails: false, ended: [], endFails: false, waits: 0, prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [], reuses: [], reusableOn: null };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -287,6 +295,45 @@ describe("Image Builds on GitHub Actions", () => {
       status: "building", builder: "github",
       githubRunId, checkedInAt: null,
       github: { fullName: "owner/repo", workflowRef, reason: "first_in_build_order", grant: null, report: null },
+    });
+  });
+
+  describe("with an earlier attempt's receipt", () => {
+    const earlierId = "00000000-0000-4000-8000-000000000808";
+    const earlier = {
+      fingerprint: "d".repeat(64), machine_id: machine.id,
+      image: { reference: pushed, tags: [`ployz-build/api:ployz-sha256-${"e".repeat(64)}`], platforms: ["linux/amd64"], location: "build-grant" },
+    };
+    beforeEach(async () => {
+      await harness.db.insert(schema.environmentDeployment).values({
+        id: earlierId, organizationId, environmentId, savedStateSnapshotId: savedId, status: "failed",
+        triggerOrigin: { origin: "manual", actorId: userId }, sourcePins: { [serviceId]: { commitSha: commit } },
+      });
+      await harness.db.insert(schema.environmentDeploymentImageBuild).values({
+        organizationId, deploymentId: earlierId, serviceId, image: "api", status: "built", builder: "server", inngestRunId: "earlier-run",
+        machineId: machine.id, encryptedReceipt: encryption.encrypt(JSON.stringify(earlier)), finishedAt: new Date(),
+      });
+    });
+    const current = async () => (await harness.db.select().from(schema.environmentDeploymentImageBuild)
+      .where(eq(schema.environmentDeploymentImageBuild.deploymentId, deploymentId)))[0];
+
+    it("settles the build from the receipt, dispatching nothing, when the Cluster still holds that image for this commit", async () => {
+      const holder = runtimeWatchMachineFixture("c".repeat(32), "peer").id;
+      fake.reusableOn = holder;
+      await dispatch();
+      expect(fake.reuses).toEqual([{ source_commits: { api: commit }, receipt: earlier }]);
+      expect(fake.github.map(({ operation }) => operation)).not.toContain("dispatch_workflow");
+      const built = await current();
+      expect(built).toMatchObject({ status: "built", builder: "server", githubRunId: null, machineId: holder });
+      expect(JSON.parse(encryption.decrypt(built?.encryptedReceipt ?? encryption.encrypt("null")))).toEqual({ ...earlier, machine_id: holder });
+      expect((await buildLog()).steps.filter((step) => step.image === "api").map((step) => step.name)).toEqual(["Reused image"]);
+    });
+
+    it("dispatches the build when the receipt is for another commit or the image is gone", async () => {
+      await dispatch();
+      expect(fake.reuses).toHaveLength(1);
+      expect(fake.github.map(({ operation }) => operation)).toContain("dispatch_workflow");
+      expect(await current()).toMatchObject({ status: "building", builder: "github", githubRunId });
     });
   });
 

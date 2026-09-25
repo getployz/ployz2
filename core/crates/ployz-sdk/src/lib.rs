@@ -332,6 +332,19 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// The Service's latest receipt, naming a Machine that still holds its image,
+    /// when an Image Build of this commit would reuse it; null when it must build.
+    ///
+    /// # Errors
+    /// Returns a generated [`RpcError`] JSON payload for a closed session,
+    /// invalid input, or a transport failure.
+    #[napi]
+    pub async fn reuse_build(&self, input: serde_json::Value) -> Result<serde_json::Value> {
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        let reused = self.inner.reuse_build(input).await.map_err(rpc_to_napi)?;
+        serde_json::to_value(reused).map_err(invalid_argument)
+    }
+
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Confirming executes these operations. It does not re-plan.

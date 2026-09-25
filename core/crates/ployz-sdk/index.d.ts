@@ -178,6 +178,8 @@ export declare class Client {
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
   /** The platforms the one Service in `deployment` may be placed on run: what a Builder outside the Cluster must build. */
   buildPlatforms(deployment: PreparationInput["deployment"]): Promise<string[]>;
+  /** `receipt` again, naming a Machine that still holds its image, when a build of this commit would reuse it; null when it must build. Never builds. */
+  reuseBuild(input: Pick<PreparationInput, "deployment"> & { source_commits: Record<string, string>; receipt: BuildReceipt }): Promise<BuildReceipt | null>;
   clearManagementClient(label: string): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;

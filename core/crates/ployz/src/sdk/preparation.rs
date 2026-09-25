@@ -35,6 +35,17 @@ pub struct PreparationInput {
     pub preferred_machine: Option<ployz_core::MachineId>,
 }
 
+/// A Service's latest receipt and the commit its next build would build: whether
+/// that image can be reused without a checkout or a build.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReuseInput {
+    pub deployment: Value,
+    /// Git commits pinned by the source owner, keyed by runtime Service name.
+    pub source_commits: BTreeMap<ServiceName, String>,
+    pub receipt: BuildReceipt,
+}
+
 /// Private build evidence, independent of deployment success or current image availability.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -1273,6 +1273,70 @@ async fn cancelling_a_build_stops_it_without_a_receipt() {
 }
 
 #[tokio::test]
+async fn reuse_build_names_a_holder_of_an_unchanged_image_and_never_builds() {
+    let (root, service, builds) = fixture();
+    let (session, server) = session(service).await;
+    let built = input(&root, vec![git("one", "dockerfile")]);
+    let crate::sdk::BuildOutcome::Built { receipt } = session
+        .build(built, None)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap()
+    else {
+        panic!("an admitted build must finish with a receipt");
+    };
+    let deployment = input(&root, vec![git("one", "dockerfile")]).deployment;
+    let reuse = |commit: &str, receipt: crate::sdk::BuildReceipt| crate::sdk::ReuseInput {
+        deployment: deployment.clone(),
+        source_commits: BTreeMap::from([(ServiceName::parse("one").unwrap(), commit.to_owned())]),
+        receipt,
+    };
+    let reused = session
+        .reuse_build(reuse(&"a".repeat(40), receipt.clone()))
+        .await
+        .unwrap()
+        .expect("the builder still holds the unchanged image");
+    assert_eq!(reused.image, receipt.image);
+    assert_eq!(reused.machine_id, receipt.machine_id);
+
+    // Another commit, or an image missing a platform its placements run, must build.
+    assert!(
+        session
+            .reuse_build(reuse(&"b".repeat(40), receipt.clone()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut uncovered = receipt.clone();
+    uncovered.image.platforms = vec!["linux/arm64".into()];
+    assert!(
+        session
+            .reuse_build(reuse(&"a".repeat(40), uncovered))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // A Cluster that no longer holds the image must build.
+    builds.stores.lock().unwrap().clear();
+    assert!(
+        session
+            .reuse_build(reuse(&"a".repeat(40), receipt))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        1,
+        "reuse never builds"
+    );
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn build_platforms_refuse_an_invalid_deployment_and_an_unbuildable_placement() {
     let (root, service, _) = fixture();
     let (sdk, server) = session(service.clone()).await;

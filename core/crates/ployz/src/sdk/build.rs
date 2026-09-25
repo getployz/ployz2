@@ -5,7 +5,7 @@ use ployz_core::RpcError;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use super::preparation::{self, BuildReceipt, PreparationInput};
+use super::preparation::{self, BuildReceipt, PreparationInput, ReuseInput};
 use super::prepare::{PreparationError, build_images};
 use super::running::Reporter;
 use crate::connect::Client;
@@ -73,4 +73,49 @@ pub(super) async fn platforms(
     let platforms = crate::build::placement_platforms(&intent, &machines)
         .map_err(|error| super::invalid_argument(error.to_string()))?;
     Ok(platforms.into_iter().collect())
+}
+
+/// The receipt again, naming a Machine that still holds its image, when it stands
+/// for the one Service in `input` at its pinned commit and covers every platform
+/// the Service's placements run: what [`run`] would reuse, with no checkout and
+/// never a build. `None`: a build is needed.
+pub(super) async fn reuse(
+    mut client: Client,
+    input: ReuseInput,
+    token: CancellationToken,
+) -> Result<Option<BuildReceipt>, RpcError> {
+    let ReuseInput {
+        deployment,
+        source_commits,
+        receipt,
+    } = input;
+    let fingerprints = preparation::expected_fingerprints(deployment.clone(), source_commits)?;
+    if fingerprints.len() != 1 || fingerprints.values().next() != Some(&receipt.fingerprint) {
+        return Ok(None);
+    }
+    let intent = preparation::frozen_intent(deployment)?;
+    let machines = super::prepare::observe_machines(&mut client, &intent, &token)
+        .await
+        .map_err(|error| super::preparation_error(error, token.is_cancelled()))?;
+    let Ok(required) = crate::build::placement_platforms(&intent, &machines) else {
+        return Ok(None);
+    };
+    if receipt.image.platforms.is_empty()
+        || !required
+            .iter()
+            .all(|platform| receipt.image.platforms.contains(platform))
+    {
+        return Ok(None);
+    }
+    let Some(stores) = crate::build::image_stores(&client, &machines, &token).await else {
+        return Err(super::preparation_error(PreparationError::Cancelled, true));
+    };
+    Ok(
+        crate::build::holder(&stores, &receipt.image, receipt.machine_id).map(|machine_id| {
+            BuildReceipt {
+                machine_id,
+                ..receipt
+            }
+        }),
+    )
 }

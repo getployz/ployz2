@@ -42,7 +42,7 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 /// Cancellable Image Build whose progress is retained until read, within a byte budget.
 pub type RunningBuild = Running<BuildOutcome>;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
-pub use preparation::{BuildReceipt, PreparationInput, VERSION, expected_fingerprints};
+pub use preparation::{BuildReceipt, PreparationInput, ReuseInput, VERSION, expected_fingerprints};
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
 /// from it: the Services of its Containers, and each Machine's build
@@ -412,6 +412,18 @@ impl Session {
         let client = self.client()?;
         let token = self.inner.cancel.child_token();
         build::platforms(client, deployment, token).await
+    }
+
+    /// The latest receipt of the one Git Service in `input`, naming a Machine that
+    /// still holds its image, when an Image Build would reuse it; `None` when it
+    /// must build. Needs no checkout and never builds.
+    ///
+    /// # Errors
+    /// Rejects a closed session or invalid deployment; returns transport errors.
+    pub async fn reuse_build(&self, input: ReuseInput) -> Result<Option<BuildReceipt>, RpcError> {
+        let client = self.client()?;
+        let token = self.inner.cancel.child_token();
+        build::reuse(client, input, token).await
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.

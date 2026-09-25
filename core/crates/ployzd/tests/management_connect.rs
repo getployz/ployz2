@@ -604,6 +604,92 @@ async fn build_grant_contract() {
     server.await.unwrap();
 }
 
+/// A Machine that already holds the image answers the pusher's manifest HEAD, and the
+/// pusher never PUTs it; that HEAD of the grant's own tag is the grant's push.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_grant_records_an_image_the_machine_already_holds() {
+    tokio::time::timeout(Duration::from_secs(120), already_held_contract())
+        .await
+        .expect("build grant test timed out");
+}
+
+async fn already_held_contract() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let (ingest, _seen) = fake_ingest().await;
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let grants = Arc::new(management::BuildGrants::default());
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        Arc::clone(&grants),
+        shutdown.clone(),
+    ));
+    let relay = ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify());
+    let http = reqwest::Client::new();
+    // Mint a grant, HEAD `reference` through it, and hand back the grant and its
+    // manifests base.
+    let head = async |reference: String| {
+        let minted = grants.mint(
+            local.record().management_secret().public_key(),
+            ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            ingest,
+        );
+        let registry = open_grant_registry(&minted.grant, &relay).await.unwrap();
+        let manifests = format!("http://{}/v2/ployz-build/web/manifests", registry.address());
+        let status = http
+            .head(format!("{manifests}/{reference}"))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, 200, "{reference}");
+        (minted, manifests, registry)
+    };
+
+    // Another tag, the held digest by digest, or a tag whose digest the ingest does
+    // not confirm is only a question, not a push.
+    for reference in [
+        "latest".to_owned(),
+        format!("sha256:{HELD}"),
+        format!("ployz-sha256-{}", "b".repeat(64)),
+    ] {
+        let (minted, _, _registry) = head(reference.clone()).await;
+        assert_eq!(grants.end(&minted.id).unwrap().pushed, None, "{reference}");
+    }
+
+    let (minted, manifests, _registry) = head(format!("ployz-sha256-{HELD}")).await;
+    // One push per grant: the held image spent it.
+    let put = http
+        .put(format!("{manifests}/ployz-sha256-{HELD}"))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 403);
+    let ended = grants.end(&minted.id).unwrap();
+    assert_eq!(
+        ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
+        Some(format!("sha256:{HELD}").as_str())
+    );
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+/// The one image [`fake_ingest`] holds: a manifest HEAD answers with its digest.
+const HELD: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
 /// An OCI registry stand-in that records each request line it answers.
 async fn fake_ingest() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -622,6 +708,9 @@ async fn fake_ingest() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
                     format!("http://{address}/v2/ployz-build/web/blobs/uploads/u1?_state=s"),
                 ),
                 http::Method::PUT => response.status(201),
+                http::Method::HEAD if request.uri().path().contains("/manifests/") => response
+                    .status(200)
+                    .header("docker-content-digest", format!("sha256:{HELD}")),
                 _ => response.status(200),
             };
             response.body(axum::body::Body::empty()).unwrap()
