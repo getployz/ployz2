@@ -83,6 +83,8 @@ function decodeEnvironmentDeployFailureEnvelope(
 }
 
 export const DEPLOY_ADMISSION_POLL_INTERVAL = "15s";
+/** How many of one attempt's Image Builds run at once; Services beyond that wait their turn. */
+export const IMAGE_BUILDS_AT_ONCE = 32;
 
 function deploymentContext<T>(value: T): DeploymentContext | null {
   // SAFETY: Inngest Jsonify-wraps step.run results; loaders return DeploymentContext | null.
@@ -449,10 +451,12 @@ export const createProcessEnvironmentDeployment = (
     retries: 0,
     cancelOn: [{ event: environmentDeployCancelRequestedEvent, match: "data.environmentDeploymentId" }],
     triggers: [{ event: environmentDeployRequestedEventType }],
-    // No concurrency limit. Inngest counts executing steps, so a per-Environment limit would stall a
-    // queued attempt's Image Builds behind an earlier attempt's deploy step, and a per-attempt one
-    // would serialize its parallel builds. The Environment execution slot is the database's
-    // partial unique index; one run owns an attempt through its recorded run id.
+    // Inngest counts executing steps. Keyed per Environment, an earlier attempt's deploy step would
+    // stall a queued attempt's Image Builds; limited to 1 per attempt, its parallel builds would run
+    // one at a time. So: per attempt, with room for its builds side by side; beyond that many, the
+    // rest wait their turn. The Environment execution slot is the database's partial unique index,
+    // and one run owns an attempt through its recorded run id.
+    concurrency: [{ key: "event.data.environmentDeploymentId", limit: IMAGE_BUILDS_AT_ONCE }],
     onFailure: async ({ event, error }) =>
       executeProcessEnvironmentDeploymentOnFailure(
         { event, error },
