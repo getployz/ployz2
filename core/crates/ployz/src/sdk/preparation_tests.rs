@@ -113,6 +113,7 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
         crate::sdk::ImageCleanup::Manual,
     ] {
         let (root, service, _) = fixture();
+        let builder = machine('a', "builder").machine.id;
         let destination = machine('b', "application").machine.id;
         let (session, server) = session(service).await;
         let prepared = session
@@ -121,12 +122,13 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
             .finished()
             .await
             .unwrap();
+        // The Machine holding the build is cleaned as well as the destination.
         assert_eq!(
             prepared.prune_targets(),
-            [ployz_core::PruneTarget {
-                machine_id: destination,
+            [builder, destination].map(|machine_id| ployz_core::PruneTarget {
+                machine_id,
                 repository: "ployz-build/one".into(),
-            }]
+            })
         );
         let running = prepared.confirm_with_log_id(None, cleanup).unwrap();
         let mut events = Vec::new();
@@ -145,12 +147,14 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
                     last,
                     ployz_core::DeployEvent::ImagesPruned {
                         report: ployz_core::ImageCleanupReport {
-                            machines: vec![ployz_core::MachineImageCleanup {
-                                machine_id: destination,
-                                result: ployz_core::MachineCleanupResult::Cleaned {
-                                    removals: Vec::new()
-                                },
-                            }],
+                            machines: [builder, destination]
+                                .map(|machine_id| ployz_core::MachineImageCleanup {
+                                    machine_id,
+                                    result: ployz_core::MachineCleanupResult::Cleaned {
+                                        removals: Vec::new()
+                                    },
+                                })
+                                .to_vec(),
                         },
                     }
                 );
@@ -161,7 +165,7 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
                     .prune_images(prepared.prune_targets())
                     .await
                     .unwrap();
-                assert_eq!(report.machines.len(), 1);
+                assert_eq!(report.machines.len(), 2);
             }
         }
         session.close().await;

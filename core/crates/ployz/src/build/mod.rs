@@ -20,8 +20,10 @@ use inputs::BuildInputs;
 
 mod ignore;
 mod inputs;
+mod local;
 mod platforms;
 mod remote;
+pub use local::LocalImage;
 mod reuse;
 
 /// How one Service's checked-out source becomes an image.

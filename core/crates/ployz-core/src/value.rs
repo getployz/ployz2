@@ -265,6 +265,13 @@ hex_id_newtype!(
     "32 lowercase hexadecimal characters"
 );
 hex_id_newtype!(
+    /// Public handle of one Build Grant: its key's public half. Not secret.
+    BuildGrantId,
+    "Build Grant ID",
+    64,
+    "64 lowercase hexadecimal characters"
+);
+hex_id_newtype!(
     ContainerId,
     "Container ID",
     64,

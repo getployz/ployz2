@@ -29,7 +29,7 @@ mod build;
 mod deploy;
 mod logs;
 mod payloads;
-mod preparation;
+pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
 pub use build::BuildOutcome;
@@ -233,6 +233,38 @@ impl Session {
         request: PublishCertificateMaterialRequest,
     ) -> Result<CertificateMaterialPublished, RpcError> {
         self.unary::<op::PublishCertificateMaterial>(request).await
+    }
+
+    /// Mint a Build Grant on the entry Machine: one image push into `repository`.
+    /// Not retried: a lost reply leaves an unused grant that expires by itself.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, an `invalid_argument` repository, or
+    /// the Machine's image ingest failure.
+    pub async fn mint_build_grant(
+        &self,
+        request: ployz_core::MintBuildGrantRequest,
+    ) -> Result<ployz_core::BuildGrantMinted, RpcError> {
+        let client = self.client()?;
+        self.until_closed(async {
+            client
+                .call_unretried::<op::MintBuildGrant>(request, None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
+    }
+
+    /// End a Build Grant on the entry Machine and read what it received. Idempotent.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, or `not_found` once the grant expired
+    /// or the Machine restarted.
+    pub async fn end_build_grant(
+        &self,
+        request: ployz_core::EndBuildGrantRequest,
+    ) -> Result<ployz_core::BuildGrantEnded, RpcError> {
+        self.unary::<op::EndBuildGrant>(request).await
     }
 
     /// Describe the entry Machine contract.

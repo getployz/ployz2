@@ -36,7 +36,7 @@ pub struct BuildReceipt {
     pub machine_id: ployz_core::MachineId,
 }
 
-pub(super) struct CapturedPreparation {
+pub(crate) struct CapturedPreparation {
     pub intent: DeployIntent,
     pub build: CapturedBuild,
     pub fingerprints: BTreeMap<ServiceName, String>,
@@ -72,7 +72,7 @@ fn invalid(message: impl ToString) -> RpcError {
 }
 
 /// Capture authorized checkouts as Builds.
-pub(super) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation, RpcError> {
+pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation, RpcError> {
     for receipt in input.build_receipts.values() {
         if !lower_hex(&receipt.fingerprint, 64)
             || !receipt

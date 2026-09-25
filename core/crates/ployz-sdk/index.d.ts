@@ -1,10 +1,14 @@
 import type {
+  BuildGrantEnded,
+  BuildGrantMinted,
   CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
   DeployIntent,
   DeployOutcome,
   DeployPreview,
+  EndBuildGrantRequest,
+  MintBuildGrantRequest,
   VolumeRemoval,
   ExecutionError,
   ImageCleanupReport,
@@ -163,6 +167,10 @@ export declare class Client {
   publishCertificateMaterial(
     request: PublishCertificateMaterialRequest,
   ): Promise<CertificateMaterialPublished>;
+  /** Mint a Build Grant on this Machine; `grant` is secret and goes only to the pusher. Not retried. */
+  mintBuildGrant(request: MintBuildGrantRequest): Promise<BuildGrantMinted>;
+  /** Idempotent. `pushed` is the digest this Machine verified; not_found once the grant expired. */
+  endBuildGrant(request: EndBuildGrantRequest): Promise<BuildGrantEnded>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options?: LogOptions): AsyncIterable<LogEvent>;
