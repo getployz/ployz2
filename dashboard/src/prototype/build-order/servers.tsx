@@ -191,7 +191,7 @@ function GithubReposDialog() {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>GitHub Actions</DialogTitle>
-          <DialogDescription>Each repository needs one small workflow file. It only runs when Ployz starts a build.</DialogDescription>
+          <DialogDescription>Each repository needs one small workflow file. It only runs when Ployz starts a build, and build secrets are sent to the runner.</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col divide-y rounded-lg border">
           {repos.map((repo) => (
