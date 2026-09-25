@@ -1,3 +1,4 @@
+import { asTestDouble } from "#/lib/test-double";
 import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
@@ -21,6 +22,7 @@ import * as runtimeHydration from "#/modules/deployments/runtime-hydration.repos
 import * as runtimeLifecycle from "#/modules/deployments/runtime-lifecycle.repository.server";
 import * as runtimeActivities from "#/modules/deployments/runtime-activities.server";
 import * as imageBuilds from "#/modules/deployments/image-builds.server";
+import * as githubImageBuilds from "#/modules/deployments/github-image-builds.server";
 import {
   createImageServiceSource,
   createDefaultServiceHealthcheck,
@@ -121,6 +123,7 @@ vi.spyOn(
 ).mockImplementation((runId, message) =>
   Effect.promise(() => message === undefined ? mocks.markCancelledByInngestRunId(runId) : mocks.markCancelledByInngestRunId(runId, message)),
 );
+vi.spyOn(githubImageBuilds, "cancelGithubImageBuilds").mockImplementation(() => Effect.succeed(0));
 vi.spyOn(
   runtimeActivities,
   "executeLatestEnvironmentDeployment",
@@ -154,6 +157,7 @@ function createStepTools({
     run,
     sleep: vi.fn(async () => undefined),
     sendEvent: vi.fn(async () => ({ ids: [] })),
+    waitForEvent: asTestDouble<EnvironmentDeploymentStepTools["waitForEvent"]>()(vi.fn(async () => null)),
   };
 }
 

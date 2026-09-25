@@ -54,15 +54,39 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
             env!("CARGO_PKG_VERSION")
         )));
     }
+    let events = matches
+        .get_one::<String>("events")
+        .map(std::fs::File::create)
+        .transpose()?
+        .map(std::sync::Mutex::new);
     runtime()?.block_on(async {
         let cancellation = crate::cancellation::on_ctrl_c();
         let build = captured.build;
-        let built = tokio::task::spawn_blocking(move || build.execute_local(&cancellation))
-            .await
-            .map_err(std::io::Error::other)?
-            .map_err(|error| Error::usage(error.to_string()))?;
+        let built = tokio::task::spawn_blocking(move || {
+            build.execute_local(&cancellation, &|event| {
+                if let Some(file) = &events {
+                    write_event(file, event);
+                }
+            })
+        })
+        .await
+        .map_err(std::io::Error::other)?
+        .map_err(|error| Error::usage(error.to_string()))?;
         push(&grant, &built).await
     })
+}
+
+/// One `{"at": <unix ms>, "event": <SDK preparation event>}` line, the shape Cloud's build
+/// log reads. Progress is best effort: a failed write never fails the build.
+fn write_event(file: &std::sync::Mutex<std::fs::File>, event: &ployz_build::Progress) {
+    use std::io::Write as _;
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let line = json!({"at": at, "event": {"Build": event}});
+    if let Ok(mut file) = file.lock() {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 /// The deployment's single Git-sourced Service: the one this command builds.

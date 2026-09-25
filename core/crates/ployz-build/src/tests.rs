@@ -507,7 +507,7 @@ esac
             no_cache: false,
             pull: false,
         };
-        execute(&request, &Cancellation::new()).unwrap();
+        execute(&request, &Cancellation::new(), &|_| ()).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
         Command::new("kill")
             .args([&signal, &std::process::id().to_string()])

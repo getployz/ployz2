@@ -448,7 +448,14 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
-  | ReturnType<typeof createGithubCheckSuiteReceivedEvent>;
+  | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
+  | ReturnType<typeof createGithubBuildRunCompletedEvent>;
+
+/** A dispatched GitHub build run completed, whatever its conclusion. The waiting Image Build settles. */
+export const githubBuildRunCompletedEvent = "github/build-run.completed";
+export function createGithubBuildRunCompletedEvent(data: { deliveryId: string; runId: number }) {
+  return { id: data.deliveryId, name: githubBuildRunCompletedEvent, data: { runId: data.runId } };
+}
 
 export const environmentDeployCancelRequestedEvent = "environment/deploy.cancel.requested";
 export function createEnvironmentDeployCancelRequestedEvent(environmentDeploymentId: string) {

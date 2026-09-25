@@ -125,7 +125,9 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
   const server = builtOn(build.data, image);
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
-    {server ? <p className="mb-2 font-mono text-xs text-muted-foreground">{builtOnLine(server)}</p> : null}
+    {server ? <p className="mb-2 font-mono text-xs text-muted-foreground">
+      {builtOnLine(server)}{server.runUrl ? <> · <a className="underline" href={server.runUrl} target="_blank" rel="noreferrer">View run ↗</a></> : null}
+    </p> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
       {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} now={now} />}
     </BuildLogViewer>

@@ -22,13 +22,14 @@ pub struct LocalImage {
 
 impl CapturedBuild {
     /// Build the single captured target with local Docker and Buildx, rendering progress
-    /// to stderr. The runner's cache service variables pass through so Buildx can use it.
+    /// to stderr and to `observe`. The runner's cache service variables pass through so Buildx can use it.
     ///
     /// # Errors
     /// Refuses a capture that is not exactly one target, and reports the Build's failure.
     pub fn execute_local(
         self,
         cancellation: &ployz_build::Cancellation,
+        observe: &(dyn Fn(&ployz_build::Progress) + Sync),
     ) -> Result<LocalImage, Error> {
         let [captured] = <[_; 1]>::try_from(self.targets)
             .map_err(|_| invalid("a local Build takes exactly one Git-sourced Service"))?;
@@ -74,6 +75,7 @@ impl CapturedBuild {
                 pull: false,
             },
             cancellation,
+            observe,
         )
         .map_err(|source| Error::Build {
             service: captured.name.clone(),

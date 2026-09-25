@@ -15,6 +15,7 @@ import { prefetchRemote } from "#/collections/route-data";
 import { githubBuildRepositoriesQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { AddServerDialog } from "./-components/add-server-dialog";
+import { BuildOrderCard } from "./-components/build-order-card";
 import { GithubBuildsCard } from "./-components/github-builds-card";
 import { RuntimeMachineRow } from "./-components/server-list-rows";
 import { ServersSkeleton } from "./-components/servers-skeleton";
@@ -122,6 +123,7 @@ function RouteComponent() {
           ))}
         </div>
       )}
+      <BuildOrderCard organizationSlug={organizationSlug} />
       <GithubBuildsCard organizationSlug={organizationSlug} />
     </DashboardPage>
   );

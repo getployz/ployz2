@@ -21,6 +21,7 @@ export const changeSources = {
   volume_remove_attempt: { key: ["id"] },
   organization_pairing: { key: ["organization_id"] },
   organization_cluster_domain: { key: ["organization_id"] },
+  organization_build_order: { key: ["organization_id"] },
   core_operation_event: { key: ["id"] },
   core_operation_watch: { key: ["id"] },
   enrollment_allocation: { key: ["cluster_key"] },

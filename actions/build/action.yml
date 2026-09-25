@@ -35,6 +35,9 @@ runs:
         persist-credentials: false
     - id: build
       shell: bash
+      env:
+        PLOYZ_BUILD_ID: ${{ inputs.build }}
+        PLOYZ_CLOUD: ${{ inputs.cloud }}
       run: '"$GITHUB_ACTION_PATH/build.sh"'
     - if: always()
       shell: bash

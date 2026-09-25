@@ -28,7 +28,8 @@ export type DeploymentNodeView = {
   /** The Server the Engine chose for this image and why, once it chose. */
   builtOn: BuiltOn | null;
 };
-export type BuiltOn = { server: string; reason: string };
+/** `runUrl` links a build that ran on GitHub Actions. */
+export type BuiltOn = { server: string; reason: string; runUrl?: string };
 export type DeploymentViewStatus = "queued" | "building" | "deploying" | "deployed" | "failed" | "cancelled";
 export type DeploymentView = {
   status: DeploymentViewStatus;
@@ -40,7 +41,7 @@ type BuildStep = { id: number; image: string; build: number; key: string; name: 
 export type BuildLog = {
   steps: readonly BuildStep[];
   output: readonly { stepId: number; text: string }[];
-  serverChoices?: readonly { image: string; serverChoice: ServerChoice | null }[];
+  serverChoices?: readonly { image: string; serverChoice: ServerChoice | null; githubRunUrl?: string | null }[];
 };
 
 /** Why the Engine chose a Server: recorded evidence, never a prediction. */
@@ -52,10 +53,11 @@ function builderReason(reason: ServerChoice["reason"]): string {
   }
 }
 
-/** Where an image builds and why, from its Image Build's recorded Server choice. */
+/** Where an image builds and why, from its Image Build's recorded Server choice or GitHub run. */
 export function builtOn(log: Pick<BuildLog, "serverChoices"> | null | undefined, image: string | null): BuiltOn | null {
-  const choice = image ? log?.serverChoices?.find((row) => row.image === image)?.serverChoice : null;
-  return choice ? { server: choice.machineName, reason: builderReason(choice.reason) } : null;
+  const row = image ? log?.serverChoices?.find((candidate) => candidate.image === image) : undefined;
+  if (row?.githubRunUrl) return { server: "GitHub Actions", reason: "first in the build order", runUrl: row.githubRunUrl };
+  return row?.serverChoice ? { server: row.serverChoice.machineName, reason: builderReason(row.serverChoice.reason) } : null;
 }
 
 /** "Built on <Server> · <why>", as the canvas and build log say it. */

@@ -150,6 +150,10 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 };
 
 export declare function connect(options: ConnectOptions): Promise<Client>;
+/** Fingerprints a build of these pinned commits would carry, keyed by Service; no checkout needed. */
+export declare function buildFingerprints(input: Pick<PreparationInput, "deployment"> & { source_commits: Record<string, string> }): Record<string, string>;
+/** The ployz version every fingerprint covers; a GitHub runner installs exactly this one. */
+export declare function ployzVersion(): string;
 export declare function applyAll(
   project_name: ProjectName,
   specs: readonly RequestedServiceSpec[],

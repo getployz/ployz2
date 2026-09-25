@@ -247,6 +247,7 @@ impl BuildError {
 /// Returns the completed images in the order of `targets`. Validation and
 /// registry publication retain no local image, so they return none. Cancellation
 /// is supplied by the caller; this function never installs process signal handlers.
+/// Progress renders to stderr and also reaches `observe`.
 ///
 /// # Errors
 /// Returns a prerequisite error when Docker cannot serve the Build, a request
@@ -257,6 +258,7 @@ impl BuildError {
 pub fn execute(
     request: &Request<'_>,
     cancellation: &Cancellation,
+    observe: &(dyn Fn(&Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
     let renderer = PlainRenderer::default();
     execute_admitted(request, Admission::wait(cancellation)?, &|event| {
@@ -264,6 +266,7 @@ pub fn execute(
             use std::io::Write as _;
             let _ = std::io::stderr().write_all(text.as_bytes());
         }
+        observe(&event);
     })
 }
 

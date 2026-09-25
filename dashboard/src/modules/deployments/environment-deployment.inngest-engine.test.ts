@@ -14,6 +14,7 @@ import {
 } from "#/modules/deployments/runtime-activities.server";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import * as imageBuilds from "#/modules/deployments/image-builds.server";
+import * as githubImageBuilds from "#/modules/deployments/github-image-builds.server";
 import type { ImageBuildTarget } from "#/modules/deployments/image-builds.server";
 import { createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 
@@ -32,6 +33,7 @@ const build = (image: string, buildIndex = 0): ImageBuildTarget => ({ id: `build
 
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.promise(() => activity.startBuilds()));
 vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((target) => Effect.promise(() => activity.build(target)));
+vi.spyOn(githubImageBuilds, "startGithubImageBuild").mockImplementation(() => Effect.succeed({ kind: "servers" }));
 
 function runtimeFailure(
   operation: "execute",
@@ -169,9 +171,9 @@ describe("process-environment-deployment Inngest adapter", () => {
     const output = await makeEngine().execute();
     expect(output.error).toBeUndefined();
     expect(output.result).toEqual({ environmentDeploymentId: "deployment-1", status: "applied" });
-    // The test engine resumes once per parallel branch, so it may replay the planning step.
+    // The test engine resumes once per parallel branch, so it may replay steps after the fan-out.
     expect(new Set(order.slice(0, 2))).toEqual(new Set(["build api", "build web"]));
-    expect(new Set(order.slice(2))).toEqual(new Set(["planning"]));
+    expect(order).toContain("planning");
     expect(activity.execute).toHaveBeenCalled();
   });
 
@@ -181,7 +183,10 @@ describe("process-environment-deployment Inngest adapter", () => {
       ({ imageBuildId: image, image, status: image === "api" ? "failed" : "built" }));
     const output = await makeEngine().execute();
     expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
-    expect(activity.build).toHaveBeenCalledTimes(2);
+    // SAFETY: executeImageBuild's spy passes each build its ImageBuildTarget.
+    const images = activity.build.mock.calls.map(([target]) => (target as ImageBuildTarget).image);
+    // The test engine may replay a build step; each image still built.
+    expect(new Set(images)).toEqual(new Set(["api", "web"]));
     expect(activity.planning).not.toHaveBeenCalled();
     expect(activity.execute).not.toHaveBeenCalled();
     expect(activity.terminalizeFailure).toHaveBeenCalledWith(expect.objectContaining({

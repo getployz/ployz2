@@ -100,10 +100,11 @@ describe("deployment view projection", () => {
   it("says which Server each image builds on and why, only once the Engine chose", () => {
     const view = deploymentView({
       deployment: deployment("queued"), progress: null,
-      nodes: ["api", "web", "docs", "worker"].map((image) => node({ nodeId: image, changed: true, image })),
+      nodes: ["api", "web", "docs", "worker", "site"].map((image) => node({ nodeId: image, changed: true, image })),
       buildLog: {
         steps: [], output: [],
         serverChoices: [
+          { image: "site", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/1" },
           { image: "api", serverChoice: { machineName: "nuc", reason: { kind: "had_cache" } } },
           { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } } },
           { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "nuc" } } },
@@ -116,6 +117,7 @@ describe("deployment view projection", () => {
       { server: "hel-1", reason: "spread across Servers" },
       { server: "hel-1", reason: "nuc has the cache but is offline or no longer builds" },
       null,
+      { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1" },
     ]);
   });
 
