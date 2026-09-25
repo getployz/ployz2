@@ -1,10 +1,9 @@
 //! Native Cloud session: connect, observe_enrollment, register,
-//! about, publish_certificate_material, runtime.watch, preview, run, preview_project_removal, remove_volumes,
-//! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
-//! destroy_project, destroy_cluster, and close.
+//! about, publish_certificate_material, runtime.watch, prepare, build, preview, run,
+//! preview_project_removal, remove_volumes, Data Loss for Machine, Project, and
+//! Cluster destroy, remove_machine, destroy_project, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -26,12 +25,22 @@ use ployz_core::{
 
 pub use payloads::typescript_declarations;
 
+mod build;
 mod deploy;
 mod logs;
 mod payloads;
 mod preparation;
 pub(crate) mod prepare;
+mod running;
+pub use build::BuildOutcome;
 pub use deploy::ImageCleanup;
+pub use running::Running;
+
+/// Cancellable preparation whose progress is retained until read, within a byte budget.
+pub type RunningPreparation = Running<PreparedDeploy>;
+
+/// Cancellable Image Build whose progress is retained until read, within a byte budget.
+pub type RunningBuild = Running<BuildOutcome>;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{BuildReceipt, PreparationInput};
 
@@ -288,9 +297,7 @@ impl Session {
         let token = self.inner.cancel.child_token();
         let session = Arc::downgrade(&self.inner);
         Ok(Running::spawn(token.clone(), move |reporter| async move {
-            let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
-                .await
-                .map_err(|_| invalid_argument("source capture task failed".into()))??;
+            let captured = capture(input).await?;
             if token.is_cancelled() {
                 return Err(preparation_error(
                     crate::sdk::prepare::PreparationError::Cancelled,
@@ -335,67 +342,10 @@ impl Session {
         input: PreparationInput,
         start_within: Option<std::time::Duration>,
     ) -> Result<RunningBuild, RpcError> {
-        let mut client = self.client()?;
+        let client = self.client()?;
         let token = self.inner.cancel.child_token();
-        Ok(Running::spawn(token.clone(), move |reporter| async move {
-            let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
-                .await
-                .map_err(|_| invalid_argument("source capture task failed".into()))??;
-            if captured.build.targets().count() != 1 || captured.fingerprints.len() != 1 {
-                return Err(invalid_argument(
-                    "build input must hold exactly one Git Service with its source commit".into(),
-                ));
-            }
-            let started = AtomicBool::new(false);
-            let withdraw = token.child_token();
-            let progress = |progress| {
-                // Upload begins only once the Build Machine admitted the build.
-                if matches!(
-                    progress,
-                    crate::sdk::prepare::Progress::Build(ployz_build::Progress::Stage(
-                        ployz_build::Stage::Upload
-                    ))
-                ) {
-                    started.store(true, Ordering::Relaxed);
-                }
-                reporter.report(progress);
-            };
-            let work = crate::sdk::prepare::build_images(
-                &mut client,
-                &captured.intent,
-                captured.build,
-                &captured.reusable,
-                &withdraw,
-                &progress,
-            );
-            tokio::pin!(work);
-            let mut withdrawn = false;
-            let result = match start_within {
-                None => work.await,
-                Some(limit) => tokio::select! {
-                    biased;
-                    result = &mut work => result,
-                    () = tokio::time::sleep(limit) => {
-                        if !started.load(Ordering::Relaxed) {
-                            withdrawn = true;
-                            withdraw.cancel();
-                        }
-                        work.await
-                    }
-                },
-            };
-            match result {
-                Ok(builds) => preparation::receipts(&captured.fingerprints, &builds)
-                    .into_values()
-                    .next()
-                    .map(|receipt| BuildOutcome::Built { receipt })
-                    .ok_or_else(|| invalid_argument("Build produced no receipt".into())),
-                // Withdrawn before admission: the build never started.
-                Err(error) if withdrawn && !token.is_cancelled() && !unknown(&error) => {
-                    Ok(BuildOutcome::Queued)
-                }
-                Err(error) => Err(preparation_error(error, token.is_cancelled())),
-            }
+        Ok(Running::spawn(token.clone(), move |reporter| {
+            build::run(client, input, start_within, token, reporter)
         }))
     }
 
@@ -766,186 +716,13 @@ fn invalid_argument(message: String) -> RpcError {
     }
 }
 
-/// Most build output retained ahead of a slow consumer before it is dropped.
-const OUTPUT_BUDGET: usize = 64 * 1024 * 1024;
-
-const DROPPED_MARKER: &str = "… output dropped: the consumer fell behind\n";
-
-/// Drops output beyond the budget, marking the first drop on the step it hit,
-/// until the consumer is back under half the budget. Structured progress
-/// always passes.
-#[derive(Default)]
-struct OutputBudget {
-    dropping: bool,
+/// Capture checkouts off the async runtime.
+async fn capture(input: PreparationInput) -> Result<preparation::CapturedPreparation, RpcError> {
+    tokio::task::spawn_blocking(move || preparation::capture(input))
+        .await
+        .map_err(|_| invalid_argument("source capture task failed".into()))?
 }
 
-impl OutputBudget {
-    /// The frame to send with its accounted size, or none when dropped.
-    fn frame(
-        &mut self,
-        mut progress: crate::sdk::prepare::Progress,
-        buffered: &AtomicUsize,
-    ) -> Option<(usize, Value)> {
-        use crate::sdk::prepare::Progress;
-        use ployz_build::Progress as Build;
-        let held = buffered.load(Ordering::Relaxed);
-        if held < OUTPUT_BUDGET / 2 {
-            self.dropping = false;
-        }
-        let size = match &mut progress {
-            Progress::Build(Build::StepOutput { text, .. }) => {
-                match self.admit(held, text.len())? {
-                    Admitted::Marker => *text = DROPPED_MARKER.into(),
-                    Admitted::Output => {}
-                }
-                text.len()
-            }
-            Progress::Build(Build::Output(bytes)) => {
-                match self.admit(held, bytes.len())? {
-                    Admitted::Marker => *bytes = DROPPED_MARKER.as_bytes().to_vec(),
-                    Admitted::Output => {}
-                }
-                bytes.len()
-            }
-            Progress::Build(
-                Build::Stage(_) | Build::Step(_) | Build::Timing { .. } | Build::Target { .. },
-            )
-            | Progress::Platforms(_)
-            | Progress::Selected(_)
-            | Progress::Transfer
-            | Progress::Delivered { .. } => 0,
-        };
-        buffered.fetch_add(size, Ordering::Relaxed);
-        let value = serde_json::to_value(progress).expect("preparation progress serializes");
-        Some((size, value))
-    }
-
-    /// Whether output of `len` bytes may be sent, or none while dropping.
-    /// Dropping continues until the consumer is under half the budget so the
-    /// stream cannot alternate between passing and silently dropping.
-    fn admit(&mut self, held: usize, len: usize) -> Option<Admitted> {
-        if self.dropping {
-            return None;
-        }
-        if held + len > OUTPUT_BUDGET {
-            self.dropping = true;
-            return Some(Admitted::Marker);
-        }
-        Some(Admitted::Output)
-    }
-}
-
-enum Admitted {
-    Output,
-    Marker,
-}
-
-/// Budgeted progress producer for a [`Running`] call.
-struct Reporter {
-    events: tokio::sync::mpsc::UnboundedSender<(usize, Value)>,
-    buffered: Arc<AtomicUsize>,
-    budget: std::sync::Mutex<OutputBudget>,
-}
-
-impl Reporter {
-    fn report(&self, progress: crate::sdk::prepare::Progress) {
-        let frame = self
-            .budget
-            .lock()
-            .expect("budgeting never panics while holding the marker flag")
-            .frame(progress, &self.buffered);
-        if let Some(frame) = frame {
-            let _ = self.events.send(frame);
-        }
-    }
-}
-
-/// Cancellable preparation whose progress is retained until read, within a byte budget.
-pub type RunningPreparation = Running<PreparedDeploy>;
-
-/// Cancellable Image Build whose progress is retained until read, within a byte budget.
-pub type RunningBuild = Running<BuildOutcome>;
-
-/// How one Image Build call ended, short of failure.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum BuildOutcome {
-    /// No Build Machine admitted the build within its start limit; it was withdrawn.
-    Queued,
-    /// The build finished; its receipt identifies the image.
-    Built { receipt: BuildReceipt },
-}
-
-/// A cancellable SDK call whose progress is retained until read, within a byte budget.
-pub struct Running<T> {
-    cancel: CancellationToken,
-    events: Mutex<tokio::sync::mpsc::UnboundedReceiver<(usize, Value)>>,
-    buffered: Arc<AtomicUsize>,
-    join: Mutex<Option<tokio::task::JoinHandle<Result<T, RpcError>>>>,
-}
-impl<T: Send + 'static> Running<T> {
-    fn spawn<F>(cancel: CancellationToken, work: impl FnOnce(Reporter) -> F) -> Self
-    where
-        F: std::future::Future<Output = Result<T, RpcError>> + Send + 'static,
-    {
-        // Lossless while the consumer keeps up: structured state is never
-        // dropped, and output is only replaced by a marker beyond the budget.
-        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let buffered = Arc::new(AtomicUsize::new(0));
-        let join = tokio::spawn(work(Reporter {
-            events,
-            buffered: Arc::clone(&buffered),
-            budget: std::sync::Mutex::new(OutputBudget::default()),
-        }));
-        Self {
-            cancel,
-            events: Mutex::new(receiver),
-            buffered,
-            join: Mutex::new(Some(join)),
-        }
-    }
-}
-impl<T> Running<T> {
-    /// Request cancellation; finished reports whether remote termination was confirmed.
-    pub fn abort(&self) {
-        self.cancel.cancel();
-    }
-    /// Read one progress frame; frames are retained until read, within the budget.
-    pub async fn next(&self) -> Option<Value> {
-        let (size, value) = self.events.lock().await.recv().await?;
-        self.buffered.fetch_sub(size, Ordering::Relaxed);
-        Some(value)
-    }
-    /// Await the result without draining or blocking on progress consumption.
-    ///
-    /// # Errors
-    /// Returns typed preparation failure/unknown or rejects a second await.
-    pub async fn finished(&self) -> Result<T, RpcError> {
-        let join = self
-            .join
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| invalid_argument("preparation already awaited".into()))?;
-        join.await.map_err(|_| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "preparation task failed".into(),
-            details: Value::Null,
-        })?
-    }
-}
-impl<T> Drop for Running<T> {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-fn unknown(error: &crate::sdk::prepare::PreparationError) -> bool {
-    matches!(
-        error,
-        crate::sdk::prepare::PreparationError::Build(crate::build::Error::RemoteBuild { outcome })
-            if matches!(**outcome, crate::build::RemoteBuildFailure::Unknown { .. })
-    )
-}
 fn preparation_error(
     error: crate::sdk::prepare::PreparationError,
     cancellation_requested: bool,

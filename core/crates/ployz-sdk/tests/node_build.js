@@ -32,6 +32,8 @@ const sdk = require(dir);
       sources: { api: checkout },
       source_commits: { api: "a".repeat(40) },
     };
+    assert.throws(() => client.build({ ...input, unexpected: true }),
+      error => error instanceof sdk.RpcError && error.code === "invalid_argument");
     const build = client.build(input, { startWithinMs: 60000 });
     const outcome = await build.finished;
     assert.equal(outcome.kind, "built", JSON.stringify(outcome));

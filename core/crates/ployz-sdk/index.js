@@ -83,7 +83,7 @@ class Client {
   }
 
   build(input, options = {}) {
-    return wrapProgress(() => this._inner.build(input, options.startWithinMs), options.signal, outcome => outcome);
+    return wrapProgress(() => this._inner.build(input, options.startWithinMs), options.signal);
   }
 
   async preview(intent) {
@@ -139,7 +139,7 @@ class Client {
   }
 }
 
-function wrapProgress(start, signal, wrap) {
+function wrapProgress(start, signal, wrap = value => value) {
   signal?.throwIfAborted();
   let pending;
   try { pending = start(); } catch (error) { throwRpcError(error); }

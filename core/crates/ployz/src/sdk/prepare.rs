@@ -92,7 +92,7 @@ pub async fn select_build_machine(
 }
 
 use crate::{
-    build::{BuiltService, CapturedBuild, CapturedTarget},
+    build::{BuiltService, CapturedBuild},
     connect::Client,
     deploy::{DeployError, DeployPlan},
 };
@@ -114,6 +114,30 @@ pub enum PreparationError {
     Delivery(String),
     #[error("preparation cancelled; no application changes attempted")]
     Cancelled,
+}
+
+impl PreparationError {
+    /// Cancellation reached this Build before any source left the client: it
+    /// was stopped while reading, selecting, or waiting in the Machine's queue.
+    pub(super) fn cancelled_before_upload(&self) -> bool {
+        use crate::build::{Error, RemoteBuildFailure};
+        use ployz_build::Stage;
+        match self {
+            Self::Cancelled => true,
+            Self::Build(Error::RemoteBuild { outcome }) => matches!(
+                **outcome,
+                RemoteBuildFailure::Failed {
+                    stage: Stage::Queued | Stage::Admission,
+                    ..
+                }
+            ),
+            Self::Build(_)
+            | Self::Connect(_)
+            | Self::Selection(_)
+            | Self::Plan(_)
+            | Self::Delivery(_) => false,
+        }
+    }
 }
 
 /// Caller-rendered preparation progress; no terminal or process ownership.
@@ -190,7 +214,8 @@ pub async fn prepare(
     Ok(Prepared { plan, builds })
 }
 
-/// Reuse still-available images, then build each remaining target through [`build_target`].
+/// Reuse still-available images, then build the remaining targets on one
+/// selected Build Machine. `prepare` and the one-Service `Session::build` share this.
 /// # Errors
 /// Returns typed Build evidence across every target, eligibility, or cancellation.
 pub(super) async fn build_images(
@@ -225,58 +250,26 @@ pub(super) async fn build_images(
         .flat_map(|target| target.platforms.iter().cloned())
         .collect::<std::collections::BTreeSet<_>>();
     progress(Progress::Platforms(platforms.into_iter().collect()));
-    let mut work = ployz_build::WorkEvidence::new(&targets);
-    for captured in build.into_targets() {
-        builds.push(
-            build_target(
-                client,
-                captured,
-                &machines,
-                &mut work,
-                cancellation,
-                progress,
-            )
-            .await?,
-        );
+    if targets.is_empty() {
+        return Ok(builds);
     }
-    Ok(builds)
-}
-
-/// One Image Build: select its Build Machine and run it there. `work` holds the
-/// evidence of every target in the same attempt.
-/// # Errors
-/// Returns typed Build evidence, eligibility, or cancellation.
-async fn build_target(
-    client: &mut Client,
-    captured: CapturedTarget,
-    machines: &[ployz_core::MachineObservation],
-    work: &mut ployz_build::WorkEvidence,
-    cancellation: &CancellationToken,
-    progress: &impl Fn(Progress),
-) -> Result<BuiltService, PreparationError> {
     let selected = read(cancellation, async {
-        select_build_machine(
-            client,
-            std::slice::from_ref(captured.target()),
-            machines,
-            cancellation,
-        )
-        .await
-        .map_err(PreparationError::Selection)
+        select_build_machine(client, &targets, &machines, cancellation)
+            .await
+            .map_err(PreparationError::Selection)
     })
     .await?;
     let id = selected.machine.id;
     progress(Progress::Selected(Box::new(selected)));
     // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
-    Ok(captured
-        .execute_remote(
-            client,
-            id,
-            cancellation,
-            |event| progress(Progress::Build(event)),
-            work,
-        )
-        .await?)
+    builds.extend(
+        build
+            .execute_remote_images(client, id, cancellation.clone(), |event| {
+                progress(Progress::Build(event))
+            })
+            .await?,
+    );
+    Ok(builds)
 }
 
 async fn read<T>(

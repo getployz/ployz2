@@ -109,7 +109,7 @@ pub struct CapturedBuild {
     targets: Vec<CapturedTarget>,
 }
 
-pub(crate) struct CapturedTarget {
+struct CapturedTarget {
     name: ServiceName,
     image: String,
     placement: Placement,
@@ -259,11 +259,6 @@ impl CapturedBuild {
         self.targets().cloned().collect()
     }
 
-    /// Targets in capture order, each built on its own.
-    pub(crate) fn into_targets(self) -> Vec<CapturedTarget> {
-        self.targets
-    }
-
     /// Run each Build in order on one resolved Machine over the authenticated
     /// Ployz stream, and bind each completed image to its Service.
     ///
@@ -276,101 +271,75 @@ impl CapturedBuild {
         cancellation: tokio_util::sync::CancellationToken,
         progress: impl Fn(Progress),
     ) -> Result<Vec<BuiltService>, Error> {
-        let mut work = WorkEvidence::new(&self.to_targets());
+        let targets = self.to_targets();
+        let mut work = WorkEvidence::new(&targets);
         let mut completed = Vec::new();
         for captured in self.targets {
-            completed.push(
-                captured
-                    .execute_remote(client, machine_id, &cancellation, &progress, &mut work)
-                    .await?,
-            );
+            if cancellation.is_cancelled() {
+                return Err(remote_error(
+                    remote::failed(
+                        Stage::Admission,
+                        "Build cancelled before the next target was submitted",
+                    )
+                    .with_work(work),
+                ));
+            }
+            let outcome = remote::execute(
+                captured.inputs,
+                Definition {
+                    retained_tags: vec![captured.retained_tag],
+                    targets: vec![captured.target.clone()],
+                    image_contexts: BTreeMap::new(),
+                    output: Output::Load,
+                    no_cache: false,
+                    pull: false,
+                },
+                client,
+                machine_id,
+                cancellation.clone(),
+                &progress,
+            )
+            .await;
+            match outcome {
+                remote::Completion::Images { images, stream } => {
+                    let image = images
+                        .into_iter()
+                        .next()
+                        .expect("remote adapter validated the count");
+                    work.0.insert(
+                        captured.target.name.clone(),
+                        TargetEvidence::Image(image.clone()),
+                    );
+                    completed.push(BuiltService {
+                        name: captured.name,
+                        machine_id,
+                        image: captured.image,
+                        placement: captured.placement,
+                        built: image,
+                        _retention: Some(stream),
+                    });
+                }
+                remote::Completion::Report(
+                    outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }),
+                ) => {
+                    if let Outcome::Failed { work: observed, .. }
+                    | Outcome::Unknown { work: observed, .. } = &outcome
+                        && let Some(evidence) = observed.0.get(&captured.target.name)
+                    {
+                        work.0
+                            .insert(captured.target.name.clone(), evidence.clone());
+                    }
+                    return Err(remote_error(outcome.with_work(work)));
+                }
+                remote::Completion::Report(
+                    Outcome::CapabilitiesChecked { .. }
+                    | Outcome::Validated { .. }
+                    | Outcome::Published { .. }
+                    | Outcome::Images { .. },
+                ) => unreachable!("adapter validated output disposition"),
+            }
         }
         Ok(completed)
-    }
-}
-
-impl CapturedTarget {
-    /// The image this Build produces, with the platforms it must carry.
-    pub(crate) fn target(&self) -> &ployz_build::Target {
-        &self.target
-    }
-
-    /// Run this one Build on a resolved Machine and bind its image to the
-    /// Service. `work` is the evidence of every target in the same attempt;
-    /// failures report all of it.
-    ///
-    /// # Errors
-    /// Reports failed or unknown work.
-    pub(crate) async fn execute_remote(
-        self,
-        client: &crate::connect::Client,
-        machine_id: MachineId,
-        cancellation: &tokio_util::sync::CancellationToken,
-        progress: impl Fn(Progress),
-        work: &mut WorkEvidence,
-    ) -> Result<BuiltService, Error> {
-        if cancellation.is_cancelled() {
-            return Err(remote_error(
-                remote::failed(
-                    Stage::Admission,
-                    "Build cancelled before the next target was submitted",
-                )
-                .with_work(work.clone()),
-            ));
-        }
-        let outcome = remote::execute(
-            self.inputs,
-            Definition {
-                retained_tags: vec![self.retained_tag],
-                targets: vec![self.target.clone()],
-                image_contexts: BTreeMap::new(),
-                output: Output::Load,
-                no_cache: false,
-                pull: false,
-            },
-            client,
-            machine_id,
-            cancellation.clone(),
-            progress,
-        )
-        .await;
-        match outcome {
-            remote::Completion::Images { images, stream } => {
-                let image = images
-                    .into_iter()
-                    .next()
-                    .expect("remote adapter validated the count");
-                work.0.insert(
-                    self.target.name.clone(),
-                    TargetEvidence::Image(image.clone()),
-                );
-                Ok(BuiltService {
-                    name: self.name,
-                    machine_id,
-                    image: self.image,
-                    placement: self.placement,
-                    built: image,
-                    _retention: Some(stream),
-                })
-            }
-            remote::Completion::Report(
-                outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }),
-            ) => {
-                if let Outcome::Failed { work: observed, .. }
-                | Outcome::Unknown { work: observed, .. } = &outcome
-                    && let Some(evidence) = observed.0.get(&self.target.name)
-                {
-                    work.0.insert(self.target.name.clone(), evidence.clone());
-                }
-                Err(remote_error(outcome.with_work(work.clone())))
-            }
-            remote::Completion::Report(
-                Outcome::CapabilitiesChecked { .. }
-                | Outcome::Validated { .. }
-                | Outcome::Published { .. }
-                | Outcome::Images { .. },
-            ) => unreachable!("adapter validated output disposition"),
-        }
     }
 }
 
