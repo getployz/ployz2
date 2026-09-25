@@ -2,7 +2,7 @@
 export const GITHUB_BUILD_WORKFLOW_FILE = "ployz-build.yml";
 
 /**
- * The workflow `getployz/build@v1` expects, byte for byte `actions/build/ployz-build.yml`.
+ * The workflow `getployz/build@v1` expects, byte for byte `ployz-build.yml` in https://github.com/getployz/build.
  * Cloud dispatches `build`, `cloud`, `ployz_version` (Cloud's SDK version) and `runner`.
  */
 export const GITHUB_BUILD_WORKFLOW = `name: Ployz build

@@ -1,28 +1,15 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { checkGithubBuildWorkflow } from "./github-build.server";
 import { GITHUB_BUILD_WORKFLOW, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, type GithubObservationErrorCode } from "./github-observation.api";
 
-const actionPath = (file: string) => fileURLToPath(new URL(`../../../../actions/build/${file}`, import.meta.url));
-const action = (file: string) => readFileSync(actionPath(file), "utf8");
-
 describe("GitHub build workflow", () => {
-  it("is exactly the workflow the Action documents and accepts", () => {
-    expect(GITHUB_BUILD_WORKFLOW).toBe(action("ployz-build.yml"));
-    expect(action("README.md")).toContain("[`ployz-build.yml`](ployz-build.yml)");
-    const inputs = action("action.yml");
+  it("calls getployz/build@v1 with every input Cloud dispatches", () => {
+    expect(GITHUB_BUILD_WORKFLOW).toContain("uses: getployz/build@v1");
     for (const input of ["build", "cloud", "ployz_version"]) {
       expect(GITHUB_BUILD_WORKFLOW).toContain(`${input}: \${{ inputs.${input} }}`);
-      expect(inputs).toContain(`\n  ${input}:\n`);
     }
-  });
-
-  it("checks in, masks secrets, and runs ployz build (stubbed runner)", () => {
-    expect(execFileSync("bash", [actionPath("test.sh")], { encoding: "utf8" })).toContain("ok");
   });
 
   it("opens GitHub's new-file page on the default branch with the workflow filled in", () => {
