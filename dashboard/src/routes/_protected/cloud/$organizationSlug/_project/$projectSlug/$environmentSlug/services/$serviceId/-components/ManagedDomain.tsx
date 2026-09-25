@@ -23,6 +23,7 @@ import {
   validateOnChangeOrBlur,
 } from "#/form";
 import type { ServiceManagedHostname } from "#/modules/environment-design/tables";
+import { managedHostname } from "#/modules/environment-design/managed-service-exports";
 import {
   serviceManagedHostnamePrefixSchema,
   serviceManagedHostnameSchema,
@@ -55,7 +56,7 @@ export function ManagedDomainRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const hostname = clusterDomain ? `${managed.prefix}.${clusterDomain}` : null;
+  const hostname = clusterDomain ? managedHostname(managed.prefix, clusterDomain) : null;
   const port = managed.targetPort ?? defaultTargetPort;
   return (
     <div className="flex flex-col gap-1">
@@ -99,7 +100,7 @@ export function ManagedDomainRow({
       </DomainRowShell>
       {hostname ? null : (
         <FieldDescription>
-          The generated domain is pending.{" "}
+          The Cluster Domain is pending.{" "}
           <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }}>
             Open Server Settings
           </Link>
@@ -192,7 +193,7 @@ export function ManagedDomainDialog({
                       description={
                         clusterDomain
                           ? `.${clusterDomain}`
-                          : "The generated domain is pending."
+                          : "The Cluster Domain is pending."
                       }
                     />
                   )}

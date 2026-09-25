@@ -21,6 +21,9 @@ export interface ManagedServiceExportRecord {
   readonly managed: true;
 }
 
+/** A managed hostname expanded against the Organization's Cluster Domain. */
+export const managedHostname = (prefix: string, clusterDomain: string) => `${prefix}.${clusterDomain}`;
+
 /** Domain lists preserve link order; editing a port does not change priority. */
 export function servicePublicDomain(
   service: Pick<ServiceExportContext, "routes" | "managedHostnames">,
@@ -29,7 +32,7 @@ export function servicePublicDomain(
   const custom = service.routes.at(-1);
   if (custom) return custom.hostname;
   const managed = service.managedHostnames.at(-1);
-  return managed && clusterDomain ? `${managed.prefix}.${clusterDomain}` : null;
+  return managed && clusterDomain ? managedHostname(managed.prefix, clusterDomain) : null;
 }
 
 export function getManagedServiceExports(

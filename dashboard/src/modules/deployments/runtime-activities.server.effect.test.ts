@@ -4,7 +4,8 @@ import { assert, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
-import { expandManagedHostnames, watchDeploymentCancellation } from "./runtime-activities.server";
+import { watchDeploymentCancellation } from "./runtime-activities.server";
+import { expandManagedHostnames } from "#/modules/environment-design/managed-hostnames.server";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createImageServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
 
@@ -50,8 +51,8 @@ it("gives expanded managed hostnames the same core-valid route ids on every comp
   const config = projectServiceDeploymentConfig({ source: createImageServiceSource({ image: "nginx:1" }), privateDns: "api",
     managedHostnames: [{ prefix: "api", targetPort: null }, { prefix: "www", targetPort: 8080 }], preDeployCommand: null, startCommand: null,
     healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
-  const first = expandManagedHostnames(config, "acme.ployz.test");
-  const second = expandManagedHostnames(config, "acme.ployz.test");
+  const first = Effect.runSync(expandManagedHostnames(config, "acme.ployz.test"));
+  const second = Effect.runSync(expandManagedHostnames(config, "acme.ployz.test"));
   assert.deepStrictEqual(first.routes.map((route) => route.hostname), ["api.acme.ployz.test", "www.acme.ployz.test"]);
   assert.deepStrictEqual(second.routes, first.routes);
   assert.notStrictEqual(first.routes[0]?.id, first.routes[1]?.id);

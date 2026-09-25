@@ -15,6 +15,7 @@ import {
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain-name";
+import { managedHostname } from "#/modules/environment-design/managed-service-exports";
 import type { ServiceDrawerState } from "./useServiceDrawerState";
 import { CustomDomainDialog } from "./CustomDomainDialog";
 import { CustomDomainRow, type DomainCertificateEvidence } from "./domain-row";
@@ -130,9 +131,7 @@ export function ServiceNetworkingSection({
               clusterDomain={clusterDomain}
               certificateEvidence={
                 clusterDomain
-                  ? certificateEvidence(
-                      `${managed.prefix}.${clusterDomain}`
-                    )
+                  ? certificateEvidence(managedHostname(managed.prefix, clusterDomain))
                   : null
               }
               defaultTargetPort={defaultTargetPort}
