@@ -267,7 +267,7 @@ describe("teardown durable state", () => {
     await insertClusterDomain();
     await dropOrganization();
     expect(hostedDns.requests).toEqual([
-      { path: "/domains/acme.ployz.test/release", authorization: "Bearer domain-token", body: {} },
+      { method: "DELETE", path: "/domains/acme.ployz.test", authorization: "Bearer domain-token", body: null },
     ]);
     expect((await harness.pool.query("select 1 from organization_cluster_domain")).rowCount).toBe(0);
     expect((await harness.pool.query("select 1 from organization")).rowCount).toBe(0);

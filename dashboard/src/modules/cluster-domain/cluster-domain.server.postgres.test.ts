@@ -65,7 +65,7 @@ describe("Organization Cluster Domain", () => {
     const reserved = await run(reserveClusterDomain(organizationId));
     const again = await run(reserveClusterDomain(organizationId));
 
-    expect(hostedDns.requests).toEqual([{ path: "/domains", authorization: null, body: { preferred: "acme" } }]);
+    expect(hostedDns.requests).toEqual([{ method: "POST", path: "/domains", authorization: null, body: { preferred: "acme" } }]);
     expect(again).toEqual(reserved);
     const [row] = (await rows()).rows;
     expect(row).toMatchObject({ endpoint: hostedDns.url, name: "acme.ployz.test" });

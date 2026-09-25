@@ -345,7 +345,7 @@ describe("organization enrollment coordinator", () => {
     expect(completed.success).toEqual({ machineId: founderMachineId });
     expect(repeated.success).toEqual(completed.success);
     // Founder completion reserved the Cluster Domain once, with the Organization slug.
-    expect(hostedDns.requests).toEqual([{ path: "/domains", authorization: null, body: { preferred: "enroll" } }]);
+    expect(hostedDns.requests).toEqual([{ method: "POST", path: "/domains", authorization: null, body: { preferred: "enroll" } }]);
     expect((await harness.pool.query("select name from organization_cluster_domain")).rows).toEqual([{ name: "enroll.ployz.test" }]);
 
     const waiters = await Promise.all(

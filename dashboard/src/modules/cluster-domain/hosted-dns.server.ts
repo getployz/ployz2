@@ -3,6 +3,7 @@ import { Data, Effect, Schema } from "effect";
 
 /**
  * The Hosted DNS HTTP client: every call Cloud makes to Hosted DNS lives in this file.
+ * The contract is the getployz/hosted-dns API (spec #1015).
  * `POST /domains` mints a name and a token shown once, authorized by the optional mint key;
  * every other call uses the per-name bearer token.
  */
@@ -15,16 +16,16 @@ export class HostedDnsError extends Data.TaggedError("HostedDnsError")<{
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
-const request = (operation: string, url: string, init: { token: string | undefined; body?: unknown }) =>
+const request = (operation: string, method: "POST" | "PUT" | "DELETE", url: string, init: { token: string | undefined; body?: unknown }) =>
   Effect.tryPromise({
     try: async (signal) => {
-      const headers = new Headers({ "content-type": "application/json" });
+      const headers = new Headers(init.body === undefined ? {} : { "content-type": "application/json" });
       if (init.token !== undefined) headers.set("authorization", `Bearer ${init.token}`);
       const response = await fetch(url, {
-        method: "POST",
+        method,
         signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
         headers,
-        body: JSON.stringify(init.body ?? {}),
+        body: init.body === undefined ? null : JSON.stringify(init.body),
       });
       if (!response.ok) throw new HostedDnsError({ operation, status: response.status });
       const text = await response.text();
@@ -45,7 +46,7 @@ export const reserveHostedDomain = Effect.fn("HostedDns.reserve")(function* (inp
   readonly preferred: string;
   readonly mintKey: string | undefined;
 }) {
-  const body = yield* request("reserve", domainsUrl(input.endpoint), { token: input.mintKey, body: { preferred: input.preferred } });
+  const body = yield* request("reserve", "POST", domainsUrl(input.endpoint), { token: input.mintKey, body: { preferred: input.preferred } });
   return yield* Schema.decodeUnknownEffect(Reservation)(body).pipe(
     Effect.mapError((cause) => new HostedDnsError({ operation: "reserve", cause })),
   );
@@ -57,5 +58,5 @@ export const releaseHostedDomain = Effect.fn("HostedDns.release")(function* (inp
   readonly name: string;
   readonly token: string;
 }) {
-  yield* request("release", domainsUrl(input.endpoint, input.name, "release"), { token: input.token });
+  yield* request("release", "DELETE", domainsUrl(input.endpoint, input.name), { token: input.token });
 });
