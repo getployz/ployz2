@@ -227,21 +227,51 @@ async fn record_written_by_a_later_daemon_reopens_with_every_known_value() {
 }
 
 #[tokio::test]
-async fn set_management_client_clear_persists() {
+async fn clear_persists_a_tombstone_of_public_keys_only() {
     let dir = TestDir::new("ployzd-clear-management-client");
     let local = participating(&dir).await;
-    local
+    let capability = local
         .set_management_client(SetManagementClientRequest::Set { label: cloud() })
         .await
+        .unwrap()
+        .capability
         .unwrap();
-    local
-        .set_management_client(SetManagementClientRequest::Clear { label: cloud() })
-        .await
-        .unwrap();
+    let clear = |label: &str| {
+        let local = local.clone();
+        let label = ManagementClientLabel::parse(label).unwrap();
+        async move {
+            local
+                .set_management_client(SetManagementClientRequest::Clear { label })
+                .await
+                .unwrap()
+        }
+    };
+    clear("cloud").await;
     assert!(!local.record().has_management_clients());
+    let cleared = local.record();
+    // Clear is idempotent: a tombstone stays unchanged and an absent label stays absent.
+    clear("cloud").await;
+    clear("cli").await;
+    assert_eq!(local.record(), cleared);
     drop(local);
+
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    assert!(!reopened.record().has_management_clients());
+    assert_eq!(reopened.record(), &*cleared);
+    assert_eq!(reopened.record().management_clients().count(), 0);
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.0.join("machine.json")).unwrap()).unwrap();
+    let public = iroh::SecretKey::from_bytes(capability.client_secret()).public();
+    assert_eq!(
+        persisted.get("management_clients"),
+        Some(&serde_json::json!({
+            "cloud": { "state": "cleared", "pending": public.as_bytes() },
+        }))
+    );
+    assert!(
+        !persisted
+            .to_string()
+            .contains(&serde_json::to_string(capability.client_secret()).unwrap())
+    );
 }
 
 #[tokio::test]
@@ -422,6 +452,14 @@ async fn inspect_lists_management_clients_holding_keys() {
     );
     assert!(!encoded.to_string().contains("cloud_pair"));
     assert!(encoded.get("secret").is_none());
+
+    // A Cleared tombstone holds no key the Machine serves, so Inspect does not list it.
+    local
+        .set_management_client(SetManagementClientRequest::Clear { label: cloud() })
+        .await
+        .unwrap();
+    let details = local.inspect(InspectRequest::default()).await.unwrap();
+    assert!(details.management_clients.is_empty());
 }
 
 #[tokio::test]

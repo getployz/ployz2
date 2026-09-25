@@ -352,6 +352,7 @@ impl LocalMachineStore {
     }
 
     /// Stage a fresh client key in `label`'s slot, beside any key it has accepted.
+    /// A Cleared tombstone is replaced.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
@@ -369,8 +370,8 @@ impl LocalMachineStore {
         })
     }
 
-    /// Remove `label`'s slot, with its accepted and pending keys, in one write.
-    /// An absent label stays absent.
+    /// Turn `label`'s slot into a Cleared tombstone of its public keys, in one write.
+    /// An absent label stays absent and a tombstone stays unchanged, without a write.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
@@ -378,8 +379,15 @@ impl LocalMachineStore {
         &mut self,
         label: &ManagementClientLabel,
     ) -> Result<(), StoreError> {
+        let Some(&slot) = self.record.management_clients.get(label) else {
+            return Ok(());
+        };
+        let cleared = slot.cleared();
+        if cleared == slot {
+            return Ok(());
+        }
         self.persist_management_clients(|clients| {
-            clients.remove(label);
+            clients.insert(label.clone(), cleared);
         })
     }
 

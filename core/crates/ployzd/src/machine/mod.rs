@@ -166,34 +166,78 @@ enum ManagementClientSlot {
         accepted: [u8; 32],
         pending: [u8; 32],
     },
+    /// Tombstone left by Clear: the keys the slot held, which are never admitted
+    /// again, so a redial with one learns its removal was confirmed.
+    Cleared {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accepted: Option<[u8; 32]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pending: Option<[u8; 32]>,
+    },
 }
 
 impl ManagementClientSlot {
     fn accepted(self) -> Option<[u8; 32]> {
         match self {
             Self::Active { accepted } | Self::Rotating { accepted, .. } => Some(accepted),
-            Self::Pending { .. } => None,
+            Self::Pending { .. } | Self::Cleared { .. } => None,
         }
     }
 
     fn pending(self) -> Option<[u8; 32]> {
         match self {
             Self::Pending { pending } | Self::Rotating { pending, .. } => Some(pending),
-            Self::Active { .. } => None,
+            Self::Active { .. } | Self::Cleared { .. } => None,
+        }
+    }
+
+    fn is_cleared(self) -> bool {
+        matches!(self, Self::Cleared { .. })
+    }
+
+    /// The tombstone this slot leaves when cleared; a tombstone stays unchanged.
+    fn cleared(self) -> Self {
+        match self {
+            Self::Pending { pending } => Self::Cleared {
+                accepted: None,
+                pending: Some(pending),
+            },
+            Self::Active { accepted } => Self::Cleared {
+                accepted: Some(accepted),
+                pending: None,
+            },
+            Self::Rotating { accepted, pending } => Self::Cleared {
+                accepted: Some(accepted),
+                pending: Some(pending),
+            },
+            Self::Cleared { .. } => self,
         }
     }
 }
 
 impl LocalMachineRecord {
-    /// Whether any Management Client slot exists.
+    /// Whether any Management Client slot holds an accepted or pending key.
     #[must_use]
     pub fn has_management_clients(&self) -> bool {
-        !self.management_clients.is_empty()
+        self.management_clients().next().is_some()
     }
 
-    /// Labels of the Management Client slots, each holding an accepted or pending key.
+    /// Labels of the Management Client slots holding an accepted or pending key;
+    /// Cleared tombstones are not listed.
     pub fn management_clients(&self) -> impl Iterator<Item = &ManagementClientLabel> {
-        self.management_clients.keys()
+        self.management_clients
+            .iter()
+            .filter(|(_, slot)| !slot.is_cleared())
+            .map(|(label, _)| label)
+    }
+
+    /// Whether `remote` is a key some Clear left in a tombstone.
+    #[must_use]
+    pub fn cleared_management_client(&self, remote: &[u8; 32]) -> bool {
+        self.management_clients.values().any(|slot| {
+            matches!(slot, ManagementClientSlot::Cleared { accepted, pending }
+                if accepted.as_ref() == Some(remote) || pending.as_ref() == Some(remote))
+        })
     }
 
     /// Public key `label` currently has accepted by the management transport.
