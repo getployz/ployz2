@@ -34,10 +34,6 @@ const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 const DEFAULT_RUN_DIR: &str = "/run/ployz";
 /// Unix socket installed systemd services use for the local Machine API.
 pub const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
-/// Mode of the Machine API socket, whether systemd or ployzd binds it.
-pub(crate) const SOCKET_MODE: u32 = 0o660;
-/// Mode of the Ployz runtime and data directories.
-pub(crate) const RUN_DIR_MODE: u32 = 0o750;
 /// Mutually exclusive host work for one Machine installation attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallMode {

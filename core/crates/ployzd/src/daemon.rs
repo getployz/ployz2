@@ -32,9 +32,8 @@ use crate::{
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
-    filesystem::set_ployz_group,
+    filesystem::{PLOYZ_DIR_MODE, SOCKET_MODE, set_ployz_group},
     ingress,
-    installer::{RUN_DIR_MODE, SOCKET_MODE},
     machine::{
         LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped,
         StoreError,
@@ -42,6 +41,7 @@ use crate::{
     machine_api::MachineApi,
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
+    socket_activation,
 };
 
 /// How the daemon attaches a Container Runtime.
@@ -215,7 +215,10 @@ impl Daemon {
             .with_image_ingest(Arc::clone(&ingest))
             .build();
 
-        let rpc_listener = listen_socket(&config.socket)?;
+        let rpc_listener = match socket_activation::listen_socket(&config.socket)? {
+            Some(listener) => listener,
+            None => bind_socket(&config.socket)?,
+        };
         let rpc = Server::builder().serve_with_incoming_shutdown(
             machine_api.clone(),
             UnixListenerStream::new(rpc_listener),
@@ -655,7 +658,7 @@ fn claim_socket(path: &Path) -> io::Result<File> {
     let parent_created = !parent.exists();
     fs::create_dir_all(parent)?;
     if parent_created {
-        fs::set_permissions(parent, fs::Permissions::from_mode(RUN_DIR_MODE))?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(PLOYZ_DIR_MODE))?;
         set_ployz_group(parent)?;
     }
 
@@ -678,37 +681,6 @@ fn claim_socket(path: &Path) -> io::Result<File> {
         }
     })?;
     Ok(lock)
-}
-
-/// Serve the socket `ployz.socket` passed, or bind it when run without systemd
-/// (development, tests, and the local testkit). An inherited socket must be
-/// bound to `path`, the path `claim_socket` locked.
-fn listen_socket(path: &Path) -> io::Result<UnixListener> {
-    let Some(listener) = crate::socket_activation::inherited_unix_listener()? else {
-        return bind_socket(path);
-    };
-    require_bound_to(&listener, path)?;
-    listener.set_nonblocking(true)?;
-    UnixListener::from_std(listener)
-}
-
-fn require_bound_to(listener: &std::os::unix::net::UnixListener, path: &Path) -> io::Result<()> {
-    let address = listener.local_addr()?;
-    let bound = address.as_pathname();
-    if bound == Some(path) {
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!(
-            "systemd passed a socket bound to {}, expected {}",
-            bound.map_or_else(
-                || "an unnamed address".into(),
-                |bound| bound.display().to_string()
-            ),
-            path.display()
-        ),
-    ))
 }
 
 fn bind_socket(path: &Path) -> io::Result<UnixListener> {
@@ -787,8 +759,8 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, ManagementConfig, claim_socket, listen_socket,
-        require_bound_to, wait_for_participation, wait_until_socket_accepts,
+        ContainerMode, Daemon, DaemonConfig, ManagementConfig, bind_socket, claim_socket,
+        wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -1054,18 +1026,6 @@ mod tests {
         assert!(!wait_for_participation(records, shutdown).await.unwrap());
     }
 
-    #[test]
-    fn inherited_socket_must_be_bound_to_the_claimed_path() {
-        let root = TestDir::new("ployzd-socket-inherited-path");
-        fs::create_dir_all(&root.0).unwrap();
-        let bound = root.0.join("other.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&bound).unwrap();
-        require_bound_to(&listener, &bound).unwrap();
-        let error = require_bound_to(&listener, &root.0.join("ployz.sock")).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("other.sock"), "{error}");
-    }
-
     #[tokio::test]
     async fn claimed_socket_path_refuses_connections_until_listen() {
         let root = TestDir::new("ployzd-socket-claim");
@@ -1082,7 +1042,7 @@ mod tests {
             ),
             "{error}"
         );
-        let _listener = listen_socket(&path).unwrap();
+        let _listener = bind_socket(&path).unwrap();
         tokio::net::UnixStream::connect(&path)
             .await
             .expect("listen must queue connections");

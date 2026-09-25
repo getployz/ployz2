@@ -10,14 +10,11 @@ use std::{
 
 use tonic::transport::Endpoint;
 
-use crate::filesystem::atomic_write;
+use crate::filesystem::{PLOYZ_DIR_MODE, SOCKET_MODE, atomic_write};
 use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
 use super::release::{fetch, installed_release};
-use super::{
-    Error, InstallPaths, PLOYZ_USER, RUN_DIR_MODE, SOCKET_MODE, command_exists, run_apt, run_host,
-    systemctl,
-};
+use super::{Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_host, systemctl};
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -114,7 +111,7 @@ pub(super) fn create_user_and_directories(
     }
     let data = paths.data_dir.to_string_lossy();
     let run = paths.run_dir.to_string_lossy();
-    let mode = format!("{RUN_DIR_MODE:04o}");
+    let mode = format!("{PLOYZ_DIR_MODE:04o}");
     run_host(
         "create Ployz directories",
         "install",
@@ -248,7 +245,7 @@ fn machine_api_socket_unit(run_dir: &Path) -> String {
 Description=Ployz Machine API socket
 
 [Socket]
-ExecStartPre=/usr/bin/install -d -m {RUN_DIR_MODE:04o} -o {PLOYZ_USER} -g {PLOYZ_USER} {run}
+ExecStartPre=/usr/bin/install -d -m {PLOYZ_DIR_MODE:04o} -o {PLOYZ_USER} -g {PLOYZ_USER} {run}
 ListenStream={run}/ployz.sock
 SocketMode={SOCKET_MODE:04o}
 SocketGroup={PLOYZ_USER}

@@ -5,7 +5,7 @@ use std::{
     io::{Read, Write},
     os::unix::net::UnixDatagram,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -80,20 +80,7 @@ fn volume_plugin_accepts_the_systemd_socket() {
     let root = TestDir::new("ployzd-volume-plugin-process");
     fs::create_dir_all(&root.0).unwrap();
     let socket = root.0.join("ployz-volume.sock");
-    let _plugin = ChildGuard(
-        Command::new("systemd-socket-activate")
-            .arg(format!("--listen={}", socket.display()))
-            .args([env!("CARGO_BIN_EXE_ployzd"), "volume-plugin"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "systemd socket was not created");
-        thread::sleep(Duration::from_millis(10));
-    }
+    let _plugin = socket_activated_volume_plugin(&[&socket]);
 
     let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
     stream
@@ -112,39 +99,11 @@ fn volume_plugin_rejects_more_than_one_systemd_socket() {
     fs::create_dir_all(&root.0).unwrap();
     let first = root.0.join("first.sock");
     let second = root.0.join("second.sock");
-    let mut plugin = ChildGuard(
-        Command::new("systemd-socket-activate")
-            .arg(format!("--listen={}", first.display()))
-            .arg(format!("--listen={}", second.display()))
-            .args([env!("CARGO_BIN_EXE_ployzd"), "volume-plugin"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !first.exists() {
-        assert!(Instant::now() < deadline, "systemd socket was not created");
-        thread::sleep(Duration::from_millis(10));
-    }
+    let mut plugin = socket_activated_volume_plugin(&[&first, &second]);
     // systemd-socket-activate execs ployzd only once a connection arrives.
     let _stream = std::os::unix::net::UnixStream::connect(&first).unwrap();
 
-    let status = loop {
-        if let Some(status) = plugin.0.try_wait().unwrap() {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "ployzd did not exit");
-        thread::sleep(Duration::from_millis(10));
-    };
-    let mut stderr = String::new();
-    plugin
-        .0
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
+    let (status, stderr) = wait_for_exit(&mut plugin.0, "the second socket");
     assert!(!status.success());
     assert!(
         stderr.contains("expected at most one systemd socket"),
@@ -153,7 +112,7 @@ fn volume_plugin_rejects_more_than_one_systemd_socket() {
 }
 
 #[test]
-fn volume_plugin_requires_exactly_one_systemd_socket() {
+fn volume_plugin_requires_a_systemd_socket() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .arg("volume-plugin")
         .env_remove("LISTEN_FDS")
@@ -322,6 +281,12 @@ fn terminate(child: &mut Child) -> String {
 }
 
 fn wait_and_stderr(child: &mut Child, stage: &str) -> String {
+    let (status, stderr) = wait_for_exit(child, stage);
+    assert!(status.success(), "ployzd exited with {status}: {stderr}");
+    stderr
+}
+
+fn wait_for_exit(child: &mut Child, stage: &str) -> (ExitStatus, String) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match child.try_wait().unwrap() {
@@ -330,13 +295,37 @@ fn wait_and_stderr(child: &mut Child, stage: &str) -> String {
                 if let Some(mut output) = child.stderr.take() {
                     output.read_to_string(&mut stderr).unwrap();
                 }
-                assert!(status.success(), "ployzd exited with {status}: {stderr}");
-                return stderr;
+                return (status, stderr);
             }
             None if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
             None => panic!("ployzd did not exit after {stage}"),
         }
     }
+}
+
+/// Runs `ployzd volume-plugin` behind `systemd-socket-activate` listening on
+/// `sockets`, once the first socket exists.
+fn socket_activated_volume_plugin(sockets: &[&Path]) -> ChildGuard {
+    let plugin = ChildGuard(
+        Command::new("systemd-socket-activate")
+            .args(
+                sockets
+                    .iter()
+                    .map(|socket| format!("--listen={}", socket.display())),
+            )
+            .args([env!("CARGO_BIN_EXE_ployzd"), "volume-plugin"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let first = sockets.first().expect("at least one socket");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !first.exists() {
+        assert!(Instant::now() < deadline, "systemd socket was not created");
+        thread::sleep(Duration::from_millis(10));
+    }
+    plugin
 }
 
 fn inspect(path: &Path) -> ployz_core::MachineDetails {
