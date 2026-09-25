@@ -214,6 +214,8 @@ async fn attempt(
     if events.send(Ok(admitted)).await.is_err() {
         return failed(Stage::Admission, "Build client disconnected");
     }
+    // Published until this attempt reports its end; capability checks are not Builds.
+    let _running = matches!(request, Input::Start(_)).then(|| local.running_build());
     let (upload, source) = mpsc::channel(2);
     let output = events.clone();
     let mut execution = tokio::task::spawn_blocking(move || {

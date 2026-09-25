@@ -341,6 +341,7 @@ impl Session {
                 captured.intent,
                 captured.build,
                 &captured.reusable,
+                captured.preference,
                 &token,
                 |progress| reporter.report(progress),
             )

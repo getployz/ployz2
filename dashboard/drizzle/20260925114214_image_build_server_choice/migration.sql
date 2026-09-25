@@ -1,0 +1,1 @@
+ALTER TABLE "environment_deployment_image_build" ADD COLUMN "server_choice" jsonb;

@@ -3,7 +3,7 @@ import { parseServiceConfig, type ServiceConfig } from "@ployz/sdk/config";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
-import type { EnvironmentDeploymentStatus } from "./tables";
+import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 import { isActiveDeployment } from "./runtime-contract";
@@ -25,7 +25,10 @@ export type DeploymentNodeView = {
   deploy: Stage;
   failure: { message: string; containerId: string | null } | null;
   tail: string[];
+  /** The Server the Engine chose for this image and why, once it chose. */
+  builtOn: BuiltOn | null;
 };
+export type BuiltOn = { server: string; reason: string };
 export type DeploymentViewStatus = "queued" | "building" | "deploying" | "deployed" | "failed" | "cancelled";
 export type DeploymentView = {
   status: DeploymentViewStatus;
@@ -37,7 +40,26 @@ type BuildStep = { id: number; image: string; build: number; key: string; name: 
 export type BuildLog = {
   steps: readonly BuildStep[];
   output: readonly { stepId: number; text: string }[];
+  serverChoices?: readonly { image: string; serverChoice: ServerChoice | null }[];
 };
+
+/** Why the Engine chose a Server: recorded evidence, never a prediction. */
+function builderReason(reason: ServerChoice["reason"]): string {
+  switch (reason.kind) {
+    case "had_cache": return "had this Service's build cache";
+    case "spread": return "spread across Servers";
+    case "cache_holder_unavailable": return `${reason.holder} has the cache but is offline or no longer builds`;
+  }
+}
+
+/** Where an image builds and why, from its Image Build's recorded Server choice. */
+export function builtOn(log: Pick<BuildLog, "serverChoices"> | null | undefined, image: string | null): BuiltOn | null {
+  const choice = image ? log?.serverChoices?.find((row) => row.image === image)?.serverChoice : null;
+  return choice ? { server: choice.machineName, reason: builderReason(choice.reason) } : null;
+}
+
+/** "Built on <Server> · <why>", as the canvas and build log say it. */
+export const builtOnLine = ({ server, reason }: BuiltOn) => `Built on ${server} · ${reason}`;
 export type DeploymentViewInput = {
   deployment: {
     status: EnvironmentDeploymentStatus;
@@ -313,6 +335,7 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
     return {
       nodeId: node.nodeId, outcome: nodeOutcome(facts, failure, buildStage, deploy, attempt),
       build: buildStage, deploy, failure, tail: nodeTail(facts, failure, buildStage).slice(-TAIL_LINES),
+      builtOn: builtOn(buildLog, node.image),
     };
   });
 

@@ -224,7 +224,7 @@ The build of one Service image within a Cloud Deployment Attempt, with its own B
 _Avoid_: Build batch, combined build log, Bake run
 
 **Builder**:
-A place that runs Image Builds: the Organization Cluster, which chooses one of its Servers, or GitHub Actions in the Service's own repository.
+A place that runs Image Builds: the Organization Cluster, which chooses one of its Servers, or GitHub Actions in the Service's own repository. The Cluster picks the Server named in the Service's latest Build Receipt while it accepts Builds and is reachable (its build cache is warm), otherwise it spreads the attempt's builds across Servers that accept Builds; each Image Build records the Server and why it was chosen.
 _Avoid_: Build host, build runner, builder Server; Builder for Dockerfile or Railpack
 
 **Build Order**:

@@ -230,6 +230,36 @@ async fn admitted_upload_queues_competitors_and_disconnect_releases_unused_owner
 }
 
 #[tokio::test]
+async fn running_builds_are_published_on_the_machine_until_they_end() {
+    let fixture = Fixture::new().await;
+    let published = async |count| {
+        let replicated = fixture.local.replicated().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while replicated
+                .machine(fixture.machine.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .runtime
+                .running_builds
+                != count
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("running Builds never read {count}"));
+    };
+    published(0).await;
+    let (first, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+    published(1).await;
+    drop(first);
+    let _ = terminal(&mut response).await;
+    published(0).await;
+}
+
+#[tokio::test]
 async fn build_concurrency_bounds_simultaneous_builds_on_separate_slots() {
     let fixture = Fixture::new().await;
     // Automatic: a Machine that accepts Services builds one at a time.

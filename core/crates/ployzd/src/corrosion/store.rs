@@ -29,6 +29,8 @@ use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, Re
 pub struct ReplicatedStore {
     api: ApiClient,
     machine_publication: Arc<tokio::sync::Mutex<()>>,
+    /// Builds this daemon runs now, overlaid on every local Machine publication.
+    running_builds: Arc<std::sync::atomic::AtomicU32>,
 }
 
 pub(crate) struct MachinePublicationGuard<'a> {
@@ -71,6 +73,16 @@ impl MachinePublicationGuard<'_> {
 
     pub(crate) async fn publish(&self, machine: &Machine) -> Result<(), Error> {
         self.store.publish_local_machine_unlocked(machine).await
+    }
+
+    /// Publish this daemon's own Machine with its live running Build count.
+    pub(crate) async fn publish_own(&self, machine: &Machine) -> Result<(), Error> {
+        let mut machine = machine.clone();
+        machine.runtime.running_builds = self
+            .store
+            .running_builds
+            .load(std::sync::atomic::Ordering::Relaxed);
+        self.publish(&machine).await
     }
 
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
@@ -179,7 +191,13 @@ impl ReplicatedStore {
         Self {
             api,
             machine_publication: Arc::new(tokio::sync::Mutex::new(())),
+            running_builds: Arc::default(),
         }
+    }
+
+    /// The live count of Builds this daemon runs, published with its Machine.
+    pub(crate) fn running_builds(&self) -> &std::sync::atomic::AtomicU32 {
+        &self.running_builds
     }
 
     #[cfg(test)]
