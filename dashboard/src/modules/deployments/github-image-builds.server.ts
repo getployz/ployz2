@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { BuildGrantId, BuildReceipt, MachineId, PreparationEvent } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { Effect, Schema } from "effect";
-import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow } from "#/modules/github/github-build.server";
+import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { buildFingerprints, ployzVersion } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
@@ -31,8 +31,13 @@ import { environmentDeploymentImageBuild as imageBuild } from "./tables";
  * the build, at the "start within" limit, or when the run ends first.
  */
 
-/** How long a dispatched run may take, queueing included, before Cloud cancels it. */
-export const GITHUB_RUN_TIMEOUT = "2h";
+/**
+ * How long a run may build after it checked in before Cloud cancels it. The Build Grant is minted at
+ * check-in and must outlive this: the daemon's `GRANT_LIFETIME` (3h, ployzd `management/build_grant.rs`).
+ */
+export const GITHUB_RUN_BUDGET_MS = 2 * 60 * 60_000;
+/** How often Cloud looks at a dispatched run on GitHub between Workflow run webhooks. */
+export const GITHUB_CHECK_INTERVAL = "10m";
 
 export type GithubBuildStart = ImageBuildAttempt | { kind: "dispatched"; runId: number };
 
@@ -115,11 +120,42 @@ export const withdrawGithubImageBuild = Effect.fn("Deployments.withdrawGithubIma
   const reason = `GitHub: no runner in ${START_WITHIN_MINUTES} min`;
   if (row?.status === "building" && (yield* skipImageBuilder(build.id, reason))) {
     yield* cancelGithubBuildRun(row);
-    return { kind: "skipped", reason } satisfies GithubBuildStart;
+    return { kind: "skipped", reason } satisfies GithubBuildCheck;
   }
   const result = yield* currentResult(build);
-  return result.status === "building" ? { kind: "started" as const } : { kind: "settled" as const, result };
+  return result.status === "building" ? { kind: "waiting" as const } : { kind: "settled" as const, result };
 });
+
+/** What one look at a dispatched GitHub build finds: it settled, GitHub was skipped, or it goes on. */
+export type GithubBuildCheck = ImageBuildAttempt | { kind: "waiting" };
+
+/**
+ * One look at a dispatched build, after the Workflow run webhook reported its run `ended` or a wait
+ * timed out. A timeout also asks GitHub whether the run completed, which catches a completion that
+ * landed between two waits. `startLimit`: this Builder isn't last and its "start within" passed.
+ * The last Builder waits for its run to start without a limit; once started, a run gets
+ * GITHUB_RUN_BUDGET_MS.
+ */
+export const checkGithubImageBuild = Effect.fn("Deployments.checkGithubImageBuild")(function* (
+  build: ImageBuildTarget, seen: { ended: boolean; startLimit: boolean },
+) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select().from(imageBuild).where(eq(imageBuild.id, build.id)).limit(1);
+  if (row?.status !== "building") return { kind: "settled", result: yield* currentResult(build) } satisfies GithubBuildCheck;
+  if (seen.ended || (yield* githubRunEnded(row))) return yield* finishGithubImageBuild(build, false);
+  if (row.checkedInAt === null) return seen.startLimit ? yield* withdrawGithubImageBuild(build) : { kind: "waiting" } satisfies GithubBuildCheck;
+  if (Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS) return yield* finishGithubImageBuild(build, true);
+  return { kind: "waiting" } satisfies GithubBuildCheck;
+});
+
+/** Whether GitHub says the build's run completed; unknown (GitHub unreachable) reads as still running. */
+const githubRunEnded = (row: GithubRunRow) => Effect.gen(function* () {
+  const context = yield* loadDeploymentContext(row.deploymentId);
+  const source = installedSource(context?.snapshots.find((snapshot) => snapshot.serviceId === row.serviceId));
+  const fullName = row.githubWorkflowRef?.split("/.github/")[0];
+  if (!source || !fullName || row.githubRunId === null) return false;
+  return yield* githubRunCompleted({ installationId: source.installationId, fullName, runId: row.githubRunId });
+}).pipe(Effect.orElseSucceed(() => false));
 
 const bearer = (request: Request) => {
   const match = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "");
@@ -227,9 +263,9 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
 });
 
 /**
- * Settles a GitHub build once its run ended (or ran out of time): ends the grant and writes the
- * receipt from the digest the Machine verified. A run that ended, or ran out of time, before it
- * checked in never started, so GitHub is skipped. A started run that pushed nothing failed.
+ * Settles a GitHub build once its run ended, or ran out of budget (`timedOut`: its run is cancelled
+ * first): ends the grant and writes the receipt from the digest the Machine verified. A run that
+ * ended before it checked in never started, so GitHub is skipped. A started run that pushed nothing failed.
  */
 export const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(function* (build: ImageBuildTarget, timedOut: boolean) {
   const { drizzle } = yield* Database;
@@ -240,11 +276,8 @@ export const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBu
   const found = yield* load();
   if (found?.status !== "building") return { kind: "settled", result: yield* currentResult(build) } satisfies ImageBuildAttempt;
   if (found.checkedInAt === null) {
-    const reason = timedOut ? "GitHub: the run didn't start in time" : "GitHub: the run ended before it started";
-    if (yield* skipImageBuilder(build.id, reason)) {
-      if (timedOut) yield* cancelGithubBuildRun(found);
-      return { kind: "skipped", reason } satisfies ImageBuildAttempt;
-    }
+    const reason = "GitHub: the run ended before it started";
+    if (yield* skipImageBuilder(build.id, reason)) return { kind: "skipped", reason } satisfies ImageBuildAttempt;
   }
   // It started, perhaps just now: re-read what check-in recorded.
   const row = found.checkedInAt === null ? yield* load() : found;
@@ -257,7 +290,7 @@ export const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBu
     Effect.map((ended) => ended.pushed ?? null),
     Effect.orElseSucceed(() => null),
   );
-  if (!pushed || !row.platforms?.length) return yield* failed("GitHub: the run pushed no image.");
+  if (!pushed || !row.platforms?.length) return yield* failed(timedOut ? "GitHub: the run didn't finish within 2 hours." : "GitHub: the run pushed no image.");
   // SAFETY: machineId was read from the Machine's own inspect at check-in.
   const machineId = row.machineId as MachineId;
   const receipt: BuildReceipt = {

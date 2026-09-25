@@ -52,7 +52,8 @@ export type GithubObservationOperation =
   | "download_source"
   | "fetch_workflow"
   | "dispatch_workflow"
-  | "cancel_run";
+  | "cancel_run"
+  | "fetch_run";
 
 export type GithubObservationErrorCode =
   | "invalid_input"

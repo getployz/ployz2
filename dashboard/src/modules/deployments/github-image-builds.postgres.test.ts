@@ -26,7 +26,7 @@ import { loadDeploymentBuildLog } from "./deployment-events.server";
 import { createMarkCancelledRowBackedWorkflow, createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 import type { BuildOrder } from "./build-order";
 import { imageBuildCandidates } from "./build-order.server";
-import { checkInGithubBuild, recordGithubBuildSteps, withdrawGithubImageBuild } from "./github-image-builds.server";
+import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps } from "./github-image-builds.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
 const userId = "00000000-0000-4000-8000-000000000802";
@@ -75,6 +75,8 @@ type Fake = {
   serversQueued: boolean;
   /** Whether the run ends before GitHub's start limit passes. */
   runEndsBeforeLimit: boolean;
+  /** The run's status when Cloud asks GitHub. */
+  runStatus: string;
   /** The Cluster's Servers, as its Runtime Watch shows them. */
   machines: Machine[];
   /** Each server build's Preferred Server. */
@@ -98,6 +100,7 @@ function githubApi(fake: Fake) {
     ["fetch_workflow", { path: ".github/workflows/ployz-build.yml", state: "active" }],
     ["dispatch_workflow", { workflow_run_id: githubRunId, html_url: "https://github.com/owner/repo/actions/runs/9001" }],
     ["cancel_run", {}],
+    ["fetch_run", { status: fake.runStatus }],
   ]);
   return {
     json: <S extends Schema.ConstraintDecoder<unknown>>(request: GithubJsonRequest<S>) => {
@@ -161,7 +164,7 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   beforeEach(async () => {
-    fake = { github: [], minted: [], ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, machines: [machine], preferredMachines: [] };
+    fake = { github: [], minted: [], ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -237,7 +240,8 @@ describe("Image Builds on GitHub Actions", () => {
       const ctx = mockCtx(context);
       // @inngest/test hands waitForEvent a lazy promise that inngest 4 then validates as an event,
       // so the run's completion is delivered by replacing the tool rather than mocking the step.
-      const waitForEvent = async (id: string) => id.startsWith("wait-github-start-") && !fake.runEndsBeforeLimit
+      // A GitHub Builder that isn't last waits its start limit first; the run completes after it.
+      const waitForEvent = async (_id: string, options: { timeout?: string | number }) => options.timeout === "3m" && !fake.runEndsBeforeLimit
         ? null : { name: "github/build-run.completed", data: { runId: githubRunId } };
       return { ...ctx, runId, step: { ...ctx.step, waitForEvent: asTestDouble<typeof ctx.step.waitForEvent>()(waitForEvent) } };
     },
@@ -363,7 +367,7 @@ describe("Image Builds on GitHub Actions", () => {
     await buildOrder("github-then-servers");
     await dispatch();
     await checkIn(oidcToken());
-    expect(await run(withdrawGithubImageBuild(await target()))).toEqual({ kind: "started" });
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: true }))).toEqual({ kind: "waiting" });
     expect(await row()).toMatchObject({ status: "building", builder: "github", githubRunId, skips: [] });
     expect(fake.github.map(({ operation }) => operation)).not.toContain("cancel_run");
   });
@@ -371,9 +375,31 @@ describe("Image Builds on GitHub Actions", () => {
   it("refuses a check-in once the start limit gave the build away", async () => {
     await buildOrder("github-then-servers");
     await dispatch();
-    expect(await run(withdrawGithubImageBuild(await target()))).toEqual({ kind: "skipped", reason: "GitHub: no runner in 3 min" });
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: true }))).toEqual({ kind: "skipped", reason: "GitHub: no runner in 3 min" });
     expect(await rejection(oidcToken())).toMatchObject({ _tag: "NotFound" });
     expect(fake.minted).toEqual([]);
+  });
+
+  it("settles a run whose completion no webhook delivered once GitHub says it completed", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    await report(["linux/amd64"]);
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false }))).toEqual({ kind: "waiting" });
+    fake.runStatus = "completed";
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false })))
+      .toMatchObject({ kind: "settled", result: { status: "built" } });
+  });
+
+  it("gives the last Builder's run no start limit, and a started run a budget", async () => {
+    await dispatch();
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false }))).toEqual({ kind: "waiting" });
+    expect(await row()).toMatchObject({ status: "building", skips: [] });
+    await checkIn(oidcToken());
+    await harness.db.update(schema.environmentDeploymentImageBuild).set({ checkedInAt: new Date(Date.now() - 3 * 60 * 60_000) });
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false })))
+      .toMatchObject({ kind: "settled", result: { status: "failed" } });
+    expect(await row()).toMatchObject({ failureMessage: "GitHub: the run didn't finish within 2 hours." });
+    expect(fake.github.map(({ operation }) => operation)).toContain("cancel_run");
   });
 
   it("moves on when the Workflow run webhook reports the run ended before it checked in", async () => {

@@ -38,10 +38,9 @@ import {
 import { imageBuildCandidates } from "#/modules/deployments/build-order.server";
 import {
   cancelGithubImageBuilds,
-  finishGithubImageBuild,
-  GITHUB_RUN_TIMEOUT,
+  checkGithubImageBuild,
+  GITHUB_CHECK_INTERVAL,
   startGithubImageBuild,
-  withdrawGithubImageBuild,
 } from "#/modules/deployments/github-image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
 import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.repository.server";
@@ -171,9 +170,10 @@ async function runImageBuild(
 }
 
 /**
- * GitHub: dispatch, then wait for the run to complete while the runner checks in and pushes. Not
- * last: a run that hasn't checked in within the limit is withdrawn. A run that ends before it
- * checked in, which the Workflow run webhook reports at once, never started either.
+ * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The Workflow run
+ * webhook ends a wait at once; each timeout checks the run on GitHub too, which catches a completion
+ * that landed between two waits. Not last: the first check is the "start within" limit, and a run
+ * that hasn't checked in by then is withdrawn. Last: it waits for the run to start without a limit.
  */
 async function buildOnGithub(
   build: ImageBuildTarget,
@@ -185,15 +185,12 @@ async function buildOnGithub(
   const started = await step.run(`start-github-build-${key}`, () => runEffect(startGithubImageBuild(build)));
   if (started.kind !== "dispatched") return started;
   const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
-  if (!last) {
-    const ended = await step.waitForEvent(`wait-github-start-${key}`, { ...run, timeout: `${START_WITHIN_MINUTES}m` });
-    if (ended) return step.run(`finish-github-build-${key}`, () => runEffect(finishGithubImageBuild(build, false)));
-    const limit = await step.run(`github-start-limit-${key}`, () => runEffect(withdrawGithubImageBuild(build)));
-    if (limit.kind !== "started") return limit;
+  for (let check = 0; ; check += 1) {
+    const startLimit = check === 0 && !last;
+    const ended = await step.waitForEvent(`wait-github-run-${key}-${check}`, { ...run, timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL });
+    const found = await step.run(`check-github-build-${key}-${check}`, () => runEffect(checkGithubImageBuild(build, { ended: ended !== null, startLimit })));
+    if (found.kind !== "waiting") return found;
   }
-  // ponytail: a run completing between the two waits is missed; the 2h timeout still settles it.
-  const completed = await step.waitForEvent(`wait-github-run-${key}`, { ...run, timeout: GITHUB_RUN_TIMEOUT });
-  return step.run(`finish-github-build-${key}`, () => runEffect(finishGithubImageBuild(build, completed === null)));
 }
 
 export type EnvironmentDeployEventData =

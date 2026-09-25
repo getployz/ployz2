@@ -33,9 +33,11 @@ use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// How long a grant lives when its Build never ends it: one Build's execution
-/// budget plus checkout and push.
-pub const GRANT_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// How long a grant lives when its Build never ends it. Ployz Cloud mints it at
+/// check-in and gives the run 2h from there (`GITHUB_RUN_BUDGET_MS` in the dashboard's
+/// `github-image-builds.server.ts`), so this must outlive that budget: a run Cloud
+/// still waits on never loses its grant mid-push.
+pub const GRANT_LIFETIME: Duration = Duration::from_secs(3 * 60 * 60);
 /// Close code for a key that holds no live grant.
 pub const GRANT_REFUSED: VarInt = VarInt::from_u32(0x53);
 /// Close code once a served grant ends.

@@ -98,6 +98,20 @@ export const cancelGithubRun = Effect.fn("Github.cancelRun")(function* (input: {
   }).pipe(Effect.catchIf((error) => error.status === 409, () => Effect.void));
 });
 
+const runStatusSchema = Schema.Struct({ status: Schema.String });
+
+/** Whether a build run has completed, whatever its conclusion. */
+export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (input: { installationId: number; fullName: string; runId: number }) {
+  const api = yield* GithubApi;
+  const run = yield* api.json({
+    installationId: input.installationId,
+    url: `https://api.github.com/repos/${input.fullName}/actions/runs/${input.runId}`,
+    operation: "fetch_run",
+    schema: runStatusSchema,
+  });
+  return run.status === "completed";
+});
+
 /** GitHub repositories that the latest Saved State of any of the organization's Environments builds from. */
 export const listOrganizationGithubRepositories = Effect.fn("Github.listOrganizationRepositories")(
   function* (organizationId: string) {
