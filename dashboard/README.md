@@ -29,7 +29,7 @@ retain it with `docker compose -p <existing-name>`.
 ## Build and deploy
 
 `pnpm build` compiles the native SDK and config WASM, then builds the web and
-Connect worker into `.output/`. The root Dockerfile packages both in one image:
+Connect worker into `.output/`. `Dockerfile.cloud` packages both in one image:
 
 | Process | Start command | Healthcheck |
 | --- | --- | --- |
@@ -92,4 +92,86 @@ One-time setup:
 - Disable scheduled image auto updates: CI runs `railway redeploy --from-source`
   for both services after the image push.
 
-The root `Dockerfile` remains the source-build path for self-hosting.
+Each release tag also publishes `ghcr.io/getployz/ployz-cloud:<tag>` from the
+same build, and attaches `ployz-cloud-compose.yml` (pinned to that tag) and
+`ployz-cloud.env.example` to the GitHub release.
+
+## Self-host
+
+Self-hosted Cloud runs the released image as web and worker beside Inngest,
+Redis, and Postgres ([`self-host/compose.yml`](self-host/compose.yml)). You bring
+your own GitHub apps; billing is off, so Organizations are unlimited. The relay,
+Hosted DNS, installer, and release binaries remain Ployz-hosted.
+
+```
+browser ──TLS proxy──► web :3000 ──┐
+GitHub webhooks ───────► web       ├─► Postgres (ployz_cloud, inngest)
+                        worker ◄───┤─► Inngest :8288 API / :8289 Connect ─► Redis
+```
+
+The image is `linux/amd64`. Put a TLS proxy in front of web's `WEB_PORT`; Inngest's
+UI is bound to `127.0.0.1:8288` for operator use only.
+
+### 1. Create the GitHub apps
+
+Replace `https://cloud.example.com` with your `APP_URL`.
+
+**OAuth App** (sign-in) at GitHub → Settings → Developer settings → OAuth Apps:
+
+| Field | Value |
+| --- | --- |
+| Homepage URL | `https://cloud.example.com` |
+| Authorization callback URL | `https://cloud.example.com/api/auth/callback/github` |
+
+Copy the Client ID to `GITHUB_CLIENT_ID` and a new client secret to `GITHUB_CLIENT_SECRET`.
+
+**GitHub App** (repository access) at GitHub → Settings → Developer settings → GitHub Apps
+(or under your organization):
+
+| Field | Value |
+| --- | --- |
+| Homepage URL | `https://cloud.example.com` |
+| Webhook URL | `https://cloud.example.com/api/github/webhook` (Active) |
+| Webhook secret | `openssl rand -hex 32`, also `GITHUB_APP_WEBHOOK_SECRET` |
+| Repository permissions | Contents: Read-only, Checks: Read-only, Metadata: Read-only |
+| Subscribe to events | Push, Check suite |
+
+Installation events are delivered without subscribing. Copy the App ID to
+`GITHUB_APP_ID`, the URL name from `github.com/apps/<slug>` to `GITHUB_APP_SLUG`,
+and a generated private key (the whole PEM, quoted) to `GITHUB_APP_PRIVATE_KEY`.
+
+### 2. Configure and start
+
+Download `ployz-cloud-compose.yml` as `compose.yml` and `ployz-cloud.env.example`
+as `.env` from the release into one directory, then fill in `.env`. Every
+uncommented variable is required; web and worker exit with a
+`ConfigError` if one is missing.
+Leave all `POLAR_*` variables unset.
+
+```sh
+docker compose run --rm web npm run db:migrate   # explicit, once per install/upgrade
+docker compose up -d
+docker compose ps                                # worker turns healthy once Connected
+```
+
+Neither web nor worker migrates on boot. The worker's healthcheck is `/ready`:
+200 while its Inngest Connect connection is active, 503 otherwise. It is not a
+database, schema, or GitHub check. Compose gives the worker a 30-minute
+`stop_grace_period` so active steps drain.
+
+### 3. Sign in, then install the GitHub App
+
+Sign in to Cloud with GitHub first, then install the GitHub App as that same
+GitHub user (from Cloud or `github.com/apps/<slug>`). Installation webhooks are
+only attached to a GitHub account already linked in Cloud.
+
+### Upgrade
+
+Replace `compose.yml` with the new release's asset (or bump
+`PLOYZ_CLOUD_VERSION`), then:
+
+```sh
+docker compose pull
+docker compose run --rm web npm run db:migrate
+docker compose up -d
+```
