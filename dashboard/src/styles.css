@@ -245,8 +245,6 @@
 
 .canvas-workspace-header { grid-area: 1 / 1; min-width: 0; overflow: hidden; border-bottom: 1px solid var(--border); background: var(--background); }
 .environment-canvas-scene:focus-visible, .canvas-inspector-pane:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-/* Environment actions stay above both the canvas and resource editors. */
-.environment-canvas-scene:has(.canvas-change-controls) .canvas-workspace-header { padding-right: 17rem; }
 .canvas-workspace-header > header { min-width: 0; border-bottom: 0; }
 /* Deployment Mode: the header, mobile navigation and canvas take the info tint; the canvas gets an inset frame. */
 .canvas-workspace-header, [data-mobile-navigation], .canvas-graph { transition: background-color 350ms ease, border-color 350ms ease; }
@@ -256,7 +254,6 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
 [data-deployment-canvas] { background: color-mix(in oklab, var(--info-soft) 40%, var(--background)); }
 [data-deployment-canvas]::after { content: ""; position: absolute; inset: 0; z-index: 5; pointer-events: none; box-shadow: inset 0 0 0 3px var(--info-border); }
 .canvas-graph { position: relative; grid-area: 2 / 1 / 4 / 2; min-width: 0; min-height: 0; overflow: hidden; }
-.canvas-change-controls { grid-area: 1 / 1; z-index: 30; justify-self: end; align-self: center; display: flex; align-items: center; gap: 0.75rem; padding: 0 1.5rem; }
 /* The deploy bar floats over the canvas on every screen size, above the inspector shade and pane. */
 .deploy-bar {
   position: absolute; bottom: 1rem; left: 50%; translate: -50% 0; z-index: 30;
@@ -265,9 +262,10 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
   white-space: nowrap; transition: background-color 350ms ease, border-color 350ms ease;
 }
 .deploy-bar[data-deployment] { background: var(--info-soft); border-color: var(--info-border); }
+/* Pending changes: the whole bar takes the staged-intent surface and the apply zone follows the segments. */
+.deploy-bar:has(.apply-zone) { background: var(--changed-soft); border-color: var(--changed-border); }
+.apply-zone { display: flex; align-items: center; gap: 0.25rem; margin-left: auto; padding-left: 0.375rem; border-left: 1px solid var(--changed-border); }
 .canvas-node-list { padding-bottom: 5rem; }
-/* ponytail: reserve two mobile toolbar rows; measure if the action set grows. */
-.environment-canvas-scene:has(.canvas-change-controls) .canvas-node-list { padding-bottom: 9rem; }
 .canvas-inspector-shade {
   grid-area: 2 / 1 / 4 / 2;
   z-index: 10;
@@ -320,7 +318,6 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
 @media (max-width: 860px) {
   .environment-canvas-scene { --canvas-header-height: 0px; }
   .canvas-workspace-header { display: none; }
-  .canvas-change-controls { grid-area: 3 / 1; justify-self: stretch; justify-content: space-between; padding: 0.75rem 1rem; background: var(--background); border-top: 1px solid var(--border); }
   .canvas-inspector-header { min-height: 3.5rem; }
   [data-canvas-inspector-desktop-control] { display: none; }
   .canvas-inspector-back { display: inline-flex; }
@@ -338,8 +335,6 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
 .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 4rem; }
 @media (max-width: 860px) {
   .deploy-bar { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; translate: none; max-width: none; }
-  /* ponytail: sits above the mobile change footer until the apply zone moves into the bar (#1051). */
-  .environment-canvas-scene:has(.canvas-change-controls) .deploy-bar { bottom: 4.5rem; }
   .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 0; padding-bottom: 4rem; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -13,7 +13,13 @@ import { getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsC
 import { orgStoreOptions } from "#/collections/org-store";
 import { preloadCollection } from "#/collections/query-collection";
 import { getDbClient } from "#/collections/scope";
+import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
+import * as deploymentCollections from "#/modules/deployments/deployment.collection";
+import * as deploymentFunctions from "#/modules/deployments/deployment.functions";
 import type { DeploymentProgress, DeploymentProgressRow } from "#/modules/deployments/deployment-progress";
+import * as preflight from "#/modules/runtime/deploy-target-preflight";
+import * as restore from "#/modules/environment-design/working-document-restore.functions";
+import { asTestDouble } from "#/lib/test-double";
 import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 import { defaultServicePolicy } from "#/modules/environment-design/service-policy";
 import { RuntimeProvider } from "#/providers/runtime-provider";
@@ -59,7 +65,7 @@ const failedReplace: DeploymentProgressRow = { ...removal, serviceId: api, servi
   error: "Health check timed out after 60s", containerId: "c0ffee" };
 const rows = new Map<string, unknown[]>(Object.entries({
   project: [{ id: projectId, organizationId, name: "Shop", slug: "shop", createdAt, updatedAt: createdAt }],
-  environment: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt, updatedAt: createdAt,
+  environment: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", revision: "r1", createdAt, updatedAt: createdAt,
     intent: { version: 1, environmentSlug: "production", services: [intentService(api, "api"), intentService(web, "web"), intentService(worker, "worker")], volumes: [] } }],
   environment_summary: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt }],
   service: [service(api, "api"), service(old, "old"), service(web, "web"), service(worker, "worker")],
@@ -71,15 +77,17 @@ const rows = new Map<string, unknown[]>(Object.entries({
 }));
 const card = (name: string) => screen.getAllByText(name)[0]?.closest("[data-canvas-node]");
 
-async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production" }: { extra?: Record<string, unknown[]>; path?: string } = {}) {
+async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production", changeStates = [] }: {
+  extra?: Record<string, unknown[]>; path?: string; changeStates?: EnvironmentChangeStateProjection[];
+} = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([...rows.get(table) ?? [], ...extra[table] ?? []]));
   // The failed attempt's event log is finished and empty, so Deploy logs reads it from cache.
   queryClient.setQueryData(["collections", "session", "user", "acme", "deployment_logs", replaceFailedId], { events: [], finished: true });
-  // The change-state projection stamps its version from these tables, then reads no states.
+  // The change-state projection stamps its version from these tables, then reads the given states (none by default).
   await Promise.all([getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection].map((get) => preloadCollection(get("acme", scope))));
-  await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => []));
+  await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => changeStates));
   await queryClient.ensureQueryData(orgStoreOptions("acme", scope));
 
   const root = createRootRoute({ component: Outlet });
@@ -293,5 +301,97 @@ describe("the deploy bar", () => {
     expect(router.state.location.pathname).toBe("/cloud/acme/shop/production");
     expect(router.state.location.search).toEqual({ deploymentList: true });
     expect(await screen.findByRole("navigation", { name: "Deployments" })).toBeTruthy();
+  });
+});
+
+describe("the apply zone", () => {
+  const bar = () => within(screen.getByRole("group", { name: "Deploy bar" }));
+  const click = (element: HTMLElement) => act(async () => { fireEvent.click(element); });
+  // Applied State runs every service as authored except `api`, which ran two replicas: one pending change.
+  const appliedNode = (nodeId: string, serviceConfig: ReturnType<typeof config>) =>
+    ({ nodeType: "service" as const, nodeId, nodeLineageId: nodeId, revisionId: null, config: serviceConfig });
+  const applied = { token: "applied",
+    nodes: [appliedNode(api, { ...config("api"), replicas: 2 }), appliedNode(web, config("web")), appliedNode(worker, config("worker"))] };
+  const pending: EnvironmentChangeStateProjection = { environmentId, saved: null, applied, deploymentEvidence: null };
+  const submit = () => vi.mocked(deploymentFunctions.submitReviewedPublicationServerFn);
+  beforeEach(() => {
+    vi.spyOn(preflight, "getDeployTargetPreflight").mockReturnValue({ ok: true });
+    vi.spyOn(deploymentFunctions, "listLatestOrganizationEnvironmentChangeStatesServerFn").mockResolvedValue([pending]);
+    vi.spyOn(deploymentFunctions, "submitReviewedPublicationServerFn").mockResolvedValue({ state: "deployment_queued" });
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("turns the whole bar staged-intent and opens the existing review from Details", async () => {
+    await openCanvas({ changeStates: [pending] });
+    expect(await bar().findByText("Apply 1 change")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Deploy bar" }).querySelector(".apply-zone")).toBeTruthy();
+    expect(bar().getByRole("button", { name: /^Deploy(⇧\+Enter)?$/ }).textContent).toBe("Deploy⇧+Enter");
+
+    await click(bar().getByRole("button", { name: "Details" }));
+    expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
+    await click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Environment changes" })).toBeNull();
+    expect(document.activeElement).toBe(bar().getByRole("button", { name: "Details" }));
+  });
+
+  it("deploys from the button and from ⇧+Enter, but never from multi-line text", async () => {
+    await openCanvas({ changeStates: [pending] });
+    await click(await bar().findByRole("button", { name: /^Deploy(⇧\+Enter)?$/ }));
+    await waitFor(() => expect(submit()).toHaveBeenCalledWith({ data: expect.objectContaining({ intent: "manual_deploy" }) }));
+
+    const textarea = document.body.appendChild(document.createElement("textarea"));
+    await act(async () => { fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true }); });
+    textarea.remove();
+    await act(async () => { fireEvent.keyDown(document.body, { key: "Enter" }); });
+    expect(submit()).toHaveBeenCalledTimes(1);
+    await act(async () => { fireEvent.keyDown(document.body, { key: "Enter", shiftKey: true }); });
+    await waitFor(() => expect(submit()).toHaveBeenCalledTimes(2));
+  });
+
+  it("discards every change from the ⋮ menu", async () => {
+    // The server restores `api` to its applied two replicas.
+    const [environment] = rows.get("environment") as [{ intent: { services: ReturnType<typeof intentService>[] } }];
+    const restored = { ...environment, revision: "r2", intent: { ...environment.intent, services: environment.intent.services.map((node) =>
+      node.id === api ? { ...node, config: { ...node.config, replicas: 2 } } : node) } };
+    const discard = vi.spyOn(restore, "discardEnvironmentChangesServerFn").mockResolvedValue(
+      asTestDouble<Awaited<ReturnType<typeof restore.discardEnvironmentChangesServerFn>>>()({ data: restored }));
+    vi.spyOn(deploymentCollections, "reconcileDeploymentCollections").mockResolvedValue(undefined);
+    await openCanvas({ changeStates: [pending] });
+    await click(await bar().findByRole("button", { name: "More change actions" }));
+    await click(await screen.findByRole("menuitem", { name: "Discard all changes" }));
+    await waitFor(() => expect(bar().queryByText(/Apply/)).toBeNull());
+    expect(discard).toHaveBeenCalledWith({ data: expect.objectContaining({ environmentId, revision: "r1", command: { kind: "all" } }) });
+  });
+
+  it("keeps the changes during a Git-triggered deployment and shows a Deploy behind it as Queued", async () => {
+    const fromPush = { ...deployment(runningId, 4, null, "deploying"),
+      triggerOrigin: { origin: "github", deliveryId: "delivery", branchEvaluationRevision: 1, installationId: 1, repositoryId: 1 } };
+    // The pushed run deploys Saved State, which is Applied State here, so the canvas edit stays pending.
+    const running: EnvironmentChangeStateProjection = { ...pending, deploymentEvidence: {
+      id: runningId, savedStateSnapshotId: runningId, status: "deploying", token: "pushed", createdAt, nodes: applied.nodes } };
+    vi.spyOn(deploymentFunctions, "listLatestOrganizationEnvironmentChangeStatesServerFn").mockResolvedValue([running]);
+    const router = await openCanvas({ changeStates: [running], extra: {
+      environment_deployment: [fromPush, deployment(failedId, 5, null, "queued")],
+    } });
+    expect(await bar().findByText("Apply 1 change")).toBeTruthy();
+    expect(bar().getByRole("link", { name: /Deploying/ })).toBeTruthy();
+
+    await click(bar().getByRole("link", { name: "Queued" }));
+    expect(router.state.location.search).toEqual({ deployment: failedId });
+    // Deployment Mode is read-only: no apply zone.
+    expect(await bar().findByRole("button", { name: /Deployment c0000000/ })).toBeTruthy();
+    expect(bar().queryByText(/Apply/)).toBeNull();
+  });
+
+  it("uses fewer words on mobile and keeps Details and Discard under ⋮", async () => {
+    vi.stubGlobal("innerWidth", 375);
+    await openCanvas({ changeStates: [pending] });
+    expect(await bar().findByText("Apply 1")).toBeTruthy();
+    expect(bar().queryByRole("button", { name: "Details" })).toBeNull();
+    expect(bar().getByRole("button", { name: /^Deploy(⇧\+Enter)?$/ }).textContent).toBe("Deploy");
+    await click(bar().getByRole("button", { name: "More change actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Discard all changes" })).toBeTruthy();
+    await click(screen.getByRole("menuitem", { name: "Details" }));
+    expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
   });
 });
