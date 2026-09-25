@@ -3,8 +3,11 @@
 
   snapshot NAME           measure both suites, write .scratch/test-audit/NAME.json
   compare BASE HEAD       print deltas; exit 1 if uncovered lines grew past the gate
-  mutants-baseline FILE   freeze the caught-mutant set for one core source file
-  mutants-check FILE      re-run the frozen mutants; exit 1 if any caught mutant now survives
+  mutants-baseline FILE [NEXTEST_ARGS...]   freeze the caught-mutant set for one core source file
+  mutants-check FILE [NEXTEST_ARGS...]      re-run it; exit 1 if any frozen mutant now survives
+
+NEXTEST_ARGS narrow the tests run per mutant (e.g. -E 'binary_id(ployz::deploy_plan)');
+pass the same ones to baseline and check. Mutation runs in place, so don't edit the tree meanwhile.
 
 Ignored Rust tests (real-infra rungs) are out of scope; they neither count nor run.
 """
@@ -141,12 +144,14 @@ def mutant_output(target):
     return OUT / "mutants" / str(target).replace("/", "__")
 
 
-def mutants(path):
+def mutants(path, *nextest_args):
     """Run cargo-mutants on one file; return the multiset of caught mutant keys."""
     target = (Path.cwd() / path).resolve().relative_to(CORE)
     output = mutant_output(target)
+    output.mkdir(parents=True, exist_ok=True)
+    # In place reuses the warm target dir; copying the tree would cold-build every job.
     result = subprocess.run(["cargo", "mutants", "--file", str(target), "--test-tool", "nextest", "--all-features",
-                             "--output", str(output), "--jobs", "4", "--no-shuffle"],
+                             "--output", str(output), "--in-place", "--no-shuffle", "--", *nextest_args],
                             cwd=CORE, text=True, capture_output=True)
     # 2 = some mutants missed, 3 = some timed out: both still produce outcomes to compare.
     if result.returncode not in (0, 2, 3):
@@ -160,15 +165,15 @@ def mutants(path):
     return target, caught
 
 
-def mutants_baseline(path):
-    target, caught = mutants(path)
+def mutants_baseline(path, *nextest_args):
+    target, caught = mutants(path, *nextest_args)
     frozen = mutant_output(target).with_suffix(".frozen.json")
     frozen.write_text(json.dumps(dict(caught), indent=2) + "\n")
     print(f"{target}: froze {sum(caught.values())} caught mutants")
 
 
-def mutants_check(path):
-    target, caught = mutants(path)
+def mutants_check(path, *nextest_args):
+    target, caught = mutants(path, *nextest_args)
     frozen = collections.Counter(json.loads(mutant_output(target).with_suffix(".frozen.json").read_text()))
     lost = frozen - caught
     for key in sorted(lost):
