@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Tabs } from "#/components/ui/tabs";
 import { asTestDouble } from "#/lib/test-double";
 import { RuntimeProvider } from "#/providers/runtime-provider";
-import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { orgStoreSeed } from "#/test/org-store-tables";
 import {
   createEmptyServiceSource,
@@ -41,16 +41,22 @@ afterEach(() => {
 async function show(
   source: ServiceSource,
   buildMethod: "dockerfile" | "railpack" = "dockerfile",
-  { clusterDomain = null, managedHostnames = [] }: {
+  { clusterDomain = null, managedHostnames = [], routes = [] }: {
     clusterDomain?: string | null;
+    /** Also treated as deployed. */
     managedHostnames?: ServiceDrawerState["service"]["managedHostnames"];
+    /** Also treated as deployed. */
+    routes?: ServiceDrawerState["service"]["routes"];
   } = {},
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
   client.setQueryData(
     ["collections", "test-session", "test-user", "acme", "organization_cluster_domain"],
-    orgStoreSeed(clusterDomain === null ? [] : [{ id: "organization", name: clusterDomain }]),
+    orgStoreSeed(clusterDomain === null ? [] : [{
+      id: "organization", name: clusterDomain, recordsSyncedAt: new Date(), traffic: { kind: "probed", unreachable: [] },
+      certificateNotAfter: new Date(Date.now() + 60 * 86_400_000), checkedAt: new Date(),
+    }]),
   );
   const update = vi.fn((_id: string, _apply: (draft: ServiceDrawerState["service"]) => void) => ({ isPersisted: { promise: Promise.resolve() } }));
   const build = { buildMethod, dockerfilePath: "docker/Dockerfile", command: null, } as const;
@@ -60,7 +66,7 @@ async function show(
     service: {
       id: "service", environmentId: "environment", name: "api", privateDns: "api",
       source, build, policy: { autoDeploy: true, waitForCi: false, watchPaths: ["src/**"], imageUpdate: { type: "off" } },
-      routes: [], managedHostnames, replicas: 1,
+      routes, managedHostnames, replicas: 1,
       preDeployCommand: null, startCommand: null, healthcheck: { type: "none" },
       restartPolicy: "on-failure", maxRetries: 10,
       registryCredentialUsername: null,
@@ -70,6 +76,7 @@ async function show(
     editMetadata: update,
     managedPrefixesInUse: [],
     defaultTargetPort: 8080,
+    appliedDomains: { managedPrefixes: new Set(managedHostnames.map((managed) => managed.prefix)), routeHostnames: new Set(routes.map((route) => route.hostname)) },
   });
   const State = createContext(state);
   const root = createRootRoute({ component: Outlet });
@@ -148,15 +155,37 @@ it("saves and clears the Railpack build command using the command control", asyn
   await waitFor(() => expect(state.service.build.command).toBeNull());
 });
 
-it("shows a managed hostname's certificate status from the published wildcard that covers it", async () => {
-  // The Engine keeps no certificate row for a hostname a published wildcard covers.
-  frame = runtimeWatchFrameFixture({
-    certificates: [{ hostname: "*.acme.ployz.app", status: "available", last_error: null, backoff: null }],
-  });
+it("links a generated domain once its Cluster Domain is ready", async () => {
   await show(createEmptyServiceSource(), "dockerfile", {
     clusterDomain: "acme.ployz.app",
     managedHostnames: [{ prefix: "api", targetPort: null }],
   });
-  expect(screen.getByText("api.acme.ployz.app")).toBeTruthy();
-  expect(await screen.findByText("Observed certificate status: available.")).toBeTruthy();
+  const link = screen.getByText("api.acme.ployz.app").closest("a");
+  expect(link?.getAttribute("href")).toBe("https://api.acme.ployz.app");
+  expect(screen.queryByText(/certificate/i)).toBeNull();
+});
+
+it("shows the DNS records a custom domain needs, pointing an apex at ingress Servers only", async () => {
+  frame = runtimeWatchFrameFixture({
+    machines: [
+      runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("a".repeat(32), "edge", { public_ip: "203.0.113.1" }) }),
+      runtimeWatchMachineObservationFixture({
+        machine: runtimeWatchMachineFixture("b".repeat(32), "worker", { public_ip: "203.0.113.2", accepts_ingress: false }),
+      }),
+    ],
+    certificates: [{
+      hostname: "acme.com", status: "failure", last_error: "no such host",
+      backoff: { failure_kind: "does_not_resolve", next_attempt_at: "2026-09-25T12:12:00Z", failures: 1 },
+    }],
+  });
+  await show(createEmptyServiceSource(), "dockerfile", {
+    clusterDomain: "acme.ployz.app",
+    routes: [{ id: "route", hostname: "acme.com", targetPort: null }],
+  });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Show DNS records" }));
+  expect(screen.getByText("203.0.113.1")).toBeTruthy();
+  expect(screen.queryByText("203.0.113.2")).toBeNull();
+  expect(screen.getByRole("button", { name: "Copy A name" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy A value" })).toBeTruthy();
 });
