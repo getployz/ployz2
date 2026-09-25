@@ -248,6 +248,13 @@
 /* Environment actions stay above both the canvas and resource editors. */
 .environment-canvas-scene:has(.canvas-change-controls) .canvas-workspace-header { padding-right: 17rem; }
 .canvas-workspace-header > header { min-width: 0; border-bottom: 0; }
+/* Deployment Mode: the header, mobile navigation and canvas take the info tint; the canvas gets an inset frame. */
+.canvas-workspace-header, [data-mobile-navigation], .canvas-graph { transition: background-color 350ms ease, border-color 350ms ease; }
+.environment-canvas-scene:has([data-deployment-canvas]) .canvas-workspace-header,
+body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--info-soft); border-color: var(--info-border); }
+.environment-canvas-scene:has([data-deployment-canvas]) .canvas-workspace-header > header { background: transparent; }
+[data-deployment-canvas] { background: color-mix(in oklab, var(--info-soft) 40%, var(--background)); }
+[data-deployment-canvas]::after { content: ""; position: absolute; inset: 0; z-index: 5; pointer-events: none; box-shadow: inset 0 0 0 3px var(--info-border); }
 .canvas-graph { position: relative; grid-area: 2 / 1 / 4 / 2; min-width: 0; min-height: 0; overflow: hidden; }
 .canvas-change-controls { grid-area: 1 / 1; z-index: 30; justify-self: end; align-self: center; display: flex; align-items: center; gap: 0.75rem; padding: 0 1.5rem; }
 /* ponytail: reserve two mobile toolbar rows; measure if the action set grows. */

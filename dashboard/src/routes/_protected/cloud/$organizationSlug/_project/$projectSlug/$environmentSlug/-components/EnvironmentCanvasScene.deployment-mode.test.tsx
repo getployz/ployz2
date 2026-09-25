@@ -1,0 +1,144 @@
+// @vitest-environment jsdom
+import { Suspense } from "react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { DbProvider } from "@tanstack/react-db";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
+} from "@tanstack/react-router";
+import { Schema } from "effect";
+import { parseServiceConfig } from "@ployz/sdk/config";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
+import { orgStoreOptions } from "#/collections/org-store";
+import { preloadCollection } from "#/collections/query-collection";
+import { getDbClient } from "#/collections/scope";
+import type { DeploymentProgress, DeploymentProgressRow } from "#/modules/deployments/deployment-progress";
+import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
+import { defaultServicePolicy } from "#/modules/environment-design/service-policy";
+import { RuntimeProvider } from "#/providers/runtime-provider";
+import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
+import { serviceSearchSchema } from "../services/$serviceId/-components/service-pages";
+import { canvasRouteSearch } from "./deployment-mode";
+import { EnvironmentCanvasScene } from "./EnvironmentCanvasScene";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
+
+const organizationId = "00000000-0000-4000-8000-000000000001";
+const projectId = "00000000-0000-4000-8000-000000000002";
+const environmentId = "00000000-0000-4000-8000-000000000003";
+const [previous, attemptId] = ["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"];
+const [api, old, worker] = ["00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022", "00000000-0000-4000-8000-000000000023"];
+const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
+const createdAt = new Date("2026-09-01T00:00:00Z");
+const config = (privateDns: string) => parseServiceConfig({ version: 2, source: { version: 1, type: "image", image: "nginx:1", credentials: { type: "none" } },
+  healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns });
+const intentService = (id: string, slug: string) => {
+  const { env: _env, mounts: _mounts, ...authored } = config(slug);
+  return { id, lineageId: id, slug, config: authored, variables: [], volumeAttachments: [] };
+};
+const service = (id: string, name: string) => ({ id, organizationId, projectId, environmentId, lineageId: id, name, policy: defaultServicePolicy,
+  hasRegistryCredential: false, firstDeployedAt: createdAt, createdAt, updatedAt: createdAt });
+const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgress | null) => ({
+  id, organizationId, environmentId, triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: id, serviceActionPolicy: null,
+  status: "applied", inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, sourcePins: {}, variableProducers: null, deployManifest: null,
+  deployPreview: null, runtimeProgress, failureCode: null, failureMessage: null, message: null, cancellationRequestedAt: null, dispatchRequestedAt: null,
+  startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt,
+});
+const snapshot = (deploymentId: string, nodeId: string, privateDns: string) => ({ id: `${deploymentId}:${nodeId}`, organizationId, environmentId,
+  environmentDeploymentId: deploymentId, nodeType: "service", nodeId, nodeLineageId: nodeId, configVersion: 1, config: config(privateDns), createdAt, updatedAt: createdAt });
+// The attempt removed `old` (its row has no serviceId on the record side) and left `api` unchanged; `worker` came later.
+const removal: DeploymentProgressRow = { index: 0, machineId: "m", machineName: "server", serviceId: null, runtimeServiceId: null, serviceName: "old", displayName: null,
+  operation: "remove_container", target: null, updateOrder: null, status: "completed", phase: null, elapsedMs: null, deadlineMs: null, health: null, error: null };
+const rows = new Map<string, unknown[]>(Object.entries({
+  project: [{ id: projectId, organizationId, name: "Shop", slug: "shop", createdAt, updatedAt: createdAt }],
+  environment: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt, updatedAt: createdAt,
+    intent: { version: 1, environmentSlug: "production", services: [intentService(api, "api"), intentService(worker, "worker")], volumes: [] } }],
+  environment_summary: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt }],
+  service: [service(api, "api"), service(old, "old"), service(worker, "worker")],
+  environment_deployment: [deployment(previous, 1, null),
+    deployment(attemptId, 2, { completed: 1, total: 1, outcome: "success", rows: [removal], compensation: [] })],
+  environment_node_config_snapshot: [snapshot(previous, api, "api"), snapshot(previous, old, "old"), snapshot(attemptId, api, "api")],
+}));
+
+async function openCanvas() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed(rows.get(table) ?? []));
+  // The change-state projection stamps its version from these tables, then reads no states.
+  await Promise.all([getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection].map((get) => preloadCollection(get("acme", scope))));
+  await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => []));
+  await queryClient.ensureQueryData(orgStoreOptions("acme", scope));
+
+  const root = createRootRoute({ component: Outlet });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet,
+    beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug",
+    component: () => <RuntimeProvider organizationSlug="acme"><Outlet /></RuntimeProvider> });
+  const projectGroup = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
+  const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug",
+    loader: () => ({ environmentId, organizationId }), component: Outlet });
+  const canvas = createRoute({ getParentRoute: () => environment, id: "_canvas", ...canvasRouteSearch,
+    component: () => <Suspense fallback={<p>Loading canvas</p>}><EnvironmentCanvasScene /></Suspense> });
+  const index = createRoute({ getParentRoute: () => canvas, path: "/", component: () => null });
+  const serviceRoute = createRoute({ getParentRoute: () => canvas, path: "services/$serviceId",
+    validateSearch: Schema.toStandardSchemaV1(serviceSearchSchema), component: () => <p>Live service panel</p> });
+  const routeTree = root.addChildren([protectedRoute.addChildren([organization.addChildren([
+    projectGroup.addChildren([environment.addChildren([canvas.addChildren([index, serviceRoute])])]),
+  ])])]);
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/production"] }) });
+  render(<DbProvider client={getDbClient(queryClient)}><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></DbProvider>);
+  await screen.findAllByText("worker");
+  return router;
+}
+
+const enterDeploymentMode = (router: Awaited<ReturnType<typeof openCanvas>>) =>
+  act(() => router.navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: { deployment: attemptId } }));
+
+beforeEach(() => {
+  vi.stubGlobal("EventSource", class { addEventListener() {} removeEventListener() {} close() {} });
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("scrollTo", () => {});
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+});
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+describe("deployment mode on the environment canvas", () => {
+  it("redraws the canvas as the attempt saw it and returns to live", async () => {
+    const router = await openCanvas();
+    expect(screen.queryByText("Back to live")).toBeNull();
+    expect(screen.queryAllByText("Removed")).toEqual([]);
+
+    await enterDeploymentMode(router);
+    expect((await screen.findAllByText("Back to live")).length).toBeGreaterThan(0);
+    // Deleted since and removed by the attempt: still drawn. Created afterwards: hidden.
+    expect(screen.getAllByText("old")[0]?.closest("[data-canvas-node]")?.textContent).toContain("Removed");
+    const unchanged = screen.getAllByText("api")[0]?.closest("[data-canvas-node]");
+    expect(unchanged?.textContent).toContain("Unchanged");
+    expect(unchanged?.getAttribute("data-dimmed")).toBe("true");
+    expect(screen.queryAllByText("worker")).toEqual([]);
+    // Read-only: no Create, no change controls, no links into the live service panel.
+    expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
+    expect(document.querySelector(`a[data-canvas-node="${api}"]`)).toBeNull();
+
+    // Navigating inside the canvas keeps the mode, and the editable live panel stays closed.
+    await act(() => router.navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: api }, search: {} }));
+    expect(router.state.location.search).toMatchObject({ deployment: attemptId });
+    expect(screen.queryByText("Live service panel")).toBeNull();
+
+    const [backToLive] = screen.getAllByText("Back to live");
+    if (!backToLive) throw new Error("Missing Back to live");
+    await act(async () => { fireEvent.click(backToLive); });
+    expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
+    expect(router.state.location.search).not.toHaveProperty("deployment");
+    expect(screen.queryAllByText("Removed")).toEqual([]);
+  });
+
+  it("leaves the mode on browser Back", async () => {
+    const router = await openCanvas();
+    await enterDeploymentMode(router);
+    await screen.findAllByText("Removed");
+    await act(async () => { router.history.back(); });
+    expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Back to live")).toBeNull();
+  });
+});

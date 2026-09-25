@@ -1,4 +1,5 @@
 import type { Node } from "@xyflow/react";
+import type { DeploymentNodeView } from "#/modules/deployments/deployment-view";
 
 export type CanvasResourceType = "service" | "volume";
 
@@ -24,6 +25,18 @@ export type CanvasVolumeNodeData = {
 };
 
 export type CanvasVolumeNode = Node<CanvasVolumeNodeData, "volume">;
+
+/** A node as a Cloud Deployment Attempt saw it; drawn only in Deployment Mode. */
+export type CanvasDeploymentNodeData = {
+  nodeId: string;
+  nodeType: CanvasResourceType;
+  name: string;
+  /** The node's deployment snapshot configuration. */
+  config: unknown;
+  view: DeploymentNodeView;
+};
+
+export type CanvasDeploymentNode = Node<CanvasDeploymentNodeData, "deployment">;
 
 export type CanvasResourceNode =
   | CanvasServiceNode

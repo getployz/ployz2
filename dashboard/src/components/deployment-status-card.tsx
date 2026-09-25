@@ -5,7 +5,7 @@ import { Button } from "#/components/ui/button";
 import { cn } from "#/lib/utils";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import type { DeploymentProgress } from "#/modules/deployments/deployment-progress";
-import { deploymentStatusLabel, deploymentView, nodeOutcomeLabels, type AttemptNode, type StageState } from "#/modules/deployments/deployment-view";
+import { deploymentStatusLabel, nodeOutcomeLabels, type DeploymentView, type StageState } from "#/modules/deployments/deployment-view";
 import { formatRelativeTime } from "#/utils/relative-time";
 
 type StepState = "pending" | "running" | "completed" | "failed" | "skipped" | "unknown";
@@ -33,24 +33,13 @@ function ImageCleanupLine({ cleanup }: { cleanup: NonNullable<DeploymentProgress
 const stepStates = { queued: "pending", running: "running", done: "completed", failed: "failed", skipped: "skipped", none: "skipped", unknown: "unknown" } satisfies Record<StageState, StepState>;
 const preparationLabels = { source: "Acquiring source", selection: "Selecting build Server", build: "Building images", transfer: "Transferring images", ready: "Images prepared" } as const;
 
-// ponytail: approximates the Attempt Target's nodes from built services and progress rows until the read model exposes them (#1049).
-function attemptNodes(deployment: EnvironmentDeploymentSummary, progress: DeploymentProgress | null, serviceId?: string): AttemptNode[] {
-  const rowIds = (progress?.rows ?? []).flatMap((row) => row.serviceId ? [row.serviceId] : []);
-  const ids = serviceId ? [serviceId] : [...new Set([...deployment.buildServiceIds, ...rowIds])];
-  return ids.map((nodeId) => {
-    const built = deployment.buildServiceIds.includes(nodeId);
-    return { nodeId, built, changed: built || rowIds.includes(nodeId) || !progress?.outcome };
-  });
-}
-
-export function DeploymentStatusCard({ deployment, progress, logsPanel, showLogs, onLogsChange, onLogsIntent, expanded, onExpandedChange, actions, children, serviceId }: {
-  deployment: EnvironmentDeploymentSummary; progress: DeploymentProgress | null;
+export function DeploymentStatusCard({ deployment, view, progress, logsPanel, showLogs, onLogsChange, onLogsIntent, expanded, onExpandedChange, actions, children, serviceId }: {
+  deployment: EnvironmentDeploymentSummary; view: DeploymentView; progress: DeploymentProgress | null;
   logsPanel: ReactNode; showLogs: boolean; onLogsChange: (open: boolean) => void; onLogsIntent?: () => void; expanded: boolean; onExpandedChange: (open: boolean) => void;
   actions: ReactNode; children?: ReactNode; serviceId?: string;
 }) {
   const id = useId();
-  const view = deploymentView({ deployment, progress, nodes: attemptNodes(deployment, progress, serviceId) });
-  const node = serviceId ? view.nodes[0] : undefined;
+  const node = serviceId ? view.nodes.find((candidate) => candidate.nodeId === serviceId) : undefined;
   const nodes = node ? [node] : view.nodes;
   const serviceName = (nodeId: string) => progress?.rows.find((r) => r.serviceId === nodeId)?.serviceName ?? nodeId;
   const active = ["queued", "planning", "deploying"].includes(deployment.status);

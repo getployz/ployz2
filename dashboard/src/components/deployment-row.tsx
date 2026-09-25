@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { useParams, useRouter } from "@tanstack/react-router";
+import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
 import { DeploymentStatusCard } from "#/components/deployment-status-card";
 import { DeploymentLogs } from "#/components/deployment-logs";
-import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
+import { reconcileDeploymentCollections, useDeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { VolumeRemoveAttemptHistory } from "#/components/volume-remove/deployment-volume-remove-history";
@@ -23,6 +24,7 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
   const router = useRouter();
   const { organizationSlug } = useParams({ strict: false });
   const collectionScope = useCollectionScope();
+  const attempt = useDeploymentAttempt(organizationSlug ?? "", deployment.environmentId, deployment.id);
   const rawResources = getRawEnvironmentResourcesCollection(
     organizationSlug ?? "", collectionScope,
   );
@@ -87,12 +89,15 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
     }
   }
 
+  if (!attempt) return null;
 
   return <>
-    <DeploymentStatusCard deployment={deployment} serviceId={serviceId} progress={deployment.runtimeProgress}
+    <DeploymentStatusCard deployment={deployment} view={attempt.view} serviceId={serviceId} progress={deployment.runtimeProgress}
       showLogs={showLogs} onLogsChange={setShowLogs}
       onLogsIntent={organizationSlug ? () => preloadDeploymentLogs(organizationSlug, deployment.id, collectionScope) : undefined}
-      logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} hasBuild={deployment.buildServiceIds.some((id) => !serviceId || id === serviceId)} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={
+      logsPanel={<DeploymentLogs organizationSlug={organizationSlug ?? ""} deploymentId={deployment.id} serviceId={serviceId} hasBuild={deployment.buildServiceIds.some((id) => !serviceId || id === serviceId)} />} expanded={isOpen} onExpandedChange={setIsOpen} actions={<>
+        {/* ponytail: temporary way into Deployment Mode; the deploy bar (#1050) replaces it. */}
+        {organizationSlug ? <Button variant="outline" size="sm" nativeButton={false} render={<Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ organizationSlug, projectSlug: deployment.projectSlug, environmentSlug: deployment.environmentSlug }} search={{ deployment: deployment.id }} />}>View on canvas</Button> : null}
         <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" size="icon" />}
@@ -152,7 +157,7 @@ export function DeploymentRow({ deployment, serviceId }: { deployment: Environme
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-      }>
+      </>}>
       {deployment.volumeRemoveAttempts.length > 0 ? <div className="px-6 py-3"><VolumeRemoveAttemptHistory
         attempts={deployment.volumeRemoveAttempts} organizationSlug={organizationSlug ?? ""}
         projectSlug={deployment.projectSlug} environmentSlug={deployment.environmentSlug}

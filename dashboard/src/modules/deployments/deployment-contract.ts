@@ -106,6 +106,7 @@ export const deploymentOperationEvidencePageQuerySchema = Schema.Struct({
 
 export const environmentDeploymentSummarySchema = Schema.Struct({
   id: Uuid,
+  environmentId: Uuid,
   status: Schema.Literals(ENVIRONMENT_DEPLOYMENT_STATUSES),
   message: Schema.NullOr(Schema.String),
   failureMessage: Schema.NullOr(Schema.String),
