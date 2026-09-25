@@ -5,7 +5,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getBuildOrderCollection } from "#/collections/collections";
 import { observeFailure } from "#/collections/query-collection";
 import { setBuildOrderServerFn } from "./build-order.functions";
-import { DEFAULT_BUILD_ORDER, type BuildOrder } from "./build-order";
+import type { BuildOrder } from "./build-order";
 
 const getBuildOrderEditor = cachedByCollectionScope((organizationSlug, scope) => {
   const rows = getBuildOrderCollection(organizationSlug, scope);
@@ -22,13 +22,13 @@ const getBuildOrderEditor = cachedByCollectionScope((organizationSlug, scope) =>
   });
 });
 
-/** The Organization's Build Order and its immediate, never-staged setter. */
+/** The Organization's chosen Build Order (null: the default applies) and its immediate, never-staged setter. */
 export function useBuildOrder(organizationSlug: string) {
   const scope = useCollectionScope();
   const { data: [row] } = useLiveSuspenseQuery(getBuildOrderCollection(organizationSlug, scope));
   const edit = getBuildOrderEditor(organizationSlug, scope);
   return {
-    buildOrder: row?.buildOrder ?? DEFAULT_BUILD_ORDER,
+    buildOrder: row?.buildOrder ?? null,
     setBuildOrder: (buildOrder: BuildOrder) => {
       if (row) observeFailure(edit({ organizationId: row.id, buildOrder }));
     },

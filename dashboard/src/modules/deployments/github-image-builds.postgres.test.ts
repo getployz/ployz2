@@ -440,6 +440,17 @@ describe("Image Builds on GitHub Actions", () => {
       return run(imageBuildCandidates(await target()));
     };
 
+    it("defaults to GitHub first once a repository has the build workflow, and to the servers until then", async () => {
+      await harness.db.delete(schema.organizationBuildOrder);
+      expect(await plan()).toEqual([{ builder: "servers" }]);
+      // The latest Saved State builds from owner/repo through the GitHub App, whose workflow is ready.
+      await harness.pool.query(`update environment_saved_state_snapshot set intent = jsonb_set(intent, '{services}',
+        '[{"config":{"source":{"type":"git","repository":"owner/repo","repositoryId":42,"access":{"type":"github-installation","installationId":7}}}}]')`);
+      expect(await plan()).toEqual([{ builder: "github" }, { builder: "servers" }]);
+      fake.githubErrors.set("fetch_workflow", githubError("fetch_workflow", 404, "not_found"));
+      expect(await plan()).toEqual([{ builder: "servers" }]);
+    });
+
     it("walks the Build Order alone on Auto", async () => {
       await buildOrder("github-then-servers");
       expect(await plan()).toEqual([{ builder: "github" }, { builder: "servers" }]);

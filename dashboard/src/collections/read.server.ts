@@ -10,7 +10,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
-import { DEFAULT_BUILD_ORDER, type BuildOrderRow } from "#/modules/deployments/build-order";
+import type { BuildOrderRow } from "#/modules/deployments/build-order";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { Database } from "#/server/database.server";
@@ -113,10 +113,10 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         return rows;
       }
       case "organization_build_order": {
-        // Always one row: an Organization that never chose builds on its servers.
+        // Always one row: an Organization that never chose has none saved, and the default applies.
         const [saved] = yield* database.drizzle.select({ buildOrder: tables.organizationBuildOrder.buildOrder })
           .from(tables.organizationBuildOrder).where(scoped(tables.organizationBuildOrder));
-        const rows: BuildOrderRow[] = [{ id: organization.id, buildOrder: saved?.buildOrder ?? DEFAULT_BUILD_ORDER }];
+        const rows: BuildOrderRow[] = [{ id: organization.id, buildOrder: saved?.buildOrder ?? null }];
         return rows;
       }
     }

@@ -1,11 +1,15 @@
 import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { BUILD_ORDERS, BUILD_ORDER_LABELS } from "#/modules/deployments/build-order";
+import { BUILD_ORDERS, BUILD_ORDER_LABELS, defaultBuildOrder } from "#/modules/deployments/build-order";
 import { useBuildOrder } from "#/modules/deployments/build-order.collection";
+import { useGithubBuildRepositories } from "#/modules/github/github.queries";
 
 /** Where the Organization's Image Builds run. Takes effect on the next build; never staged. */
 export function BuildOrderCard({ organizationSlug }: { organizationSlug: string }) {
-  const { buildOrder, setBuildOrder } = useBuildOrder(organizationSlug);
+  const { buildOrder: chosen, setBuildOrder } = useBuildOrder(organizationSlug);
+  // Never chosen: the default follows whether GitHub is set up, as Cloud decides it at each build.
+  const { data: repositories } = useGithubBuildRepositories(organizationSlug);
+  const buildOrder = chosen ?? defaultBuildOrder(repositories?.some(({ readiness }) => readiness === "ready") ?? false);
   return (
     <Card size="sm">
       <CardHeader>

@@ -11,10 +11,18 @@ export const BUILD_ORDER_LABELS = {
   "github-only": "GitHub only",
 } satisfies Record<BuildOrder, string>;
 
-/** The Organization's Build Order as the Org Store holds it: one row, keyed by the Organization. */
-export type BuildOrderRow = { id: string; buildOrder: BuildOrder };
+/**
+ * The Organization's Build Order as the Org Store holds it: one row, keyed by the Organization.
+ * `null` until the Organization chooses one; then the default applies.
+ */
+export type BuildOrderRow = { id: string; buildOrder: BuildOrder | null };
 
-export const DEFAULT_BUILD_ORDER: BuildOrder = "servers-only";
+/**
+ * The Build Order of an Organization that never chose one: its servers only until GitHub is set up,
+ * then GitHub first. GitHub is set up once any repository its Services build from has the build
+ * workflow on its default branch, so a GitHub build there can start.
+ */
+export const defaultBuildOrder = (githubSetUp: boolean): BuildOrder => githubSetUp ? "github-then-servers" : "servers-only";
 
 /** One Builder an Image Build may try. `machineId` is a Preferred Server: the Cluster's first choice. */
 export type BuildCandidate = { builder: "servers"; machineId?: string } | { builder: "github" };
