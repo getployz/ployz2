@@ -29,9 +29,9 @@ const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// A release source that is fixed by the local installer invocation.
+/// Where releases come from. Production always uses [`ReleaseSource::Published`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReleaseSource {
+pub(super) enum ReleaseSource {
     /// Ployz's fixed, trusted published release and channel endpoints.
     Published,
     /// A local release directory for in-process installer tests.
@@ -80,10 +80,18 @@ impl ReleaseSource {
     }
 }
 
+/// Resolve `request` against the published releases; see [`resolve_release_from`].
+pub(super) async fn resolve_release(
+    request: &MachineRelease,
+    installed: Option<&MachineVersion>,
+) -> Result<MachineVersion, Error> {
+    resolve_release_from(request, &ReleaseSource::Published, installed).await
+}
+
 /// Resolve `request` to one exact target. A channel stays on this daemon's release line, both for
 /// its pointer and for the `installed` daemon, and never selects a release older than `installed`;
 /// only an exact version crosses a line or moves a Machine backwards.
-pub(super) async fn resolve_release(
+pub(super) async fn resolve_release_from(
     request: &MachineRelease,
     source: &ReleaseSource,
     installed: Option<&MachineVersion>,
@@ -163,8 +171,7 @@ pub(super) async fn install_binaries(
     target: &MachineVersion,
     progress: &mut impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
-    let replace = replacement_required(installed, target);
-    if !replace {
+    if installed == Some(target) {
         println!(
             "ployzd {} retained",
             installed.expect("a skipped replacement has an installed release")
@@ -192,10 +199,6 @@ pub(super) async fn install_binaries(
     progress(MachineUpgradeStage::Activating)?;
     activate(&daemon, &uninstall, paths)?;
     Ok(true)
-}
-
-fn replacement_required(installed: Option<&MachineVersion>, target: &MachineVersion) -> bool {
-    installed != Some(target)
 }
 
 pub(super) async fn installed_release(path: &Path) -> Result<Option<MachineVersion>, Error> {
@@ -443,7 +446,7 @@ mod tests {
         fs::write(line.join("beta"), format!("v{}\n", version("3.0-beta.2"))).unwrap();
         let resolve = async |request: &MachineRelease, installed: Option<&str>| {
             let installed = installed.map(|version| MachineVersion::parse(version).unwrap());
-            resolve_release(request, &source, installed.as_ref())
+            resolve_release_from(request, &source, installed.as_ref())
                 .await
                 .map(|version| version.to_string())
         };
@@ -505,17 +508,6 @@ mod tests {
             Some(checksum.into())
         );
         assert_eq!(checksum_for(b"bad  other.tar.gz\n", archive), None);
-    }
-
-    #[test]
-    fn resolved_channels_replace_the_exact_target_and_skip_only_the_same_target() {
-        let target = MachineVersion::parse("1.2.3").unwrap();
-        assert!(replacement_required(None, &target));
-        assert!(!replacement_required(Some(&target), &target));
-        assert!(replacement_required(
-            Some(&MachineVersion::parse("1.2.4").unwrap()),
-            &target
-        ));
     }
 
     #[test]

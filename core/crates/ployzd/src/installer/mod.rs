@@ -22,11 +22,9 @@ use self::{
         create_user_and_directories, install_docker, install_prerequisites, install_systemd,
         verify_running_daemon, verify_software_prerequisites,
     },
-    release::{install_binaries, installed_release, resolve_release},
+    release::{ReleaseSource, install_binaries, installed_release, resolve_release_from},
     storage::prepare_storage,
 };
-
-pub use self::release::ReleaseSource;
 
 const PLOYZ_USER: &str = "ployz";
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
@@ -55,8 +53,6 @@ pub enum InstallMode {
 pub struct InstallRequest {
     /// A fixed version or a channel resolved once before host mutation.
     pub release: MachineRelease,
-    /// Trusted release source. Published releases never accept caller-provided URLs.
-    pub source: ReleaseSource,
     /// Installation-only, software-only replacement, or full host preparation.
     pub mode: InstallMode,
 }
@@ -178,20 +174,40 @@ pub async fn install(
     let data_dir = data_dir.into();
     let socket = socket.into();
     require_standard_machine_paths(&data_dir, &socket).map_err(Error::NonstandardPaths)?;
-    install_at(request, InstallPaths::system(data_dir, DEFAULT_RUN_DIR)).await
+    install_at(
+        &ReleaseSource::Published,
+        request,
+        InstallPaths::system(data_dir, DEFAULT_RUN_DIR),
+    )
+    .await
 }
 
-async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<InstallOutcome, Error> {
+async fn install_at(
+    source: &ReleaseSource,
+    request: InstallRequest,
+    paths: InstallPaths,
+) -> Result<InstallOutcome, Error> {
     require_root()?;
     let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
     let lock = admission.try_installation().map_err(map_admission_error)?;
     upgrade::reconcile_for_install(&admission, &paths.data_dir)
         .await
         .map_err(map_upgrade_reconciliation)?;
-    install_locked(request, paths, lock, |_| Ok(())).await
+    install_locked_from(source, request, paths, lock, |_| Ok(())).await
 }
 
+/// Install from the published releases while holding the installation lock.
 async fn install_locked(
+    request: InstallRequest,
+    paths: InstallPaths,
+    lock: mutation::InstallationGuard,
+    progress: impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
+) -> Result<InstallOutcome, Error> {
+    install_locked_from(&ReleaseSource::Published, request, paths, lock, progress).await
+}
+
+async fn install_locked_from(
+    source: &ReleaseSource,
     request: InstallRequest,
     paths: InstallPaths,
     _lock: mutation::InstallationGuard,
@@ -200,7 +216,7 @@ async fn install_locked(
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
     verify_system(installation_only)?;
     let installed = installed_release(&paths.daemon()).await?;
-    let target = resolve_release(&request.release, &request.source, installed.as_ref()).await?;
+    let target = resolve_release_from(&request.release, source, installed.as_ref()).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
     match &request.mode {
@@ -221,14 +237,8 @@ async fn install_locked(
     }
 
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
-    restart_required |= install_binaries(
-        &request.source,
-        &paths,
-        installed.as_ref(),
-        &target,
-        &mut progress,
-    )
-    .await?;
+    restart_required |=
+        install_binaries(source, &paths, installed.as_ref(), &target, &mut progress).await?;
     install_systemd(&paths, installation_only)?;
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(&paths).await?;
@@ -416,7 +426,6 @@ mod tests {
         let fixture = fixture("nonstandard-paths");
         let request = InstallRequest {
             release: MachineRelease::Exact(MachineVersion::parse("1.2.3").unwrap()),
-            source: ReleaseSource::Local(fixture.path().join("release")),
             mode: InstallMode::InstallationOnly,
         };
 
@@ -548,15 +557,15 @@ mod tests {
 
         let request = InstallRequest {
             release: MachineRelease::Exact(MachineVersion::parse("1.2.3").unwrap()),
-            source: ReleaseSource::Local(root.join("release")),
             mode: InstallMode::InstallationOnly,
         };
+        let source = ReleaseSource::Local(root.join("release"));
         let result = if case == "busy" {
             let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
             let _held = admission.try_installation().unwrap();
-            install_at(request, paths.clone()).await
+            install_at(&source, request, paths.clone()).await
         } else {
-            install_at(request, paths.clone()).await
+            install_at(&source, request, paths.clone()).await
         };
 
         match case {

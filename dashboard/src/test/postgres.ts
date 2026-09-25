@@ -129,7 +129,6 @@ export const migrateTestDatabase = (url: URL) =>
 export async function startPostgresTestHarness() {
   const scope = Scope.makeUnsafe();
   const closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void));
-  let pool: Pool | undefined;
   try {
     const { url } = await Effect.runPromise(
       postgresTestContainer.pipe(
@@ -138,15 +137,18 @@ export async function startPostgresTestHarness() {
       ),
     );
     const databaseUrl = url.href;
-    const openPool = new Pool({ connectionString: databaseUrl, max: 8 });
-    pool = openPool;
+    const pool = new Pool({ connectionString: databaseUrl, max: 8 });
+    // Closed before the container is removed.
+    await Effect.runPromise(
+      Scope.addFinalizer(scope, Effect.promise(() => pool.end().catch(() => undefined))),
+    );
     const databaseRuntime = ManagedRuntime.make(
       Layer.effect(
         Database,
         Effect.gen(function* () {
           const client = yield* PgClient.fromPool({
             acquire: Effect.acquireRelease(
-              Effect.succeed(openPool),
+              Effect.succeed(pool),
               () => Effect.void,
             ),
             applicationName: "ployz-cloud-test",
@@ -162,49 +164,36 @@ export async function startPostgresTestHarness() {
       ),
     );
     const database = await databaseRuntime.runPromise(Database);
-    const inTransaction = <Success, Failure>(
-      operation: (
-        transaction: typeof database.drizzle,
-      ) => Effect.Effect<Success, Failure, Database>,
-    ) =>
-      database.transaction(
-        Effect.gen(function* () {
-          return yield* operation((yield* Database).drizzle);
-        }),
-      );
     return {
       databaseUrl,
       reportingDatabase: await databaseRuntime.runPromise(ReportingDatabase),
-      db: drizzle({ client: openPool }),
+      db: drizzle({ client: pool }),
       database,
-      pool: openPool,
+      pool,
       runEffect<Success, Failure>(
         operation: Effect.Effect<Success, Failure, Database | ReportingDatabase>,
       ) {
         return databaseRuntime.runPromise(operation);
-      },
-      runTransactionResult<Success, Failure>(
-        operation: (
-          transaction: typeof database.drizzle,
-        ) => Effect.Effect<Success, Failure, Database>,
-      ) {
-        return databaseRuntime.runPromise(Effect.result(inTransaction(operation)));
       },
       runTransaction<Success, Failure>(
         operation: (
           transaction: typeof database.drizzle,
         ) => Effect.Effect<Success, Failure, Database>,
       ) {
-        return databaseRuntime.runPromise(inTransaction(operation));
+        return databaseRuntime.runPromise(
+          database.transaction(
+            Effect.gen(function* () {
+              return yield* operation((yield* Database).drizzle);
+            }),
+          ),
+        );
       },
       async stop() {
         await databaseRuntime.dispose();
-        await openPool.end();
         await closeScope();
       },
     };
   } catch (error) {
-    await pool?.end().catch(() => undefined);
     await closeScope();
     throw error;
   }

@@ -884,14 +884,16 @@ describe("manual environment saved-state persistence", () => {
       })
       .where(eq(schema.environmentSavedStateSnapshot.id, saved.id));
 
-    const malformedAdmission = await harness.runTransactionResult(() =>
-      admitEnvironmentDeployment({
-        environmentId,
-        savedStateSnapshotId: saved.id,
-        triggerOrigin: { origin: "manual", actorId: userId },
-        message: "Deploy without volume destroy",
-        serviceActionPolicy: { kind: "all_affected_required" },
-      }),
+    const malformedAdmission = await harness.runEffect(
+      Effect.result(
+        admitEnvironmentDeployment({
+          environmentId,
+          savedStateSnapshotId: saved.id,
+          triggerOrigin: { origin: "manual", actorId: userId },
+          message: "Deploy without volume destroy",
+          serviceActionPolicy: { kind: "all_affected_required" },
+        }),
+      ),
     );
     expect(Result.isFailure(malformedAdmission)).toBe(true);
     if (Result.isSuccess(malformedAdmission)) return;

@@ -8,11 +8,6 @@ permissions:
   contents: write
   actions: write
 
-# Pointers and Homebrew must see one Publish at a time.
-concurrency:
-  group: promote-release
-  cancel-in-progress: false
-
 defaults:
   run:
     working-directory: core
@@ -20,6 +15,10 @@ defaults:
 jobs:
   promote:
     runs-on: ubuntu-latest
+    # Pointers and Homebrew must see one Publish at a time.
+    concurrency:
+      group: promote-release
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/promote-release.sh "${{ github.event.release.tag_name }}"
@@ -27,3 +26,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  cloud:
+    uses: ./.github/workflows/cloud.yml
+    secrets:
+      KACHE_S3_READ_ACCESS_KEY_ID: ${{ secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
+      KACHE_S3_READ_SECRET_ACCESS_KEY: ${{ secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
+    permissions:
+      contents: read
+      actions: write
+      packages: write
+    with:
+      release-tag: ${{ github.event.release.tag_name }}

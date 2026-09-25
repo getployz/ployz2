@@ -10,7 +10,7 @@ curl -fsSL https://ployz.sh | sh
 brew install getployz/ployz/ployz
 ```
 
-Releases and channels: [docs/RELEASE.md](docs/RELEASE.md). What a 1.x daemon
+Releases and channels: [docs/RELEASE.md](docs/RELEASE.md). What a 0.x daemon
 keeps working across: [DESIGN.md](DESIGN.md#stable-promise).
 
 ## CLI

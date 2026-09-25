@@ -19,11 +19,7 @@ fn write_executable(path: &Path, body: &str) {
 }
 
 fn daemon_archive() -> &'static str {
-    match env::consts::ARCH {
-        "x86_64" => "ployzd_linux_amd64.tar.gz",
-        "aarch64" => "ployzd_linux_arm64.tar.gz",
-        architecture => panic!("unsupported test architecture {architecture}"),
-    }
+    bootstrap::daemon_archive(env::consts::ARCH).unwrap()
 }
 
 /// A release directory whose fake daemon logs installer arguments and exits with `status`.
@@ -189,23 +185,20 @@ esac
         "{setup_log}"
     );
     assert!(!setup_log.contains(" -P 1 "), "{setup_log}");
-    assert!(!setup_log.contains("checksums.txt"), "{setup_log}");
     let install = setup_log
         .find(&format!(
             "'install' '--version' '{VERSION}' '--storage' 'none' '--group-user' 'deploy'"
         ))
         .expect(&setup_log);
-    assert!(!setup_log.contains("release-dir"), "{setup_log}");
     let cleanup = setup_log.find("rm -rf --").expect(&setup_log);
     let close = setup_log
         .find(" -O exit deploy@2001:db8::1")
         .expect(&setup_log);
     assert!(install < cleanup && cleanup < close, "{setup_log}");
-    assert!(!setup_log.contains("base64"), "{setup_log}");
 }
 
 #[tokio::test]
-async fn remote_preflight_timeout_kills_the_child_and_cleans_the_stage() {
+async fn remote_verify_timeout_kills_the_child_and_cleans_the_stage() {
     let fixture = tempfile::tempdir().unwrap();
     let log = fixture.path().join("commands.log");
     let pid = fixture.path().join("preflight.pid");

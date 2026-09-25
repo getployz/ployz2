@@ -18,7 +18,7 @@ use ployz_core::{
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseSource},
+    installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
     network::NetworkError,
@@ -229,11 +229,7 @@ fn install_request(
             group_user,
         }
     };
-    Ok(InstallRequest {
-        release,
-        source: ReleaseSource::Published,
-        mode,
-    })
+    Ok(InstallRequest { release, mode })
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {

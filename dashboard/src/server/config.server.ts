@@ -72,31 +72,30 @@ const rawFields = {
 const rawConfig = Config.all(rawFields);
 
 /**
- * Config.all stops at the first bad variable. On failure, read every field so
- * one ConfigError names all missing or malformed variables.
+ * Config.all stops at the first bad variable. Read every field once so one
+ * ConfigError names all missing or malformed variables.
  */
-const loadRawConfig = rawConfig.pipe(
-  Effect.catch((first) =>
-    Effect.all(Object.values(rawFields), { mode: "result" }).pipe(
-      Effect.flatMap((results) => {
-        const issues = results.flatMap((result) =>
-          Result.isFailure(result) && Schema.isSchemaError(result.failure.cause)
-            ? [result.failure.cause.issue]
-            : [],
-        );
-        const [head, ...tail] = issues;
-        return Effect.fail(
-          head === undefined
-            ? first
-            : new Config.ConfigError(
-                new Schema.SchemaError(
-                  new SchemaIssue.Composite(Schema.Unknown.ast, [head, ...tail]),
-                ),
-              ),
-        );
-      }),
-    ),
-  ),
+const loadRawConfig = Effect.all(rawFields, { mode: "result" }).pipe(
+  Effect.flatMap((results) => {
+    const failures = Object.values(results).flatMap((result: Result.Result<unknown, Config.ConfigError>) =>
+      Result.isFailure(result) ? [result.failure] : [],
+    );
+    const [first] = failures;
+    if (first === undefined) return Effect.fromResult(Result.all(results));
+    const issues = failures.flatMap((failure) =>
+      Schema.isSchemaError(failure.cause) ? [failure.cause.issue] : [],
+    );
+    const [head, ...tail] = issues;
+    return Effect.fail(
+      head === undefined
+        ? first
+        : new Config.ConfigError(
+            new Schema.SchemaError(
+              new SchemaIssue.Composite(Schema.Unknown.ast, [head, ...tail]),
+            ),
+          ),
+    );
+  }),
 );
 
 /** No Polar variables means a Self-hosted Cloud; a partial set is a mistake. */

@@ -352,6 +352,78 @@ impl Remote {
             .stderr(Stdio::null());
         let _ = tokio::process::Command::from(command).status().await;
     }
+
+    /// Confirm the remote user can install and report its architecture.
+    async fn preflight(&self) -> Result<RemoteHost, ProvisionError> {
+        let mut whoami = self.ssh();
+        whoami.arg("whoami");
+        let output = tokio::process::Command::from(whoami)
+            .output()
+            .await
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    ProvisionError::SshClientMissing(error)
+                } else {
+                    ProvisionError::Whoami(error)
+                }
+            })?;
+        if !output.status.success() {
+            return Err(ProvisionError::WhoamiFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let user = String::from_utf8(output.stdout).map_err(|_| ProvisionError::WhoamiUtf8)?;
+        let user = user.trim().to_owned();
+        if user.is_empty() {
+            return Err(ProvisionError::EmptyUser);
+        }
+
+        if user != "root" {
+            let mut sudo = self.ssh();
+            sudo.arg("sudo true");
+            let status = tokio::process::Command::from(sudo)
+                .status()
+                .await
+                .map_err(ProvisionError::Sudo)?;
+            if !status.success() {
+                return Err(ProvisionError::SudoRequired { user });
+            }
+        }
+
+        let architecture = self.platform().await?;
+        Ok(RemoteHost { user, architecture })
+    }
+
+    /// Stage, verify, and run `bootstrap` on the host, then remove the stage.
+    async fn install_bootstrap(
+        &self,
+        host: &RemoteHost,
+        bootstrap: &Bootstrap,
+        version: &str,
+        storage: StorageChoice,
+    ) -> Result<(), ProvisionError> {
+        let via_sudo = host.user != "root";
+        let remote_directory = format!("/tmp/ployz-bootstrap-{}", Uuid::new_v4());
+        let remote_daemon = format!("{remote_directory}/ployzd");
+        let arguments = install_arguments(
+            version,
+            Preparation::Host {
+                storage,
+                group_user: via_sudo.then_some(host.user.as_str()),
+            },
+        );
+        let primary = async {
+            self.stage(bootstrap, &remote_directory).await?;
+            self.verify(&remote_daemon).await?;
+            self.install(&remote_daemon, &arguments, via_sudo).await
+        }
+        .await;
+        let cleanup = self.cleanup(&remote_directory).await;
+        // Host preparation may add the SSH user to the ployz group. A multiplexed
+        // session authenticated before installation retains its old group list.
+        self.close_control_master().await;
+        finish_remote(primary, cleanup)
+    }
 }
 
 fn ssh_key(matches: &ArgMatches) -> PathBuf {
@@ -438,80 +510,6 @@ pub async fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(
     remote
         .install_bootstrap(&host, &bootstrap, &version, storage)
         .await
-}
-
-impl Remote {
-    /// Confirm the remote user can install and report its architecture.
-    async fn preflight(&self) -> Result<RemoteHost, ProvisionError> {
-        let mut whoami = self.ssh();
-        whoami.arg("whoami");
-        let output = tokio::process::Command::from(whoami)
-            .output()
-            .await
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    ProvisionError::SshClientMissing(error)
-                } else {
-                    ProvisionError::Whoami(error)
-                }
-            })?;
-        if !output.status.success() {
-            return Err(ProvisionError::WhoamiFailed(
-                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            ));
-        }
-        let user = String::from_utf8(output.stdout).map_err(|_| ProvisionError::WhoamiUtf8)?;
-        let user = user.trim().to_owned();
-        if user.is_empty() {
-            return Err(ProvisionError::EmptyUser);
-        }
-
-        if user != "root" {
-            let mut sudo = self.ssh();
-            sudo.arg("sudo true");
-            let status = tokio::process::Command::from(sudo)
-                .status()
-                .await
-                .map_err(ProvisionError::Sudo)?;
-            if !status.success() {
-                return Err(ProvisionError::SudoRequired { user });
-            }
-        }
-
-        let architecture = self.platform().await?;
-        Ok(RemoteHost { user, architecture })
-    }
-
-    /// Stage, verify, and run `bootstrap` on the host, then remove the stage.
-    async fn install_bootstrap(
-        &self,
-        host: &RemoteHost,
-        bootstrap: &Bootstrap,
-        version: &str,
-        storage: StorageChoice,
-    ) -> Result<(), ProvisionError> {
-        let via_sudo = host.user != "root";
-        let remote_directory = format!("/tmp/ployz-bootstrap-{}", Uuid::new_v4());
-        let remote_daemon = format!("{remote_directory}/ployzd");
-        let arguments = install_arguments(
-            version,
-            Preparation::Host {
-                storage,
-                group_user: via_sudo.then_some(host.user.as_str()),
-            },
-        );
-        let primary = async {
-            self.stage(bootstrap, &remote_directory).await?;
-            self.verify(&remote_daemon).await?;
-            self.install(&remote_daemon, &arguments, via_sudo).await
-        }
-        .await;
-        let cleanup = self.cleanup(&remote_directory).await;
-        // Host preparation may add the SSH user to the ployz group. A multiplexed
-        // session authenticated before installation retains its old group list.
-        self.close_control_master().await;
-        finish_remote(primary, cleanup)
-    }
 }
 
 /// Install and start local `ployzd` through a verified temporary daemon.

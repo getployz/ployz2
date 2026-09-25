@@ -26,9 +26,9 @@ design, not filling a gap.
 
 ## Stable promise
 
-From 1.0.0: a daemon keeps working, and can be upgraded, across every later
-1.x release without re-enrolling or reinstalling. Versions follow semver; only a
-new major line may break the promise, and it says so. The promise covers what a
+From 0.2.0: a daemon keeps working, and can be upgraded, across every later
+0.x release without re-enrolling or reinstalling. Versions follow semver; only a
+new major line (1.0 first) may break the promise, and it says so. The promise covers what a
 daemon carries or speaks — the replicated store and its bodies, the local
 Machine record, Machine RPC within `PROTOCOL_MAJOR`, the enrollment protocol,
 and the release source. The CLI surface is a client courtesy with ordinary
@@ -46,7 +46,7 @@ recognize and fail closed. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
 
 A breaking release protects older Clusters from its own side. Daemons follow
-their own line's channel pointer (`ployz.sh/v1/stable`), so a new line never
+their own line's channel pointer (`ployz.sh/v0/stable`), so a new line never
 reaches them unasked. The breaking release's CLI refuses to init or add a
 Machine into a Cluster on another line, and its daemon rejects older-line
 joiners. An older release never has to know about a newer one.

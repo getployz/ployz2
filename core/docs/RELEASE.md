@@ -13,18 +13,18 @@ No `next` branch. Features and fixes both land on `main`. Beta is a tag.
 
 ## Cut a release
 
-1. From `core/`, set `[workspace.package] version` in `Cargo.toml` to the version you will tag (`1.0.0` or `1.1.0-beta.1`). `check-release-tag.sh` rejects a tag if the Cargo version is missing or differs.
+1. From `core/`, set `[workspace.package] version` in `Cargo.toml` to the version you will tag (`0.2.0` or `0.3.0-beta.1`). `check-release-tag.sh` rejects a tag if the Cargo version is missing or differs.
 2. Merge that commit to `main`.
 3. Tag and push:
 
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-Beta: `v1.1.0-beta.1` with Cargo version `1.1.0-beta.1`. `-rc` and every other suffix are rejected.
+Beta: `v0.3.0-beta.1` with Cargo version `0.3.0-beta.1`. `-rc` and every other suffix are rejected.
 
-4. Wait for the Release workflow. The tag run validates the tag and commit, builds the six CLI and daemon archives using the shared kache/R2 cache, builds and pushes `ghcr.io/getployz/ployz-cloud:<tag>`, and opens a **draft** GitHub release (`--prerelease` on beta tags) with `ployz-cloud-compose.yml` (pinned to the tag) and `ployz-cloud.env.example` attached for self-hosting.
+4. Wait for the Release workflow. The tag run validates the tag and commit, builds the six CLI and daemon archives using the shared kache/R2 cache, builds and tests the Cloud image without pushing it, and opens a **draft** GitHub release (`--prerelease` on beta tags) with `ployz-cloud-compose.yml` (pinned to the tag) and `ployz-cloud.env.example` attached for self-hosting.
 5. Fill `## Notes`. Click **Publish**. That click is the review gate. Drafts are not public downloads.
 
 Automatic releases run the workflow version stored in the tagged commit. For recovery using the current workflow, dispatch `release.yml` from `main` with `tag` and its expected commit `sha`.
@@ -41,9 +41,10 @@ Before Publish, use the beta on real Machines through Cloud: enrol, deploy, atta
 
 `scripts/promote-release.sh` runs on `release: published`.
 
-- Writes one-line pointer files (`v1.0.0`) on the `channels` branch: the tag's line pointer (`v1/stable` or `v1/beta`) and the unscoped one (`stable` or `beta`). A stable tag also writes both `beta` pointers.
+- Writes one-line pointer files (`v0.2.0`) on the `channels` branch: the tag's line pointer (`v0/stable` or `v0/beta`) and the unscoped one (`stable` or `beta`). A stable tag also writes both `beta` pointers.
 - A pointer only moves to a higher semver tag. Publishing an older-line fix moves that line's pointers only; an older tag moves nothing.
 - Only when the unscoped `stable` pointer names the published tag: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
+- Rebuilds the Cloud image from the tag and pushes `ghcr.io/getployz/ployz-cloud:<tag>`, so the attached self-host Compose file resolves only after Publish.
 
 Promotion runs one at a time. GitHub keeps only one waiting run, so publishing three releases in quick succession cancels the middle one's promotion: re-run any cancelled **Promote published release** run. Re-running is safe; pointers only move forward.
 
@@ -54,7 +55,7 @@ Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel update
 ```sh
 curl -fsSL https://ployz.sh | sh              # stable
 curl -fsSL https://ployz.sh | sh -s beta      # highest published release, beta or stable
-curl -fsSL https://ployz.sh | sh -s 1.0.0     # pin
+curl -fsSL https://ployz.sh | sh -s 0.2.0     # pin
 brew install getployz/ployz/ployz             # stable
 ```
 
