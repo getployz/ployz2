@@ -19,7 +19,9 @@ crate::value::open_string_enum!(CertificateAvailability, Unrecognized {
 
 crate::value::open_string_enum!(CertificateFailureKind, Unrecognized {
     DoesNotResolve => "does_not_resolve",
-    ResolvesElsewhere => "resolves_elsewhere",
+    Unreachable => "unreachable",
+    RedirectsToHttps => "redirects_to_https",
+    ReachesElsewhere => "reaches_elsewhere",
     Authority => "authority",
 });
 
@@ -42,6 +44,9 @@ pub struct CertificateObservation {
     pub last_error: Option<String>,
     #[serde(default)]
     pub backoff: Option<CertificateBackoff>,
+    /// The issued certificate was ordered through a proxy in front of this Cluster.
+    #[serde(default)]
+    pub via_proxy: bool,
 }
 
 /// Typed incomplete replicated IDs. An incomplete row is not a delete.

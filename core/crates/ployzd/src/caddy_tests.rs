@@ -112,6 +112,9 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     assert!(handler.contains(&format!("respond \"{local}\" 200")));
     let site = automatic_site_block(&caddyfile, "http://example.com");
     assert!(site.contains("reverse_proxy 10.210.1.2:80 10.210.2.2:80 { import common_proxy }"));
+    // A hostname's own site still answers the verify probe, ahead of the app.
+    let verify = automatic_site_block(&site, INGRESS_VERIFY_PATH);
+    assert!(verify.contains(&format!("respond \"{local}\" 200")));
 }
 #[test]
 fn shared_renderer_projection_drives_caddy() {

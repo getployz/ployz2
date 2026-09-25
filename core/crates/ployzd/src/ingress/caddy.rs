@@ -204,12 +204,16 @@ http:// {{\n\
     for site in &projection.sites {
         let http = site.route(HttpProtocol::Http);
         if http.is_some() || site.challenge().is_some() {
+            // The hostname's own site shadows the catch-all, so it answers the verify probe too.
+            let verify = format!(
+                "\thandle {INGRESS_VERIFY_PATH} {{\n\t\trespond \"{local_machine}\" 200\n\t}}\n"
+            );
             write_site(
                 &mut output,
                 "http",
                 &site.hostname,
                 http.unwrap_or_default(),
-                "",
+                &verify,
                 site.challenge(),
             );
         }
@@ -257,7 +261,7 @@ fn write_site(
     protocol: &str,
     hostname: &IngressHost,
     endpoints: &[IngressEndpoint],
-    tls: &str,
+    directives: &str,
     challenge: Option<&CertificateChallenge>,
 ) {
     let handle = challenge
@@ -284,7 +288,7 @@ fn write_site(
     };
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{tls}{handle}{proxy}\tlog\n}}\n"
+        "\n{protocol}://{hostname} {{\n{directives}{handle}{proxy}\tlog\n}}\n"
     );
 }
 

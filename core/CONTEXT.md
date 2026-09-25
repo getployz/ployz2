@@ -307,9 +307,9 @@ _Avoid_: Caddy certificate, ACME certificate, cert secret
 The cluster-state values that steer certificate issuance: authority directory, external account binding, key type, renewal fraction, backoff bounds, and probe timeout. Absence means the daemon's built-in defaults. A challenge kind the daemon cannot perform is a refusal, not a default.
 _Avoid_: ACME config, daemon certificate constants, CA settings
 
-**Cluster DNS Verdict**:
-Whether an Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
-_Avoid_: DNS health, certificate gate, reachability
+**Hostname Verdict**:
+What one Machine saw when it fetched `/.ployz-verify` through an Ingress Hostname, where every ingress Machine answers with its Machine id: does not resolve, unreachable, redirects to HTTPS, reaches elsewhere, or reaches this Cluster — directly, or via a proxy when the probe answered with a Cluster Machine id but no resolved address is a Machine public address. It gates certificate issuance and is observed only while issuance is due, so it can be old. It is not Caddy health, certificate readiness, or a Deploy failure.
+_Avoid_: Cluster DNS Verdict, DNS health, certificate gate
 
 **Nearest DNS Selector**:
 An Internal DNS selector that orders addresses from the observing Machine's subnet before other addresses. It expresses subnet locality, not measured reachability or latency.

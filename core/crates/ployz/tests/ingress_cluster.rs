@@ -129,7 +129,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
                 )
                 .unwrap()
                 .trim(),
-            "ok"
+            machine.id.as_str()
         );
         cluster
             .machine_shell(index, "test ! -e /var/lib/ployz/ingress/caddy/caddy.json")

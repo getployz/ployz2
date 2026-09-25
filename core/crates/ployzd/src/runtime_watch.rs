@@ -410,6 +410,7 @@ fn redact_certificate(hostname: CertificateHost, row: &CertificateRow) -> Certif
         status,
         last_error: row.last_error().map(str::to_owned),
         backoff,
+        via_proxy: row.via_proxy(),
     }
 }
 
@@ -417,7 +418,9 @@ fn certificate_backoff(clock: IssuanceClock) -> CertificateBackoff {
     CertificateBackoff {
         failure_kind: match clock.last_failure() {
             IssuanceFailure::DoesNotResolve => CertificateFailureKind::DoesNotResolve,
-            IssuanceFailure::ResolvesElsewhere => CertificateFailureKind::ResolvesElsewhere,
+            IssuanceFailure::Unreachable => CertificateFailureKind::Unreachable,
+            IssuanceFailure::RedirectsToHttps => CertificateFailureKind::RedirectsToHttps,
+            IssuanceFailure::ReachesElsewhere => CertificateFailureKind::ReachesElsewhere,
             IssuanceFailure::Authority => CertificateFailureKind::Authority,
         },
         next_attempt_at: rfc3339(clock.next_attempt_at()),

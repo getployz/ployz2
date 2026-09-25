@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use ployz_core::{CertificateHost, IngressHost, IssuanceClock, IssuanceFailure};
+use ployz_core::{CertificateHost, ClusterRoute, IngressHost, IssuanceClock, IssuanceFailure};
 use serde::{Deserialize, Serialize};
 
 use super::Error;
@@ -221,6 +221,8 @@ pub enum CertificateRow {
     /// Material, pending challenge and refusal that ACME owns.
     Acme {
         material: Option<CertificateMaterial>,
+        /// The material was ordered through a proxy in front of this Cluster.
+        via_proxy: bool,
         challenge: Option<CertificateChallenge>,
         refusal: Option<RecordedRefusal>,
     },
@@ -243,6 +245,7 @@ impl CertificateRow {
     ) -> Self {
         Self::Acme {
             material,
+            via_proxy: false,
             challenge,
             refusal: None,
         }
@@ -252,6 +255,39 @@ impl CertificateRow {
     #[must_use]
     pub fn issued(material: CertificateMaterial) -> Self {
         Self::from_parts(Some(material), None)
+    }
+
+    /// ACME material ordered along `route`, replacing any earlier route.
+    /// A published row keeps no route.
+    #[must_use]
+    pub fn via(self, route: ClusterRoute) -> Self {
+        match self {
+            Self::Acme {
+                material,
+                challenge,
+                refusal,
+                ..
+            } => Self::Acme {
+                material,
+                via_proxy: route == ClusterRoute::ViaProxy,
+                challenge,
+                refusal,
+            },
+            published @ Self::Published(_) => published,
+        }
+    }
+
+    /// Whether the served ACME material was ordered through a proxy.
+    #[must_use]
+    pub fn via_proxy(&self) -> bool {
+        match self {
+            Self::Acme {
+                material: Some(_),
+                via_proxy,
+                ..
+            } => *via_proxy,
+            Self::Acme { .. } | Self::Published(_) => false,
+        }
     }
 
     /// Published material, if this row holds it.
@@ -328,9 +364,13 @@ impl CertificateRow {
     pub fn with_challenge(self, challenge: CertificateChallenge) -> Self {
         match self {
             Self::Acme {
-                material, refusal, ..
+                material,
+                via_proxy,
+                refusal,
+                ..
             } => Self::Acme {
                 material,
+                via_proxy,
                 challenge: Some(challenge),
                 refusal,
             },
@@ -352,10 +392,12 @@ impl CertificateRow {
         match self {
             Self::Acme {
                 material,
+                via_proxy,
                 challenge,
                 ..
             } => Self::Acme {
                 material,
+                via_proxy,
                 challenge,
                 refusal: Some(refusal),
             },
@@ -397,6 +439,7 @@ impl CertificateRow {
         }
         Ok(Self::Acme {
             material,
+            via_proxy: body.via_proxy,
             challenge,
             refusal: (!last_error.is_empty()).then_some(RecordedRefusal {
                 reason: last_error,
@@ -431,6 +474,7 @@ impl CertificateRow {
             failures: clock.map_or(0, |clock| clock.failures()),
             last_failure: encode_failure(clock.map(|clock| clock.last_failure())).into(),
             published: self.published().is_some(),
+            via_proxy: self.via_proxy(),
         })?)
     }
 }
@@ -464,6 +508,7 @@ struct CertificateBody {
     failures: u32,
     last_failure: String,
     published: bool,
+    via_proxy: bool,
 }
 
 fn encode_attempt(time: SystemTime) -> String {
@@ -488,7 +533,9 @@ fn decode_clock(next_attempt_at: &str, failures: u32, last_failure: &str) -> Opt
 fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {
     match failure {
         Some(IssuanceFailure::DoesNotResolve) => "does_not_resolve",
-        Some(IssuanceFailure::ResolvesElsewhere) => "resolves_elsewhere",
+        Some(IssuanceFailure::Unreachable) => "unreachable",
+        Some(IssuanceFailure::RedirectsToHttps) => "redirects_to_https",
+        Some(IssuanceFailure::ReachesElsewhere) => "reaches_elsewhere",
         Some(IssuanceFailure::Authority) => "authority",
         None => "",
     }
@@ -497,7 +544,9 @@ fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {
 fn decode_failure(text: &str) -> Option<IssuanceFailure> {
     match text {
         "does_not_resolve" => Some(IssuanceFailure::DoesNotResolve),
-        "resolves_elsewhere" => Some(IssuanceFailure::ResolvesElsewhere),
+        "unreachable" => Some(IssuanceFailure::Unreachable),
+        "redirects_to_https" => Some(IssuanceFailure::RedirectsToHttps),
+        "reaches_elsewhere" => Some(IssuanceFailure::ReachesElsewhere),
         "authority" => Some(IssuanceFailure::Authority),
         _ => None,
     }
@@ -507,7 +556,7 @@ fn decode_failure(text: &str) -> Option<IssuanceFailure> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use ployz_core::{IssuanceClock, IssuanceFailure};
+    use ployz_core::{ClusterRoute, IssuanceClock, IssuanceFailure};
 
     use super::{
         CertificateChallenge, CertificateChallengeError, CertificateMaterial,
@@ -684,6 +733,19 @@ mod tests {
     }
 
     #[test]
+    fn proxy_route_round_trips_and_needs_material() {
+        let row = CertificateRow::issued(issued_material()).via(ClusterRoute::ViaProxy);
+        let decoded = CertificateRow::decode(&row.encode().unwrap()).unwrap();
+        assert!(decoded.via_proxy());
+        assert!(!decoded.via(ClusterRoute::Direct).via_proxy());
+        assert!(
+            !CertificateRow::default()
+                .via(ClusterRoute::ViaProxy)
+                .via_proxy()
+        );
+    }
+
+    #[test]
     fn invalid_certificate_body_is_an_error() {
         assert!(decode_material("{").is_err());
         assert!(decode_material("null").is_err());
@@ -768,12 +830,12 @@ mod tests {
         assert_eq!(decoded.clock(), Some(clock));
         assert_eq!(
             CertificateRow::decode(
-                r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_failure":"resolves_elsewhere"}"#
+                r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_failure":"reaches_elsewhere"}"#
             )
             .unwrap()
             .clock()
             .map(|clock| clock.last_failure()),
-            Some(IssuanceFailure::ResolvesElsewhere)
+            Some(IssuanceFailure::ReachesElsewhere)
         );
         assert_eq!(
             CertificateRow::decode(r#"{"last_failure":"authority"}"#)

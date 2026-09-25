@@ -18,9 +18,10 @@ use instant_acme::{
     ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    CertificateHost, CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
-    HttpProtocol, IngressHost, IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication,
-    cluster_dns_verdict, issuance_failure_clock, issuance_gate, issuance_refusal_reason,
+    CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
+    ContainerObservation, HostnameVerdict, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost,
+    IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication, VerifyAnswer,
+    hostname_verdict, hostname_verdict_reason, issuance_failure_clock, issuance_gate,
     resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
@@ -203,15 +204,18 @@ fn poll_wait(
 }
 
 /// Addresses the ordering Machine must see the challenge on before validation.
+///
+/// Direct: the resolved ingress Machines. Via a proxy: every resolved proxy address.
 #[must_use]
 pub(crate) fn challenge_probe_addresses(
     resolved: &[IpAddr],
     ingress_ips: &BTreeSet<IpAddr>,
+    route: ClusterRoute,
 ) -> Vec<SocketAddr> {
     resolved
         .iter()
         .copied()
-        .filter(|address| ingress_ips.contains(address))
+        .filter(|address| route == ClusterRoute::ViaProxy || ingress_ips.contains(address))
         .map(|address| SocketAddr::new(address, 80))
         .collect()
 }
@@ -282,7 +286,7 @@ pub(crate) enum Error {
     InvalidMaterial,
     #[error("certificate authority returned an invalid HTTP-01 challenge")]
     InvalidChallenge,
-    #[error("HTTP-01 challenge was not served by the proxy")]
+    #[error("HTTP-01 challenge was not served by the Ingress Proxy")]
     ChallengeNotServed,
     #[error("authorization for {hostname} is {}", authorization_status(*status))]
     Authorization {
@@ -421,6 +425,12 @@ async fn issue_wanted(
     }
     let machines = store.machines().await?;
     let cluster = cluster_addresses(&machines.observations);
+    let machine_ids: Vec<_> = machines
+        .observations
+        .iter()
+        .map(|machine| machine.id)
+        .collect();
+    let verify_client = probe_client(policy.probe_timeout())?;
     let rank = machine_rank(
         machine_id,
         machines.observations.iter().map(|machine| &machine.id),
@@ -451,8 +461,13 @@ async fn issue_wanted(
         {
             continue;
         }
-        let resolved = resolve_host(hostname).await;
-        let verdict = cluster_dns_verdict(&resolved, &cluster);
+        let addresses = resolve_host(hostname)
+            .await
+            .into_iter()
+            .map(|address| SocketAddr::new(address, 80))
+            .collect::<Vec<_>>();
+        let answers = verify_answers(&verify_client, hostname, &addresses).await;
+        let verdict = hostname_verdict(&answers, &machine_ids, &cluster);
         let gate = issuance_gate(
             row.and_then(CertificateRow::clock),
             verdict,
@@ -465,7 +480,8 @@ async fn issue_wanted(
             IssuanceGate::Refuse(clock) => {
                 first_seen.remove(hostname);
                 if rank == 0 && row.and_then(CertificateRow::material).is_none() {
-                    let reason = issuance_refusal_reason(hostname, &resolved, &cluster);
+                    let reason = hostname_verdict_reason(hostname, verdict, &cluster)
+                        .expect("a refused verdict has a reason");
                     if let Err(error) = store
                         .record_certificate_failure(hostname, reason, clock)
                         .await
@@ -477,19 +493,27 @@ async fn issue_wanted(
             }
             IssuanceGate::Order => {}
         }
-        if contacts_authority(due, gate) {
-            to_order.push(hostname);
+        if let (true, HostnameVerdict::ReachesCluster(route)) =
+            (contacts_authority(due, gate), verdict)
+        {
+            to_order.push((hostname, route));
         }
     }
     if !to_order.is_empty() {
         account(directory, &policy, account_dir).await?;
-        let results = join_all(
-            to_order
-                .iter()
-                .map(|hostname| obtain(store, hostname, &policy, account_dir, rank, machine_id)),
-        )
+        let results = join_all(to_order.iter().map(|(hostname, route)| {
+            obtain(
+                store,
+                hostname,
+                *route,
+                &policy,
+                account_dir,
+                rank,
+                machine_id,
+            )
+        }))
         .await;
-        for (hostname, result) in to_order.iter().zip(results) {
+        for ((hostname, _), result) in to_order.iter().zip(results) {
             if let Err(error) = result {
                 eprintln!("failed to obtain certificate for {hostname}: {error}");
                 let clock = issuance_failure_clock(
@@ -533,7 +557,7 @@ async fn issue_wanted(
         .unwrap_or(RETRY_INTERVAL))
 }
 
-/// Contact the CA only when the scheduler wants work and DNS says the hostname can validate.
+/// Contact the CA only when the scheduler wants work and the hostname reaches this Cluster.
 #[must_use]
 pub(crate) fn contacts_authority(due: IssuanceAction, gate: IssuanceGate) -> bool {
     matches!(due, IssuanceAction::Order | IssuanceAction::Renew)
@@ -552,6 +576,7 @@ fn cluster_addresses(machines: &[Machine]) -> Vec<IpAddr> {
 async fn obtain(
     store: &ReplicatedStore,
     hostname: &IngressHost,
+    route: ClusterRoute,
     policy: &CertificatePolicy,
     account_dir: &Path,
     rank: usize,
@@ -583,12 +608,14 @@ async fn obtain(
             let containers = store.containers().await?;
             let ingress_ips =
                 ingress_challenge_ips(&machines.observations, &containers.observations);
-            let addresses = challenge_probe_addresses(&resolved, &ingress_ips);
+            let addresses = challenge_probe_addresses(&resolved, &ingress_ips, route);
             wait_for_http01(&hostname, &challenge, &addresses, probe_timeout).await
         }
     })
     .await?;
-    store.publish_certificate(hostname, &material).await?;
+    store
+        .publish_certificate(hostname, &material, route)
+        .await?;
     Ok(())
 }
 
@@ -743,7 +770,63 @@ async fn resolve_host(hostname: &IngressHost) -> Vec<IpAddr> {
     let Ok(lookup) = tokio::net::lookup_host((hostname.as_str(), 80)).await else {
         return Vec::new();
     };
-    lookup.map(|address| address.ip()).collect()
+    lookup
+        .map(|address| address.ip())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn probe_client(probe_timeout: Duration) -> Result<Client, Error> {
+    Ok(Client::builder()
+        .redirect(Policy::none())
+        .no_proxy()
+        .timeout(Duration::from_secs(2).min(probe_timeout))
+        .build()?)
+}
+
+/// Fetch `/.ployz-verify` from each address with `hostname` as `Host`, without following redirects.
+pub(crate) async fn verify_answers(
+    client: &Client,
+    hostname: &IngressHost,
+    addresses: &[SocketAddr],
+) -> Vec<(IpAddr, VerifyAnswer)> {
+    join_all(addresses.iter().map(|address| async move {
+        (
+            address.ip(),
+            verify_answer(client, hostname, *address).await,
+        )
+    }))
+    .await
+}
+
+async fn verify_answer(
+    client: &Client,
+    hostname: &IngressHost,
+    address: SocketAddr,
+) -> VerifyAnswer {
+    let Ok(response) = client
+        .get(format!("http://{address}{INGRESS_VERIFY_PATH}"))
+        .header(reqwest::header::HOST, hostname.as_str())
+        .send()
+        .await
+    else {
+        return VerifyAnswer::NoAnswer;
+    };
+    if response.status().is_redirection() {
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|location| location.to_str().ok())
+            .unwrap_or_default();
+        return VerifyAnswer::Redirect {
+            location: location.to_owned(),
+        };
+    }
+    VerifyAnswer::Response {
+        success: response.status().is_success(),
+        body: response.text().await.unwrap_or_default(),
+    }
 }
 
 async fn wait_for_http01(
@@ -755,11 +838,7 @@ async fn wait_for_http01(
     if addresses.is_empty() {
         return Err(Error::ChallengeNotServed);
     }
-    let client = Client::builder()
-        .redirect(Policy::none())
-        .no_proxy()
-        .timeout(Duration::from_secs(2).min(probe_timeout))
-        .build()?;
+    let client = probe_client(probe_timeout)?;
     let deadline = Instant::now() + probe_timeout;
     loop {
         let answered = join_all(addresses.iter().map(|address| {

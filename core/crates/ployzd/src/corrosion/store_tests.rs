@@ -827,7 +827,7 @@ async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
         super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
             .unwrap();
     store
-        .publish_certificate(&hostname, &material)
+        .publish_certificate(&hostname, &material, ployz_core::ClusterRoute::Direct)
         .await
         .unwrap();
     store
@@ -863,7 +863,11 @@ async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
         .unwrap();
 
     store
-        .publish_certificate(&hostname, &material("app.example.com"))
+        .publish_certificate(
+            &hostname,
+            &material("app.example.com"),
+            ployz_core::ClusterRoute::Direct,
+        )
         .await
         .unwrap();
     store
@@ -903,7 +907,10 @@ async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
         .unwrap();
     assert_eq!(store.certificate(&hostname).await.unwrap(), None);
     let issued = material("app.example.com");
-    store.publish_certificate(&hostname, &issued).await.unwrap();
+    store
+        .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
     store
         .clear_published_certificate(&published_name)
         .await

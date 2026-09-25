@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { GlobeIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { CopyButton } from "#/components/copy-button";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { FieldDescription } from "#/components/ui/field";
 import { cn } from "#/lib/utils";
@@ -8,9 +9,21 @@ import type { ServiceRoute } from "#/modules/environment-design/tables";
 
 export type DomainCertificateEvidence = {
   status: string | null;
+  failureKind: string | null;
+  viaProxy: boolean;
   lastObserved: boolean;
   incomplete: boolean;
 } | null;
+
+// Failures the user fixes in their own DNS or proxy: one line each.
+const USER_FIXES = {
+  does_not_resolve: "No DNS record yet.",
+  unreachable: "Port 80 is closed.",
+  // TODO: link a docs page on custom domains behind a proxy once it exists.
+  redirects_to_https:
+    "Your proxy redirects to HTTPS. Exempt /.well-known/acme-challenge/* from HTTPS redirects.",
+  reaches_elsewhere: "Points to another server.",
+} satisfies Record<string, string>;
 
 export function DomainTitle({
   hostname,
@@ -58,6 +71,11 @@ export function CertificateEvidence({
   evidence: DomainCertificateEvidence;
 }) {
   if (!evidence) return null;
+  const fix =
+    evidence.status === "failure" && evidence.failureKind
+      ? Object.entries(USER_FIXES).find(([kind]) => kind === evidence.failureKind)?.[1]
+      : undefined;
+  if (fix) return <FieldDescription>{fix}</FieldDescription>;
   return (
     <FieldDescription>
       {evidence.status
@@ -68,6 +86,11 @@ export function CertificateEvidence({
       {evidence.incomplete
         ? " This observation also lists this certificate as incomplete."
         : null}
+      {evidence.viaProxy ? (
+        <Badge variant="secondary" className="ml-2">
+          via proxy
+        </Badge>
+      ) : null}
     </FieldDescription>
   );
 }

@@ -16,8 +16,8 @@ use serde_json::json;
 use super::{
     CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, contacts_authority,
     directory_from_env, ingress_challenge_ips, issuance_action, machine_jitter, machine_rank,
-    material_validity, order_certificate, poll_wait, renewal_window, wait_for_http01,
-    wanted_certificate_hosts,
+    material_validity, order_certificate, poll_wait, probe_client, renewal_window, verify_answers,
+    wait_for_http01, wanted_certificate_hosts,
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
@@ -193,7 +193,7 @@ fn only_rank_zero_orders_immediately() {
 
 #[test]
 fn renew_does_not_contact_the_authority_when_dns_refuses() {
-    let clock = IssuanceClock::new(1, UNIX_EPOCH, IssuanceFailure::ResolvesElsewhere);
+    let clock = IssuanceClock::new(1, UNIX_EPOCH, IssuanceFailure::ReachesElsewhere);
     assert!(!contacts_authority(
         IssuanceAction::Renew,
         IssuanceGate::Refuse(clock)
@@ -408,18 +408,32 @@ fn poll_wait_follows_each_certificate_lifetime() {
 }
 
 #[test]
-fn probe_addresses_are_the_ingress_intersection() {
+fn probe_addresses_are_the_ingress_intersection_or_every_proxy_address() {
     let ingress_ips = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
+    let direct = ployz_core::ClusterRoute::Direct;
+    let proxy = ployz_core::ClusterRoute::ViaProxy;
     assert_eq!(
-        challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &ingress_ips),
+        challenge_probe_addresses(
+            &[ip("192.0.2.2"), ip("198.51.100.10")],
+            &ingress_ips,
+            direct
+        ),
         vec![socket("192.0.2.2")]
     );
     assert_eq!(
-        challenge_probe_addresses(&[ip("198.51.100.10")], &ingress_ips),
+        challenge_probe_addresses(&[ip("198.51.100.10")], &ingress_ips, direct),
         Vec::<SocketAddr>::new()
     );
     assert_eq!(
-        challenge_probe_addresses(&[], &ingress_ips),
+        challenge_probe_addresses(
+            &[ip("198.51.100.10"), ip("198.51.100.11")],
+            &ingress_ips,
+            proxy
+        ),
+        vec![socket("198.51.100.10"), socket("198.51.100.11")]
+    );
+    assert_eq!(
+        challenge_probe_addresses(&[], &ingress_ips, proxy),
         Vec::<SocketAddr>::new()
     );
 }
@@ -481,6 +495,63 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
     .await
     .unwrap();
     drop((first_stop, second_stop));
+}
+
+#[tokio::test]
+async fn verify_answers_report_the_body_the_redirect_or_no_answer() {
+    let body = serve_once("200 OK", "", "0123456789abcdef0123456789abcdef");
+    let redirect = serve_once(
+        "301 Moved Permanently",
+        "Location: https://app.example.com/.ployz-verify\r\n",
+        "",
+    );
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let client = probe_client(Duration::from_secs(2)).unwrap();
+
+    let answers =
+        verify_answers(&client, &host("app.example.com"), &[body, redirect, closed]).await;
+
+    let loopback = ip("127.0.0.1");
+    assert_eq!(
+        answers,
+        vec![
+            (
+                loopback,
+                ployz_core::VerifyAnswer::Response {
+                    success: true,
+                    body: "0123456789abcdef0123456789abcdef".into(),
+                }
+            ),
+            (
+                loopback,
+                ployz_core::VerifyAnswer::Redirect {
+                    location: "https://app.example.com/.ployz-verify".into(),
+                }
+            ),
+            (loopback, ployz_core::VerifyAnswer::NoAnswer),
+        ]
+    );
+}
+
+/// One canned HTTP/1.1 response on a fresh loopback port.
+fn serve_once(status: &'static str, headers: &'static str, body: &'static str) -> SocketAddr {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request);
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    });
+    address
 }
 
 #[tokio::test]
