@@ -575,12 +575,7 @@ mod tests {
             "same-target" => {
                 let outcome = result.unwrap();
                 assert_eq!(outcome.target, "1.2.3");
-                let existing = existing.as_ref().unwrap();
-                assert_ne!(fs::read(paths.bin_dir.join("ployzd")).unwrap(), *existing);
-                assert_eq!(
-                    fs::read(paths.bin_dir.join("ployzd.previous")).unwrap(),
-                    *existing
-                );
+                assert!(!paths.bin_dir.join("ployzd.previous").exists());
             }
             "busy" => assert!(matches!(result, Err(Error::Busy))),
             "missing-tar" => assert!(matches!(
@@ -614,7 +609,7 @@ mod tests {
             }
             other => panic!("unknown contract case {other}"),
         }
-        if let Some(existing) = existing.filter(|_| case != "same-target") {
+        if let Some(existing) = existing {
             assert_eq!(fs::read(paths.bin_dir.join("ployzd")).unwrap(), existing);
         }
     }
