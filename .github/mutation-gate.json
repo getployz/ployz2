@@ -1,0 +1,32 @@
+{
+  "base": "ab22911a6b008c2fa0c1626ca11f3f6e3ecaddd2",
+  "files": [
+    "crates/ployz/src/handlers/machine/add.rs",
+    "crates/ployz/src/handlers/machine/helpers.rs",
+    "crates/ployz/src/handlers/machine.rs",
+    "crates/ployz/src/handlers/machine/inspect.rs",
+    "crates/ployz/src/handlers/machine/remove.rs",
+    "crates/ployz/src/handlers/machine/upgrade.rs",
+    "crates/ployz/src/handlers/service/mod.rs",
+    "crates/ployz/src/handlers/volume.rs",
+    "crates/ployz/src/global_catch_up.rs",
+    "crates/ployz/src/deploy/apply.rs",
+    "crates/ployz/src/deploy/pipeline.rs",
+    "crates/ployz/src/deploy/render.rs",
+    "crates/ployz/src/deploy/report.rs",
+    "crates/ployz/src/dns.rs",
+    "crates/ployz/src/cloud_enroll.rs",
+    "crates/ployz/src/connect.rs",
+    "crates/ployz/src/context.rs",
+    "crates/ployz/src/cli/mod.rs",
+    "crates/ployz/src/failure.rs",
+    "crates/ployz/src/provisioning.rs",
+    "crates/ployz/src/provisioning/bootstrap.rs",
+    "crates/ployz/src/cluster/container_observations.rs",
+    "crates/ployz/src/operator.rs",
+    "crates/ployz/src/ingress.rs",
+    "crates/ployz/src/project.rs"
+  ],
+  "re": "src/handlers/machine/add\\.rs|src/handlers/machine\\.rs|src/handlers/machine/inspect\\.rs|src/handlers/machine/remove\\.rs|src/deploy/apply\\.rs|src/deploy/render\\.rs|src/deploy/report\\.rs|src/failure\\.rs|src/cluster/container_observations\\.rs|src/ingress\\.rs|src/project\\.rs|src/cli/mod\\.rs|src/cloud_enroll\\.rs.*(parse_enroll|PairingCredential|CloudPairing)|readiness_timeout_message|joined_catch_up_error|unattempted_lines|service_volume_teardown|volumes_safe_to_remove|combined_teardown_result|src/handlers/volume\\.rs.*(format_storage|removal_failure_summary)|choose_scale_spec|project_not_found|for DeployWarning|ingress_dns_warnings|src/connect\\.rs.*(is_setup_retryable|apply_timeout|target_request|is_unreachable|is_retryable|from_ssh_spawn|ssh_args)|src/context\\.rs.*(Config::new|set_current_context|remove_context|ConnectionSource|Config::load)|resolve_storage|install_arguments|provision_local|command_output|select_exec_container|select_log_containers|select_machines|for LogError",
+  "shards": 4
+}
