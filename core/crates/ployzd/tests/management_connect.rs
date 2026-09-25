@@ -251,7 +251,7 @@ async fn contract() {
         ),
     );
 
-    // A key the Machine never accepted is refused by identity, not by reachability.
+    // A key the Machine never accepted gets CLIENT_REFUSED, not an unreachable error.
     let stranger =
         ManagementCapability::new(*capability.machine(), SecretKey::generate().to_bytes());
     assert_refused(connector.connect(&connection(&stranger)).await);
@@ -466,8 +466,8 @@ async fn contract() {
 fn assert_refused(result: Result<Channel, ConnectError>) {
     match result {
         Err(ConnectError::ClientRefused) => {}
-        Err(error) => panic!("expected refusal by identity, got: {error} ({error:?})"),
-        Ok(_) => panic!("expected refusal by identity, got a channel"),
+        Err(error) => panic!("expected CLIENT_REFUSED, got: {error} ({error:?})"),
+        Ok(_) => panic!("expected CLIENT_REFUSED, got a channel"),
     }
 }
 
