@@ -228,7 +228,8 @@ fn refusal(record: &LocalMachineRecord, remote: &[u8; 32]) -> Option<VarInt> {
 enum Ended {
     /// The peer closed, the connection failed, or the transport shut down.
     Closed,
-    /// A record change revoked the key; the peer holds every byte already sent.
+    /// A record change revoked the key; delivery of the bytes already sent was awaited
+    /// for up to `REVOCATION_DELIVERY_TIMEOUT`.
     Revoked,
 }
 
