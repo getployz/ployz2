@@ -9,11 +9,7 @@ const row = (status: PublicDomainStatus) => (
   <PublicDomainRow
     organizationSlug="acme"
     title={
-      <DomainTitle
-        hostname="www.acme.com"
-        copyLabel="Copy www.acme.com"
-        href={status.kind === "live" ? "https://www.acme.com" : undefined}
-      />
+      <DomainTitle hostname="www.acme.com" live={status.kind === "live"} />
     }
     label="www.acme.com"
     portLabel="Port 8080"

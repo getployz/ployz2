@@ -12,18 +12,18 @@ import { formatRelativeTime } from "#/utils/relative-time";
 
 export function DomainTitle({
   hostname,
-  copyLabel,
-  href,
+  copyLabel = `Copy ${hostname}`,
+  live = false,
 }: {
   hostname: string;
-  copyLabel: string;
-  /** Set when the domain is live, so the name opens it. */
-  href?: string;
+  copyLabel?: string;
+  /** A live domain's name opens it. */
+  live?: boolean;
 }) {
   return (
     <div className="flex min-w-0 items-center gap-1">
-      {href ? (
-        <a href={href} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1 font-mono text-sm hover:underline">
+      {live ? (
+        <a href={`https://${hostname}`} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1 font-mono text-sm hover:underline">
           <span className="truncate">{hostname}</span>
           <ArrowUpRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
         </a>
@@ -67,8 +67,9 @@ function statusView(status: PublicDomainStatus): StatusView {
   const warning = <AlertTriangleIcon className="text-warning" />;
   switch (status.kind) {
     case "live":
-    case "unknown":
       return { icon: <GlobeIcon />, phrase: null, action: null };
+    case "unknown":
+      return { icon: <GlobeIcon className="opacity-50" />, phrase: null, action: null };
     case "not_deployed":
       return { icon: <GlobeIcon className="opacity-50" />, phrase: "Live after your next deploy", action: null };
     case "setting_up":

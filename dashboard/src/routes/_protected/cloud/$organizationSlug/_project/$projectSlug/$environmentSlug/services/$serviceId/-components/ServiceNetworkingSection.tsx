@@ -118,11 +118,7 @@ export function ServiceNetworkingSection({
                 organizationSlug={state.organizationSlug}
                 title={
                   hostname ? (
-                    <DomainTitle
-                      hostname={hostname}
-                      copyLabel={`Copy ${hostname}`}
-                      href={status.kind === "live" ? `https://${hostname}` : undefined}
-                    />
+                    <DomainTitle hostname={hostname} live={status.kind === "live"} />
                   ) : (
                     <div className="truncate font-mono text-sm">
                       {managed.prefix}
@@ -151,11 +147,7 @@ export function ServiceNetworkingSection({
                 key={route.id}
                 organizationSlug={state.organizationSlug}
                 title={
-                  <DomainTitle
-                    hostname={route.hostname}
-                    copyLabel={`Copy ${route.hostname}`}
-                    href={status.kind === "live" ? `https://${route.hostname}` : undefined}
-                  />
+                  <DomainTitle hostname={route.hostname} live={status.kind === "live"} />
                 }
                 label={route.hostname}
                 portLabel={portLabel(route.targetPort)}
