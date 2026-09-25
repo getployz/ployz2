@@ -253,7 +253,7 @@ impl LocalMachineRecord {
 
     /// Whether `remote` is a key some Clear left in a tombstone.
     #[must_use]
-    pub fn cleared_management_client(&self, remote: &[u8; 32]) -> bool {
+    pub fn clears_management_client(&self, remote: &[u8; 32]) -> bool {
         self.management_clients
             .values()
             .any(|slot| slot.clears(remote))

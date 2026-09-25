@@ -198,7 +198,7 @@ async fn serve_connection<S>(
         // change wakes `revoked`: a delayed first stream cannot escape key rotation.
         let record = records.borrow_and_update();
         if !record.admits_management_client(&remote) {
-            let code = if record.cleared_management_client(&remote) {
+            let code = if record.clears_management_client(&remote) {
                 CLIENT_CLEARED
             } else {
                 CLIENT_REFUSED
