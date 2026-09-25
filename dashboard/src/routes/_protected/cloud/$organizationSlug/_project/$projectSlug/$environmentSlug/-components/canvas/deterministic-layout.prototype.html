@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Prototype · connection layout</title>
+<!--
+  Three variants of the environment canvas, switchable via ?variant= and the bottom bar.
+  Question: if positions are a pure function of env references and volume mounts,
+  does the picture stay honest when those links change?
+  Throwaway. Not a route. Open this file.
+-->
+<style>
+  :root {
+    --ink: #111;
+    --muted: #666;
+    --canvas: #fff;
+    --subtle: #fafafa;
+    --muted-surface: #f2f2f2;
+    --rule: #dedede;
+    --pink: #d0268c;
+    --pink-deep: #a80068;
+    --pink-soft: #fff0f7;
+    --pink-border: #efb3ce;
+    --green: #42946e;
+    --green-soft: #dff1e9;
+    --amber: #ad871f;
+    --card-w: 208px;
+    --card-h: 78px;
+    --vol-h: 58px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: Geist, ui-sans-serif, system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--canvas);
+    font-size: 14px;
+    line-height: 1.43;
+  }
+  button, select, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  .app { display: grid; grid-template-rows: auto auto minmax(0, 1fr); height: 100%; }
+  header.top {
+    display: flex; align-items: center; gap: 16px;
+    height: 56px; padding: 0 20px; border-bottom: 1px solid var(--rule);
+  }
+  .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--ink); }
+  .crumb { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .crumb strong { font-weight: 600; font-size: 16px; }
+  .crumb span { color: var(--muted); }
+  .spacer { flex: 1; }
+  .pill {
+    height: 32px; padding: 0 10px; border-radius: 12px;
+    border: 1px solid var(--rule); background: var(--canvas);
+  }
+  .question {
+    display: flex; gap: 24px; align-items: baseline;
+    padding: 10px 20px; background: var(--subtle); border-bottom: 1px solid var(--rule);
+    font-size: 13px;
+  }
+  .question b { font-weight: 600; }
+  .question p { margin: 0; color: var(--muted); }
+  .body { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; }
+  .stage-wrap { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .stage {
+    position: relative; flex: 1; overflow: auto;
+    background-color: var(--subtle);
+    background-image: radial-gradient(#d5d5d5 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+  .canvas { position: relative; }
+  svg.edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+  .col-label {
+    position: absolute; top: 8px; font-size: 12px; font-weight: 500;
+    color: var(--muted); letter-spacing: 0;
+  }
+  .node {
+    position: absolute; width: var(--card-w);
+    background: var(--canvas); border: 1px solid var(--rule); border-radius: 16px;
+    padding: 10px 12px; transition: left 480ms cubic-bezier(.2,.7,.2,1), top 480ms cubic-bezier(.2,.7,.2,1), border-color 200ms, background 200ms;
+  }
+  .node.volume { border-radius: 12px; background: var(--subtle); }
+  .node.moved { border-color: var(--pink-border); background: var(--pink-soft); }
+  .node.unread { border-style: dashed; }
+  .node-top { display: flex; gap: 8px; align-items: flex-start; }
+  .icon {
+    width: 28px; height: 28px; border-radius: 8px; background: var(--muted-surface);
+    display: grid; place-items: center; font-size: 11px; font-weight: 600; flex: none;
+  }
+  .node.volume .icon { background: var(--canvas); }
+  .name { font-weight: 500; font-size: 14px; line-height: 1.3; }
+  .sub { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .meta .rel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  .dot.idle { background: #999; box-shadow: 0 0 0 3px var(--muted-surface); }
+  .tag {
+    margin-left: auto; font-size: 11px; font-weight: 500; color: var(--pink-deep);
+    background: var(--pink-soft); border: 1px solid var(--pink-border); border-radius: 99px; padding: 1px 6px;
+  }
+  .lane-title {
+    position: absolute; font-size: 12px; font-weight: 500; color: var(--muted);
+  }
+  .region {
+    position: absolute; border: 1px dashed var(--rule); border-radius: 16px; pointer-events: none;
+  }
+  aside {
+    border-left: 1px solid var(--rule); overflow: auto; padding: 16px; background: var(--canvas);
+  }
+  aside h2 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  aside .hint { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+  .scenarios { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .scenarios button, .link-row button, .add button {
+    height: 28px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--rule); background: var(--canvas);
+  }
+  .scenarios button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .link-row, .add { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .link-row { justify-content: space-between; }
+  .link-row code, .state code {
+    font-family: ui-monospace, monospace; font-size: 11px;
+  }
+  .link-row.off { opacity: 0.45; }
+  .link-row .kind { font-size: 11px; color: var(--muted); }
+  .add select, .add input {
+    height: 28px; border: 1px solid var(--rule); border-radius: 8px; padding: 0 6px; min-width: 0; background: #fff;
+  }
+  .add input { width: 92px; }
+  .state { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule); }
+  .state ul { list-style: none; padding: 0; margin: 8px 0 0; }
+  .state li { font-size: 12px; padding: 3px 0; display: flex; justify-content: space-between; gap: 8px; }
+  .state li b { font-weight: 500; }
+  .callout {
+    margin-top: 10px; padding: 8px 10px; border-radius: 10px; background: var(--pink-soft);
+    border: 1px solid var(--pink-border); color: var(--pink-deep); font-size: 12px;
+  }
+  .quiet { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .switcher {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px;
+    background: #111; color: #fff; border-radius: 999px; padding: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.28); z-index: 20;
+  }
+  .switcher button {
+    width: 32px; height: 32px; border: 0; border-radius: 99px; background: #2a2a2a; color: #fff;
+  }
+  .switcher span { min-width: 220px; text-align: center; font-size: 13px; font-weight: 500; }
+  .no-motion .node { transition: none; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="mark" aria-hidden="true"></div>
+    <div class="crumb">
+      <strong>shop</strong>
+      <span>/</span>
+      <span>production</span>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill">Prototype</span>
+  </header>
+  <div class="question">
+    <b>Positions come from connections.</b>
+    <p>Env references set who waits on whom. Volume mounts tuck under the service. Nothing is dragged. Linking or unlinking is the only way the picture moves.</p>
+  </div>
+  <div class="body">
+    <div class="stage-wrap">
+      <div class="stage" id="stage"><div class="canvas" id="canvas"></div></div>
+    </div>
+    <aside>
+      <h2>Links</h2>
+      <p class="hint" id="scenario-hint">A wired shop. Data on the left, the public site on the right.</p>
+      <div class="scenarios" id="scenarios"></div>
+      <div id="links"></div>
+      <form class="add" id="add-form">
+        <select id="add-consumer"></select>
+        <input id="add-var" value="API_URL" aria-label="Variable" />
+        <select id="add-producer"></select>
+        <button type="submit">Link</button>
+      </form>
+      <div class="state">
+        <h2>Placement</h2>
+        <p class="hint" id="rule"></p>
+        <ul id="placement"></ul>
+        <div class="callout" id="moved" hidden></div>
+        <p class="quiet" id="order"></p>
+      </div>
+    </aside>
+  </div>
+</div>
+<div class="switcher" id="switcher">
+  <button type="button" id="prev" aria-label="Previous variant">←</button>
+  <span id="variant-label"></span>
+  <button type="button" id="next" aria-label="Next variant">→</button>
+</div>
+<script>
+// Pure layout. No DOM. Lift this if a variant wins.
+const Layout = (() => {
+  const CARD_W = 208;
+  const CARD_H = 78;
+  const VOL_H = 58;
+  const GAP_X = 88;
+  const GAP_Y = 16;
+  const PAD = 36;
+
+  function heightOf(node) { return node.kind === "volume" ? VOL_H : CARD_H; }
+
+  function backEdgeIds(nodes, links) {
+    const adj = new Map(nodes.map((n) => [n.id, []]));
+    for (const link of links) adj.get(link.producer)?.push(link);
+    const color = new Map();
+    const backs = new Set();
+    const visit = (id) => {
+      color.set(id, 1);
+      for (const link of adj.get(id) ?? []) {
+        const tone = color.get(link.consumer) ?? 0;
+        if (tone === 1) backs.add(link.id);
+        else if (tone === 0) visit(link.consumer);
+      }
+      color.set(id, 2);
+    };
+    for (const node of nodes) if (!color.get(node.id)) visit(node.id);
+    return backs;
+  }
+
+  function analyze(nodes, links) {
+    const backs = backEdgeIds(nodes, links);
+    const forward = links.filter((link) => !backs.has(link.id));
+    const env = forward.filter((link) => link.kind === "env");
+    const mounts = forward.filter((link) => link.kind === "mount");
+    const rank = new Map(nodes.map((node) => [node.id, 0]));
+    for (let pass = 0; pass < nodes.length; pass += 1) {
+      for (const link of env) {
+        const next = rank.get(link.producer) + 1;
+        if (rank.get(link.consumer) < next) rank.set(link.consumer, next);
+      }
+    }
+    const envIds = new Set(env.flatMap((link) => [link.producer, link.consumer]));
+    const mountedServices = new Set(mounts.map((link) => link.consumer));
+    const unwired = new Set(nodes.filter((node) => {
+      if (node.kind === "volume") return !mounts.some((link) => link.producer === node.id);
+      return !envIds.has(node.id) && !mountedServices.has(node.id);
+    }).map((node) => node.id));
+    const lane = new Map();
+    for (const node of nodes) {
+      if (unwired.has(node.id)) { lane.set(node.id, "unwired"); continue; }
+      if (node.kind === "volume") { lane.set(node.id, "data"); continue; }
+      const consumes = env.some((link) => link.consumer === node.id);
+      if (node.publicDomain) lane.set(node.id, "edge");
+      else if (consumes) lane.set(node.id, "app");
+      else lane.set(node.id, "data");
+    }
+    const readers = new Map(nodes.map((node) => [node.id, []]));
+    for (const link of env) readers.get(link.producer)?.push(link.consumer);
+    const order = nodes
+      .filter((node) => node.kind === "service" && !unwired.has(node.id))
+      .map((node) => node.id)
+      .sort((a, b) => rank.get(a) - rank.get(b) || a.localeCompare(b));
+    return { backs, forward, env, mounts, rank, unwired, lane, readers, order };
+  }
+
+  function stacks(serviceIds, mounts) {
+    const volumesOf = new Map(serviceIds.map((id) => [id, []]));
+    for (const link of mounts) volumesOf.get(link.consumer)?.push(link.producer);
+    const rows = [];
+    for (const id of serviceIds) {
+      rows.push(id);
+      for (const volumeId of (volumesOf.get(id) ?? []).sort()) rows.push(volumeId);
+    }
+    return rows;
+  }
+
+  function placeColumns(nodes, info) {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const wired = nodes.filter((node) => node.kind === "service" && !info.unwired.has(node.id));
+    const ranks = [...new Set(wired.map((node) => info.rank.get(node.id)))].sort((a, b) => a - b);
+    const columns = ranks.map((rank) => stacks(
+      wired.filter((node) => info.rank.get(node.id) === rank).sort((a, b) => a.name.localeCompare(b.name)).map((node) => node.id),
+      info.mounts,
+    ));
+    const unwired = nodes.filter((node) => info.unwired.has(node.id)).map((node) => node.id).sort();
+    const colHeights = columns.map((col) => col.reduce((sum, id) => sum + heightOf(byId.get(id)) + GAP_Y, 0));
+    const band = Math.max(0, ...colHeights);
+    const boxes = [];
+    columns.forEach((col, index) => {
+      let y = PAD + 28 + (band - colHeights[index]) / 2;
+      const x = PAD + index * (CARD_W + GAP_X);
+      for (const id of col) {
+        const node = byId.get(id);
+        boxes.push({ id, x, y, w: CARD_W, h: heightOf(node), rank: info.rank.get(node.kind === "volume" ? info.mounts.find((link) => link.producer === id)?.consumer : id) });
+        y += heightOf(node) + (node.kind === "volume" ? 8 : GAP_Y);
+      }
+    });
+    unwired.forEach((id, index) => {
+      boxes.push({
+        id, x: PAD + index * (CARD_W + 16), y: PAD + 28 + band + 28,
+        w: CARD_W, h: heightOf(byId.get(id)), rank: null,
+      });
+    });
+    const labels = columns.map((col, index) => ({
+      x: PAD + index * (CARD_W + GAP_X),
+      y: 12,
+      text: index === 0 ? "Starts first" : `Waits on column ${index}`,
+    }));
+    if (unwired.length) labels.push({ x: PAD, y: PAD + 18 + band + 8, text: "Not wired" });
+    return { boxes, labels, regions: [], width: PAD * 2 + Math.max(columns.length, 1) * (CARD_W + GAP_X), height: PAD + 28 + band + (unwired.length ? 140 : 40) };
+  }
+
+  function placeStack(nodes, info) {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const wired = nodes.filter((node) => node.kind === "service" && !info.unwired.has(node.id));
+    const maxRank = Math.max(0, ...wired.map((node) => info.rank.get(node.id)));
+    const rows = new Map();
+    for (const node of wired) {
+      const row = maxRank - info.rank.get(node.id);
+      const list = rows.get(row) ?? [];
+      list.push(node.id);
+      rows.set(row, list);
+    }
+    const rowIds = [...rows.keys()].sort((a, b) => a - b);
+    const xOf = new Map();
+    for (const row of rowIds) {
+      rows.get(row).sort().forEach((id, index) => xOf.set(id, index * (CARD_W + GAP_X)));
+    }
+    const consumersOf = new Map(nodes.map((node) => [node.id, []]));
+    for (const link of info.env) consumersOf.get(link.producer)?.push(link.consumer);
+    for (let pass = 0; pass < 4; pass += 1) {
+      for (const row of rowIds) {
+        for (const id of rows.get(row)) {
+          const neighbors = consumersOf.get(id).filter((other) => xOf.has(other));
+          if (!neighbors.length) continue;
+          xOf.set(id, neighbors.reduce((sum, other) => sum + xOf.get(other), 0) / neighbors.length);
+        }
+        const ordered = [...rows.get(row)].sort((a, b) => xOf.get(a) - xOf.get(b) || a.localeCompare(b));
+        rows.set(row, ordered);
+        ordered.forEach((id, index) => xOf.set(id, index * (CARD_W + GAP_X)));
+      }
+    }
+    const boxes = [];
+    let y = PAD + 18;
+    for (const row of rowIds) {
+      const services = rows.get(row);
+      const minX = Math.min(...services.map((id) => xOf.get(id)));
+      let rowHeight = 0;
+      for (const serviceId of services) {
+        let cursorY = y;
+        for (const id of stacks([serviceId], info.mounts)) {
+          const node = byId.get(id);
+          boxes.push({ id, x: PAD + (xOf.get(serviceId) - minX), y: cursorY, w: CARD_W, h: heightOf(node), rank: info.rank.get(serviceId) });
+          cursorY += heightOf(node) + (node.kind === "volume" ? 8 : GAP_Y);
+        }
+        rowHeight = Math.max(rowHeight, cursorY - y);
+      }
+      y += rowHeight + 28;
+    }
+    const unwired = nodes.filter((node) => info.unwired.has(node.id)).map((node) => node.id).sort();
+    unwired.forEach((id, index) => {
+      boxes.push({ id, x: PAD + index * (CARD_W + 16), y: y, w: CARD_W, h: heightOf(byId.get(id)), rank: null });
+    });
+    const labels = [{ x: PAD, y: 12, text: "Public entry on top · shared dependencies centered below" }];
+    if (unwired.length) labels.push({ x: PAD, y: y - 18, text: "Not wired" });
+    const width = PAD * 2 + Math.max(1, ...[...xOf.values()].map((x) => x + CARD_W));
+    return { boxes, labels, regions: [], width, height: y + (unwired.length ? 100 : 48) };
+  }
+
+  function placeLanes(nodes, info) {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const lanes = ["edge", "app", "data"];
+    const titles = { edge: "Edge · public", app: "App · reads others", data: "Data · only read" };
+    const boxes = [];
+    const regions = [];
+    let maxBottom = PAD;
+    lanes.forEach((lane, index) => {
+      const services = nodes
+        .filter((node) => node.kind === "service" && info.lane.get(node.id) === lane)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const ids = stacks(services.map((node) => node.id), info.mounts.filter((link) => info.lane.get(link.producer) === "data" || true));
+      const x = PAD + index * (CARD_W + GAP_X + 24);
+      let y = PAD + 36;
+      const top = y - 8;
+      for (const id of ids) {
+        const node = byId.get(id);
+        const hostLane = node.kind === "volume" ? info.lane.get(info.mounts.find((link) => link.producer === id)?.consumer) : lane;
+        if (hostLane !== lane) continue;
+        boxes.push({ id, x, y, w: CARD_W, h: heightOf(node), rank: lane });
+        y += heightOf(node) + (node.kind === "volume" ? 8 : GAP_Y);
+      }
+      regions.push({ x: x - 12, y: top - 28, w: CARD_W + 24, h: Math.max(120, y - top + 16), title: titles[lane] });
+      maxBottom = Math.max(maxBottom, y);
+    });
+    const unwired = nodes.filter((node) => info.unwired.has(node.id)).map((node) => node.id).sort();
+    unwired.forEach((id, index) => {
+      boxes.push({ id, x: PAD + index * (CARD_W + 16), y: maxBottom + 36, w: CARD_W, h: heightOf(byId.get(id)), rank: "unwired" });
+    });
+    const labels = unwired.length ? [{ x: PAD, y: maxBottom + 16, text: "Not wired" }] : [];
+    return {
+      boxes, labels, regions,
+      width: PAD * 2 + 3 * (CARD_W + GAP_X + 24),
+      height: maxBottom + (unwired.length ? 160 : 48),
+    };
+  }
+
+  function place(nodes, links, variant) {
+    const info = analyze(nodes, links);
+    const laid = variant === "B" ? placeStack(nodes, info) : variant === "C" ? placeLanes(nodes, info) : placeColumns(nodes, info);
+    const byId = new Map(laid.boxes.map((box) => [box.id, box]));
+    const paths = links.map((link) => {
+      const from = byId.get(link.producer);
+      const to = byId.get(link.consumer);
+      if (!from || !to) return null;
+      const x1 = from.x + from.w;
+      const y1 = from.y + from.h / 2;
+      const x2 = to.x;
+      const y2 = to.y + to.h / 2;
+      const mid = (x1 + x2) / 2;
+      const vertical = variant === "B";
+      const d = vertical
+        ? `M ${from.x + from.w / 2} ${from.y} V ${(from.y + to.y + to.h) / 2} H ${to.x + to.w / 2} V ${to.y + to.h}`
+        : `M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`;
+      return { id: link.id, d, cycle: info.backs.has(link.id), mount: link.kind === "mount", label: link.label };
+    }).filter(Boolean);
+    return { ...laid, paths, info };
+  }
+
+  return { place, analyze };
+})();
+
+const VARIANTS = [
+  { id: "A", name: "Columns", rule: "A service sits to the right of every service it reads. Same inputs share a column, sorted by name." },
+  { id: "B", name: "Shared stack", rule: "The public entry is on top. A dependency is centered under every service that reads it, the way a primary sits over its replicas." },
+  { id: "C", name: "Regions", rule: "Public services are Edge. Services that read others are App. Services that are only read are Data. A link can move a service into another region." },
+];
+
+const SEED_NODES = [
+  { id: "web", kind: "service", name: "web", source: "git", sub: "acme/storefront", publicDomain: "shop.example.com", status: "running" },
+  { id: "api", kind: "service", name: "api", source: "git", sub: "acme/api", publicDomain: null, status: "running" },
+  { id: "worker", kind: "service", name: "worker", source: "git", sub: "acme/worker", publicDomain: null, status: "running" },
+  { id: "migrate", kind: "service", name: "migrate", source: "git", sub: "acme/api", publicDomain: null, status: "running" },
+  { id: "postgres", kind: "service", name: "postgres", source: "image", sub: "postgres:17", publicDomain: null, status: "running" },
+  { id: "redis", kind: "service", name: "redis", source: "image", sub: "redis:7", publicDomain: null, status: "running" },
+  { id: "minio", kind: "service", name: "minio", source: "image", sub: "minio/minio", publicDomain: null, status: "running" },
+  { id: "mail", kind: "service", name: "mail", source: "git", sub: "acme/mail", publicDomain: null, status: "idle" },
+  { id: "pg-data", kind: "volume", name: "pg-data", source: "vol", sub: "Provisioned · 20 GB", publicDomain: null, status: "running" },
+  { id: "object-data", kind: "volume", name: "object-data", source: "vol", sub: "Provisioned · 50 GB", publicDomain: null, status: "running" },
+  { id: "uploads", kind: "volume", name: "uploads", source: "vol", sub: "Docker volume", publicDomain: null, status: "running" },
+];
+
+const SEED_LINKS = [
+  env("web", "API_URL", "api", "PLOYZ_PRIVATE_DOMAIN"),
+  env("api", "DATABASE_URL", "postgres", "DATABASE_URL"),
+  env("api", "REDIS_URL", "redis", "URL"),
+  env("api", "S3_ENDPOINT", "minio", "PLOYZ_PRIVATE_DOMAIN"),
+  env("worker", "DATABASE_URL", "postgres", "DATABASE_URL"),
+  env("worker", "REDIS_URL", "redis", "URL"),
+  env("migrate", "DATABASE_URL", "postgres", "DATABASE_URL"),
+  mount("pg-data", "postgres"),
+  mount("object-data", "minio"),
+  mount("uploads", "api"),
+];
+
+function env(consumer, variable, producer, key) {
+  return { id: `env:${consumer}:${variable}`, kind: "env", consumer, producer, variable, key, label: `${consumer}.${variable}` };
+}
+function mount(volume, service) {
+  return { id: `mount:${volume}:${service}`, kind: "mount", consumer: service, producer: volume, variable: null, key: null, label: "mount" };
+}
+
+const state = {
+  variant: new URLSearchParams(location.search).get("variant") || "A",
+  nodes: structuredClone(SEED_NODES),
+  links: structuredClone(SEED_LINKS),
+  scenario: "shop",
+  previous: new Map(),
+  lastVariant: null,
+  moved: [],
+  note: "Shop is wired. postgres is read by api, worker, and migrate, so those three wait on it.",
+};
+
+const SCENARIOS = {
+  shop: { hint: "A wired shop. Data on the left, the public site on the right.", apply() { state.nodes = structuredClone(SEED_NODES); state.links = structuredClone(SEED_LINKS); state.note = "Nothing moved. This is the picture the links already imply."; } },
+  unplug: { hint: "Drop every DATABASE_URL. Watch who still has a reason to sit next to postgres.", apply() { SCENARIOS.shop.apply(); state.links = state.links.filter((link) => !(link.kind === "env" && link.producer === "postgres")); state.note = "Nothing reads postgres. migrate only read it, so migrate drops out. postgres stays put, mounted and unread."; } },
+  cycle: { hint: "api and worker read each other. Cycle edges do not change who starts first.", apply() { SCENARIOS.shop.apply(); state.links.push(env("worker", "API_URL", "api", "PLOYZ_PRIVATE_DOMAIN")); state.links.push(env("api", "WORKER_URL", "worker", "PLOYZ_PRIVATE_DOMAIN")); state.note = "One of those two edges is a cycle. It is drawn dashed and ignored for order."; } },
+  publish: { hint: "Give worker a public domain. Regions send it to Edge. Columns only move it if a link changed.", apply() { SCENARIOS.shop.apply(); state.nodes.find((node) => node.id === "worker").publicDomain = "jobs.example.com"; state.note = "worker now has a public hostname. Only the region layout treats that as placement."; } },
+  mail: { hint: "Point mail at api. It leaves the unwired row and joins the services that read api.", apply() { SCENARIOS.shop.apply(); state.links.push(env("mail", "API_URL", "api", "PLOYZ_PRIVATE_DOMAIN")); state.nodes.find((node) => node.id === "mail").status = "running"; state.note = "mail was unwired. One reference gives it a column."; } },
+  custom: { hint: "Custom wiring. Pick a scenario to return to the shop.", apply() {} },
+};
+
+function keyOf(box) { return box ? `${box.rank}:${box.x}:${box.y}` : ""; }
+
+function render() {
+  const canvas = document.getElementById("canvas");
+  const laid = Layout.place(state.nodes, state.links, state.variant);
+  const moved = [];
+  const variantChanged = state.lastVariant !== null && state.lastVariant !== state.variant;
+  for (const box of laid.boxes) {
+    const node = state.nodes.find((item) => item.id === box.id);
+    const key = `${laid.info.lane.get(box.id)}:${node?.kind === "volume" ? "vol" : laid.info.rank.get(box.id)}`;
+    const prev = state.previous.get(box.id);
+    if (!variantChanged && prev && prev !== key) moved.push(box.id);
+    state.previous.set(box.id, key);
+  }
+  state.lastVariant = state.variant;
+  state.moved = moved;
+  canvas.style.width = `${Math.max(laid.width, document.getElementById("stage").clientWidth)}px`;
+  canvas.style.height = `${Math.max(laid.height, document.getElementById("stage").clientHeight)}px`;
+  const byId = new Map(state.nodes.map((node) => [node.id, node]));
+  canvas.querySelectorAll(".region, .lane-title, .col-label, .edges").forEach((el) => el.remove());
+  let layer = canvas.querySelector(".nodes");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "nodes";
+    canvas.appendChild(layer);
+  }
+  for (const region of laid.regions) {
+    const el = document.createElement("div");
+    el.className = "region";
+    el.style.left = `${region.x}px`;
+    el.style.top = `${region.y}px`;
+    el.style.width = `${region.w}px`;
+    el.style.height = `${region.h}px`;
+    canvas.appendChild(el);
+    const title = document.createElement("div");
+    title.className = "lane-title";
+    title.style.left = `${region.x + 12}px`;
+    title.style.top = `${region.y + 8}px`;
+    title.textContent = region.title;
+    canvas.appendChild(title);
+  }
+  for (const label of laid.labels) {
+    const el = document.createElement("div");
+    el.className = "col-label";
+    el.style.left = `${label.x}px`;
+    el.style.top = `${label.y}px`;
+    el.textContent = label.text;
+    canvas.appendChild(el);
+  }
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "edges");
+  for (const path of laid.paths) {
+    const el = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    el.setAttribute("d", path.d);
+    el.setAttribute("fill", "none");
+    el.setAttribute("stroke", path.cycle ? "#d0268c" : "#111");
+    el.setAttribute("stroke-width", path.mount ? "1" : "1.5");
+    el.setAttribute("stroke-dasharray", path.cycle || path.mount ? "4 4" : "0");
+    el.setAttribute("opacity", path.mount ? "0.45" : "0.85");
+    svg.appendChild(el);
+  }
+  canvas.appendChild(svg);
+  const seen = new Set();
+  for (const box of laid.boxes) {
+    const node = byId.get(box.id);
+    seen.add(box.id);
+    let el = layer.querySelector(`[data-id="${box.id}"]`);
+    if (!el) {
+      el = document.createElement("div");
+      el.dataset.id = box.id;
+      el.style.left = `${box.x}px`;
+      el.style.top = `${box.y}px`;
+      layer.appendChild(el);
+    }
+    const unread = node.kind === "service" && !laid.info.env.some((link) => link.producer === node.id || link.consumer === node.id) && !laid.info.unwired.has(node.id);
+    el.className = `node${node.kind === "volume" ? " volume" : ""}${moved.includes(node.id) ? " moved" : ""}${unread ? " unread" : ""}`;
+    el.style.height = `${box.h}px`;
+    const reads = laid.info.env.filter((link) => link.consumer === node.id).map((link) => link.producer);
+    const readBy = laid.info.readers.get(node.id) ?? [];
+    const relation = node.kind === "volume" ? "mounted" : reads.length ? `reads ${reads.join(", ")}` : readBy.length ? `read by ${readBy.join(", ")}` : laid.info.unwired.has(node.id) ? "not wired" : "unread";
+    el.innerHTML = `
+      <div class="node-top">
+        <div class="icon">${node.kind === "volume" ? "vol" : node.source === "git" ? "git" : "img"}</div>
+        <div style="min-width:0">
+          <div class="name">${node.name}</div>
+          <div class="sub">${node.publicDomain ?? node.sub}</div>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="dot${node.status === "idle" ? " idle" : ""}"></span>
+        <span class="rel">${relation}</span>
+        ${moved.includes(node.id) ? `<span class="tag">moved</span>` : ""}
+      </div>`;
+    requestAnimationFrame(() => {
+      el.style.left = `${box.x}px`;
+      el.style.top = `${box.y}px`;
+    });
+  }
+  layer.querySelectorAll(".node").forEach((el) => { if (!seen.has(el.dataset.id)) el.remove(); });
+  canvas.appendChild(layer);
+  renderSide(laid);
+}
+
+function renderSide(laid) {
+  const variant = VARIANTS.find((item) => item.id === state.variant) ?? VARIANTS[0];
+  document.getElementById("variant-label").textContent = `${variant.id} · ${variant.name}`;
+  document.getElementById("rule").textContent = variant.rule;
+  document.getElementById("scenario-hint").textContent = SCENARIOS[state.scenario].hint;
+  const scenarios = document.getElementById("scenarios");
+  scenarios.innerHTML = "";
+  for (const [id, scenario] of Object.entries(SCENARIOS)) {
+    if (id === "custom") continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = { shop: "Wired shop", unplug: "Unplug Postgres", cycle: "API cycle", publish: "Publish worker", mail: "Wire mail" }[id];
+    button.setAttribute("aria-pressed", String(id === state.scenario));
+    button.addEventListener("click", () => {
+      state.scenario = id;
+      scenario.apply();
+      render();
+    });
+    scenarios.appendChild(button);
+  }
+  const links = document.getElementById("links");
+  links.innerHTML = "";
+  for (const link of state.links) {
+    const row = document.createElement("div");
+    row.className = "link-row";
+    const cycle = laid.info.backs.has(link.id);
+    row.innerHTML = `<code>${link.kind === "mount" ? `${link.producer} mounts on ${link.consumer}` : `${link.consumer}.${link.variable} = $\{${link.producer}.${link.key}}`}</code>`;
+    if (cycle) row.insertAdjacentHTML("beforeend", `<span class="kind">cycle</span>`);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Unlink";
+    button.addEventListener("click", () => {
+      state.scenario = "custom";
+      state.links = state.links.filter((item) => item.id !== link.id);
+      state.note = `Removed ${link.label}. Placement is recomputed from what remains.`;
+      document.getElementById("scenario-hint").textContent = "Custom. The scenarios reset back to a known shop.";
+      render();
+    });
+    row.appendChild(button);
+    links.appendChild(row);
+  }
+  const placement = document.getElementById("placement");
+  placement.innerHTML = "";
+  const byBox = new Map(laid.boxes.map((box) => [box.id, box]));
+  for (const node of state.nodes.filter((item) => item.kind === "service")) {
+    const box = byBox.get(node.id);
+    const li = document.createElement("li");
+    const where = laid.info.unwired.has(node.id) ? "not wired" : state.variant === "C" ? String(box?.rank) : `column ${laid.info.rank.get(node.id) + 1}`;
+    li.innerHTML = `<b>${node.name}</b><span>${where}</span>`;
+    placement.appendChild(li);
+  }
+  const movedEl = document.getElementById("moved");
+  if (state.moved.length) {
+    movedEl.hidden = false;
+    movedEl.textContent = `${state.note} Moved: ${state.moved.join(", ")}.`;
+  } else {
+    movedEl.hidden = false;
+    movedEl.textContent = state.note;
+  }
+  const names = laid.info.order.map((id) => state.nodes.find((node) => node.id === id).name);
+  document.getElementById("order").textContent = names.length
+    ? `Deploy order from these references: ${names.join(" → ")}. Cycle edges are skipped.`
+    : "No service is wired, so nothing is ordered.";
+}
+
+function setVariant(id) {
+  const index = Math.max(0, VARIANTS.findIndex((item) => item.id === id));
+  state.variant = VARIANTS[index].id;
+  const url = new URL(location.href);
+  url.searchParams.set("variant", state.variant);
+  history.replaceState(null, "", url);
+  render();
+}
+
+function cycle(step) {
+  const index = VARIANTS.findIndex((item) => item.id === state.variant);
+  setVariant(VARIANTS[(index + step + VARIANTS.length) % VARIANTS.length].id);
+}
+
+document.getElementById("prev").addEventListener("click", () => cycle(-1));
+document.getElementById("next").addEventListener("click", () => cycle(1));
+document.addEventListener("keydown", (event) => {
+  const tag = document.activeElement?.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (event.key === "ArrowLeft") cycle(-1);
+  if (event.key === "ArrowRight") cycle(1);
+});
+
+const services = SEED_NODES.filter((node) => node.kind === "service");
+for (const select of [document.getElementById("add-consumer"), document.getElementById("add-producer")]) {
+  for (const node of services) {
+    const option = document.createElement("option");
+    option.value = node.id;
+    option.textContent = node.name;
+    select.appendChild(option);
+  }
+}
+document.getElementById("add-producer").value = "api";
+document.getElementById("add-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const consumer = document.getElementById("add-consumer").value;
+  const producer = document.getElementById("add-producer").value;
+  const variable = document.getElementById("add-var").value.trim() || "API_URL";
+  if (consumer === producer) return;
+  state.scenario = "custom";
+  state.links = state.links.filter((link) => link.id !== `env:${consumer}:${variable}`);
+  state.links.push(env(consumer, variable, producer, "PLOYZ_PRIVATE_DOMAIN"));
+  const node = state.nodes.find((item) => item.id === consumer);
+  if (node) node.status = "running";
+  state.note = `${consumer}.${variable} now reads ${producer}.`;
+  render();
+});
+
+document.body.classList.add("no-motion");
+if (!VARIANTS.some((item) => item.id === state.variant)) state.variant = "A";
+render();
+requestAnimationFrame(() => document.body.classList.remove("no-motion"));
+</script>
+</body>
+</html>
