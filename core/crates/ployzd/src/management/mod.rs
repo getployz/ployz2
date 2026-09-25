@@ -193,33 +193,63 @@ async fn serve_connection<S>(
         }
     };
     let remote = *connection.remote_id().as_bytes();
-    {
-        // Marking this version seen before waiting for peer input means any later
-        // change wakes `revoked`: a delayed first stream cannot escape key rotation.
-        let record = records.borrow_and_update();
-        if !record.admits_management_client(&remote) {
-            let code = if record.clears_management_client(&remote) {
-                CLIENT_CLEARED
-            } else {
-                CLIENT_REFUSED
-            };
-            connection.close(code, b"management access refused");
-            return;
-        }
+    // Marking this version seen before waiting for peer input means any later
+    // change wakes `revoked`: a delayed first stream cannot escape key rotation.
+    let refused = refusal(&records.borrow_and_update(), &remote);
+    if let Some(code) = refused {
+        connection.close(code, b"management access refused");
+        return;
     }
-    let revoked = revoked(records, remote);
+    match serve_admitted(&connection, permit, revoked(records, remote), api, shutdown).await {
+        Ended::Served | Ended::Shutdown => {}
+        Ended::Revoked => connection.close(REVOKED, b"revoked"),
+    }
+}
+
+/// The close code refusing `remote`, or `None` when a slot admits it.
+fn refusal(record: &LocalMachineRecord, remote: &[u8; 32]) -> Option<VarInt> {
+    if record.admits_management_client(remote) {
+        None
+    } else if record.clears_management_client(remote) {
+        Some(CLIENT_CLEARED)
+    } else {
+        Some(CLIENT_REFUSED)
+    }
+}
+
+/// Why an admitted connection stopped being served.
+enum Ended {
+    /// The peer closed or the connection failed.
+    Served,
+    /// A record change revoked the key; the peer holds every byte already sent.
+    Revoked,
+    /// The transport is shutting down.
+    Shutdown,
+}
+
+async fn serve_admitted<S>(
+    connection: &Connection,
+    permit: OwnedSemaphorePermit,
+    revoked: impl Future<Output = ()>,
+    api: S,
+    shutdown: CancellationToken,
+) -> Ended
+where
+    S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
     tokio::pin!(revoked);
     let (send, recv) = tokio::select! {
-        () = &mut revoked => {
-            connection.close(REVOKED, b"revoked");
-            return;
-        }
-        () = shutdown.cancelled() => return,
+        () = &mut revoked => return Ended::Revoked,
+        () = shutdown.cancelled() => return Ended::Shutdown,
         streams = connection.accept_bi() => match streams {
             Ok(streams) => streams,
             Err(error) => {
                 tracing::debug!(%error, "management client opened no RPC stream");
-                return;
+                return Ended::Served;
             }
         },
     };
@@ -237,29 +267,29 @@ async fn serve_connection<S>(
         TowerToHyperService::new(service),
     );
     tokio::pin!(serving);
-    let revoke = tokio::select! {
+    let ended = tokio::select! {
         served = serving.as_mut() => {
             if let Err(error) = served {
                 tracing::debug!(%error, "management connection ended");
             }
-            return;
+            return Ended::Served;
         }
-        () = &mut revoked => true,
-        () = shutdown.cancelled() => false,
+        () = &mut revoked => {
+            drain.cancel();
+            Ended::Revoked
+        }
+        () = shutdown.cancelled() => Ended::Shutdown,
     };
-    if revoke {
-        drain.cancel();
-    }
     // GOAWAY; once the remaining streams end, hyper finishes the QUIC stream.
     serving.as_mut().graceful_shutdown();
     let _ = serving.await;
-    if revoke {
+    if let Ended::Revoked = ended {
         // Closing discards unacknowledged data, so wait until the peer holds every
         // byte, including the caller's own Clear response. A silent peer is bounded by
         // the idle timeout, and its key can no longer run any RPC.
         let _ = acknowledged.await;
-        connection.close(REVOKED, b"revoked");
     }
+    ended
 }
 
 /// Completes once a published record no longer admits `remote`.
