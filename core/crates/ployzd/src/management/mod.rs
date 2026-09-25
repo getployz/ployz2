@@ -208,7 +208,7 @@ async fn serve_connection<S>(
         return;
     }
     match serve_admitted(&connection, permit, revoked(records, remote), api, shutdown).await {
-        Ended::Served | Ended::Shutdown => {}
+        Ended::Closed => {}
         Ended::Revoked => connection.close(REVOKED, b"revoked"),
     }
 }
@@ -226,12 +226,10 @@ fn refusal(record: &LocalMachineRecord, remote: &[u8; 32]) -> Option<VarInt> {
 
 /// Why an admitted connection stopped being served.
 enum Ended {
-    /// The peer closed or the connection failed.
-    Served,
+    /// The peer closed, the connection failed, or the transport shut down.
+    Closed,
     /// A record change revoked the key; the peer holds every byte already sent.
     Revoked,
-    /// The transport is shutting down.
-    Shutdown,
 }
 
 async fn serve_admitted<S>(
@@ -251,12 +249,12 @@ where
     tokio::pin!(revoked);
     let (send, recv) = tokio::select! {
         () = &mut revoked => return Ended::Revoked,
-        () = shutdown.cancelled() => return Ended::Shutdown,
+        () = shutdown.cancelled() => return Ended::Closed,
         streams = connection.accept_bi() => match streams {
             Ok(streams) => streams,
             Err(error) => {
                 tracing::debug!(%error, "management client opened no RPC stream");
-                return Ended::Served;
+                return Ended::Closed;
             }
         },
     };
@@ -279,13 +277,13 @@ where
             if let Err(error) = served {
                 tracing::debug!(%error, "management connection ended");
             }
-            return Ended::Served;
+            return Ended::Closed;
         }
         () = &mut revoked => {
             drain.cancel();
             Ended::Revoked
         }
-        () = shutdown.cancelled() => Ended::Shutdown,
+        () = shutdown.cancelled() => Ended::Closed,
     };
     // GOAWAY; once the remaining streams end, hyper finishes the QUIC stream.
     serving.as_mut().graceful_shutdown();
