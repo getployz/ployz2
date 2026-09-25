@@ -12,11 +12,7 @@ import {
   renewHostedDomainLease,
   requestHostedDomainCertificate,
 } from "#/modules/cluster-domain/hosted-dns.server";
-import {
-  type ClusterDomainTrafficIssue,
-  type IngressServerAddress,
-  organizationClusterDomain,
-} from "#/modules/cluster-domain/tables";
+import { type IngressServerAddress, organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { createWildcardCsr } from "#/modules/cluster-domain/wildcard-csr.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
@@ -29,8 +25,8 @@ const PROBE_TIMEOUT_MS = 5_000;
 const INGRESS_VERIFY_PATH = "/.ployz-verify";
 /** The wildcard is replaced once it has less than this left. */
 const CERTIFICATE_RENEW_BEFORE_MS = 30 * 86_400_000;
-/** A failed replacement with less than this left is an operator error, not a warning. */
-const CERTIFICATE_ALARM_BEFORE_MS = 14 * 86_400_000;
+/** A failed replacement with fewer days than this left is an operator error, not a warning. */
+const CERTIFICATE_ALARM_BEFORE_DAYS = 14;
 
 /**
  * Hosted DNS rejects the stored token (401), reaped the name (404) or retired it (410).
@@ -43,12 +39,15 @@ export class ClusterDomainUnusable extends Data.TaggedError("ClusterDomainUnusab
   readonly retriable = false as const;
 }
 
-export type IngressProbe = {
-  readonly reachable: IngressServerAddress[];
-  readonly unreachable: IngressServerAddress[];
-  /** Why there was no ingress Server to probe, if there was none. */
-  readonly issue: ClusterDomainTrafficIssue | null;
-};
+/**
+ * What the sync found about the ingress Servers. `unknown`: a paired Cluster could not be reached or
+ * its frame could not be read. The other kinds match `ClusterDomainTraffic`.
+ */
+export type IngressProbe =
+  | { readonly kind: "unknown" }
+  | { readonly kind: "no_servers" }
+  | { readonly kind: "no_public_ip" }
+  | { readonly kind: "probed"; readonly reachable: IngressServerAddress[]; readonly unreachable: IngressServerAddress[] };
 
 /** Publishes Certificate Material to the Organization's Cluster. False when no Cluster is connected. */
 const publishToCluster = Effect.fn("ClusterDomain.publishToCluster")(function* (
@@ -87,66 +86,65 @@ const probeIngressServer = (server: IngressServerAddress) => Effect.tryPromise(a
   return response.status === 200 && (await response.text()).trim() === server.machineId;
 }).pipe(Effect.orElseSucceed(() => false));
 
-const noServers: IngressProbe = { reachable: [], unreachable: [], issue: "no_servers" };
-
-/**
- * Probes every ingress Server with a public IP in the Cluster's runtime frame. Null when a paired
- * Cluster's frame could not be read: the caller then leaves the published records and issue alone.
- */
+/** Probes every ingress Server with a public IP in the Cluster's runtime frame. */
 export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
-  if (session.status === "no_connection") return noServers;
-  if (session.status !== "connected") return null;
+  if (session.status === "no_connection") return { kind: "no_servers" } satisfies IngressProbe;
+  if (session.status !== "connected") return { kind: "unknown" } satisfies IngressProbe;
   const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
-  if (frame.machines.length === 0) return noServers;
+  if (frame.machines.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
   const servers = frame.machines.flatMap(({ machine }): IngressServerAddress[] =>
     machine.accepts_ingress && machine.public_ip !== null ? [{ machineId: machine.id, address: machine.public_ip }] : []);
-  if (servers.length === 0) return { reachable: [], unreachable: [], issue: "no_public_ip" } satisfies IngressProbe;
+  if (servers.length === 0) return { kind: "no_public_ip" } satisfies IngressProbe;
   const probed = yield* Effect.forEach(servers, (server) =>
     probeIngressServer(server).pipe(Effect.map((reachable) => ({ server, reachable }))), { concurrency: "unbounded" });
   return {
+    kind: "probed",
     reachable: probed.flatMap(({ server, reachable }) => reachable ? [server] : []),
     unreachable: probed.flatMap(({ server, reachable }) => reachable ? [] : [server]),
-    issue: null,
   } satisfies IngressProbe;
 }, Effect.scoped, Effect.catch((error) =>
-  Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error).pipe(Effect.as(null))));
+  Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error)
+    .pipe(Effect.as({ kind: "unknown" } as const))));
+
+/** Records what the probe found and when. An unknown probe clears the finding: an offline Cluster reads as ready. */
+export const recordClusterDomainCheck = Effect.fn("ClusterDomain.recordCheck")(function* (
+  organizationId: string,
+  probe: IngressProbe,
+) {
+  const { drizzle } = yield* Database;
+  const now = new Date();
+  yield* drizzle.update(organizationClusterDomain).set({
+    traffic: probe.kind === "unknown" ? null : probe.kind === "probed" ? { kind: "probed", unreachable: probe.unreachable } : { kind: probe.kind },
+    checkedAt: now,
+    updatedAt: now,
+  }).where(eq(organizationClusterDomain.organizationId, organizationId));
+});
 
 /**
- * Points the apex at the reachable ingress Servers (a full-set PUT, which also renews the lease) and
- * records the probe and the check. An empty reachable set writes no records: Hosted DNS refuses it,
- * and the last good set is better than none. With no probe only the check is recorded. True when the
- * records were PUT.
+ * Points the apex at the reachable ingress Servers: a full-set PUT, which also renews the lease. An
+ * empty set writes no records: Hosted DNS refuses it, and the last good set is better than none.
+ * True when the records were PUT.
  */
 export const publishClusterDomainRecords = Effect.fn("ClusterDomain.publishRecords")(function* (
   organizationId: string,
-  probe: IngressProbe | null,
+  reachable: IngressServerAddress[],
 ) {
-  const { drizzle } = yield* Database;
-  const ofOrganization = eq(organizationClusterDomain.organizationId, organizationId);
-  if (probe === null || probe.reachable.length === 0) {
-    const now = new Date();
-    yield* drizzle.update(organizationClusterDomain).set(probe === null
-      ? { checkedAt: now, updatedAt: now }
-      : { unreachable: probe.unreachable, trafficIssue: probe.issue, checkedAt: now, updatedAt: now }).where(ofOrganization);
-    return false;
-  }
-  const addresses = probe.reachable.map((server) => server.address);
+  if (reachable.length === 0) return false;
+  const addresses = reachable.map((server) => server.address);
   yield* withClusterDomain(organizationId, (target) => putHostedDomainRecords({
     ...target,
     a: addresses.filter((address) => !isIPv6(address)),
     aaaa: addresses.filter((address) => isIPv6(address)),
   }));
   const now = new Date();
+  const { drizzle } = yield* Database;
   yield* drizzle.update(organizationClusterDomain).set({
     recordsSyncedAt: now,
     leaseRenewedAt: now,
-    recordAddresses: probe.reachable,
-    unreachable: probe.unreachable,
-    trafficIssue: null,
-    checkedAt: now,
+    recordAddresses: reachable,
     updatedAt: now,
-  }).where(ofOrganization);
+  }).where(eq(organizationClusterDomain.organizationId, organizationId));
   return true;
 });
 
@@ -166,8 +164,9 @@ export const renewClusterDomainLease = Effect.fn("ClusterDomain.renewLease")(fun
  * the failure is logged as an operator error.
  */
 export const ensureClusterDomainCertificate = Effect.fn("ClusterDomain.ensureCertificate")(function* (organizationId: string) {
-  const current = yield* loadClusterDomain(organizationId);
-  if (current?.certificateNotAfter && current.certificateNotAfter.getTime() - Date.now() > CERTIFICATE_RENEW_BEFORE_MS) return false;
+  const notAfter = (yield* loadClusterDomain(organizationId))?.certificateNotAfter ?? null;
+  const msLeft = notAfter === null ? null : notAfter.getTime() - new Date().getTime();
+  if (msLeft !== null && msLeft > CERTIFICATE_RENEW_BEFORE_MS) return false;
   const issued = yield* withClusterDomain(organizationId, ({ endpoint, name, token }) => {
     const { privateKeyPem, csrPem } = createWildcardCsr(name);
     return requestHostedDomainCertificate({ endpoint, name, token, csr: csrPem }).pipe(
@@ -178,9 +177,9 @@ export const ensureClusterDomainCertificate = Effect.fn("ClusterDomain.ensureCer
       })),
     );
   }).pipe(Effect.catchTag("HostedDnsError", (error) => {
-    const urgent = !current?.certificateNotAfter || current.certificateNotAfter.getTime() - Date.now() < CERTIFICATE_ALARM_BEFORE_MS;
+    const urgent = msLeft === null || msLeft < CERTIFICATE_ALARM_BEFORE_DAYS * 86_400_000;
     return (urgent
-      ? Effect.logError("Wildcard certificate issuance failed with under 14 days left; an operator must look.", error)
+      ? Effect.logError(`Wildcard certificate issuance failed with under ${CERTIFICATE_ALARM_BEFORE_DAYS} days left; an operator must look.`, error)
       : Effect.logWarning("Wildcard certificate issuance failed; the current certificate stays.", error)
     ).pipe(Effect.as(null));
   }));

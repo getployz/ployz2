@@ -82,15 +82,14 @@ describe("sync-cluster-domain", () => {
   }).execute();
   const reserve = (id = organizationId) => runEffect(reserveClusterDomain(id));
   const row = async () => (await harness.pool.query(
-    `select name, records_synced_at, lease_renewed_at, record_addresses, unreachable, traffic_issue, checked_at,
+    `select name, records_synced_at, lease_renewed_at, record_addresses, traffic, checked_at,
             encrypted_certificate_private_key, certificate_chain, certificate_not_after from organization_cluster_domain`,
   )).rows[0] as {
     name: string;
     records_synced_at: Date | null;
     lease_renewed_at: Date;
     record_addresses: unknown;
-    unreachable: unknown;
-    traffic_issue: string | null;
+    traffic: unknown;
     checked_at: Date | null;
     encrypted_certificate_private_key: Parameters<typeof encryption.decrypt>[0] | null;
     certificate_chain: string | null;
@@ -181,8 +180,7 @@ describe("sync-cluster-domain", () => {
     expect(await row()).toMatchObject({
       records_synced_at: expect.any(Date),
       record_addresses: [{ machineId: idOf("a"), address: "203.0.113.1" }, { machineId: idOf("b"), address: "2001:db8::1" }],
-      unreachable: [{ machineId: idOf("c"), address: "198.51.100.7" }],
-      traffic_issue: null,
+      traffic: { kind: "probed", unreachable: [{ machineId: idOf("c"), address: "198.51.100.7" }] },
       checked_at: expect.any(Date),
     });
   });
@@ -191,17 +189,17 @@ describe("sync-cluster-domain", () => {
     ["no Cluster is paired", null, "no_servers"],
     ["the Cluster has no Servers", [], "no_servers"],
     ["no ingress Server has a public IP", [machine("a", null), machine("b", "203.0.113.2", false)], "no_public_ip"],
-  ] as const)("records why there is no traffic when %s, and still renews the lease", async (_, machines, issue) => {
+  ] as const)("records why there is no traffic when %s, and still renews the lease", async (_, machines, kind) => {
     frame = machines === null ? null : runtimeWatchFrameFixture({ machines: [...machines] });
 
     const output = await sync();
 
     expect(output.result).toMatchObject({ observed: true, recordsPut: false });
     expect(calls()).toEqual(["POST /domains/acme.ployz.test/lease", "POST /domains/acme.ployz.test/certificate"]);
-    expect(await row()).toMatchObject({ records_synced_at: null, unreachable: [], traffic_issue: issue, checked_at: expect.any(Date) });
+    expect(await row()).toMatchObject({ records_synced_at: null, traffic: { kind }, checked_at: expect.any(Date) });
   });
 
-  it("keeps the last findings while the Cluster is offline, and still records the check", async () => {
+  it("clears the last finding while the Cluster is offline, and still records the check", async () => {
     frame = runtimeWatchFrameFixture({ machines: [] });
     await sync();
     const before = await row();
@@ -211,7 +209,8 @@ describe("sync-cluster-domain", () => {
 
     expect(output.result).toMatchObject({ observed: false, recordsPut: false });
     const after = await row();
-    expect(after).toMatchObject({ traffic_issue: "no_servers" });
+    expect(before).toMatchObject({ traffic: { kind: "no_servers" } });
+    expect(after).toMatchObject({ traffic: null });
     expect(after?.checked_at?.getTime()).toBeGreaterThan(before?.checked_at?.getTime() ?? Infinity);
   });
 
@@ -227,8 +226,7 @@ describe("sync-cluster-domain", () => {
     expect(await row()).toMatchObject({
       records_synced_at: null,
       record_addresses: [],
-      unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }],
-      traffic_issue: null,
+      traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }] },
     });
   });
 

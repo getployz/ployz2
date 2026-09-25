@@ -8,8 +8,7 @@ import { ClusterDomainSection } from "./ClusterDomainSection";
 const ready: Omit<ClusterDomainRow, "id"> = {
   name: "acme.ployz.app",
   recordsSyncedAt: new Date(Date.now() - 5 * 60_000),
-  unreachable: [],
-  trafficIssue: null,
+  traffic: { kind: "probed", unreachable: [] },
   certificateNotAfter: new Date(Date.now() + 60 * 86_400_000),
   checkedAt: new Date(Date.now() - 5 * 60_000),
 };
@@ -36,7 +35,7 @@ describe("ClusterDomainSection", () => {
   });
 
   it("checks again until the sync records a newer check", async () => {
-    const blocked = { ...ready, unreachable: [{ machineId: "a", address: "203.0.113.1" }] } as Omit<ClusterDomainRow, "id">;
+    const blocked = { ...ready, traffic: { kind: "probed", unreachable: [{ machineId: "a", address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
     const onCheck = vi.fn(() => Promise.resolve());
     const { rerender } = render(<ClusterDomainSection organizationSlug="acme" domain={blocked} onCheck={onCheck} />);
 

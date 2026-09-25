@@ -4,7 +4,7 @@ import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables"
 /** The Org Store's view of the Cluster Domain row, keyed by Organization id. Tokens and keys never leave the server. */
 export type ClusterDomainRow = { id: string } & Pick<
   OrganizationClusterDomain,
-  "name" | "recordsSyncedAt" | "unreachable" | "trafficIssue" | "certificateNotAfter" | "checkedAt"
+  "name" | "recordsSyncedAt" | "traffic" | "certificateNotAfter" | "checkedAt"
 >;
 
 export const CheckClusterDomainInput = Schema.Struct({
@@ -16,29 +16,21 @@ export const CheckClusterDomainInput = Schema.Struct({
  * traffic, surface; the rest are Ployz's to fix and read as ready or setting up.
  */
 export type ClusterDomainStatus =
-  | { readonly kind: "none" }
   | { readonly kind: "setting_up" }
   | { readonly kind: "ready" }
-  | { readonly kind: "attention"; readonly message: string; readonly action: "check" | "servers" | null };
+  | { readonly kind: "attention"; readonly reason: "no_servers" | "no_public_ip" | "https_down" }
+  | { readonly kind: "attention"; readonly reason: "port_80"; readonly addresses: readonly string[] };
 
 export function clusterDomainStatus(
-  domain: Pick<ClusterDomainRow, "recordsSyncedAt" | "unreachable" | "trafficIssue" | "certificateNotAfter"> | null,
+  domain: Pick<ClusterDomainRow, "recordsSyncedAt" | "traffic" | "certificateNotAfter">,
   now: Date,
 ): ClusterDomainStatus {
-  if (domain === null) return { kind: "none" };
-  if (domain.trafficIssue === "no_servers") {
-    return { kind: "attention", message: "Add a server to start receiving traffic.", action: "servers" };
+  const { traffic } = domain;
+  if (traffic?.kind === "no_servers" || traffic?.kind === "no_public_ip") return { kind: "attention", reason: traffic.kind };
+  if (traffic?.kind === "probed" && traffic.unreachable.length > 0) {
+    return { kind: "attention", reason: "port_80", addresses: traffic.unreachable.map((server) => server.address) };
   }
-  if (domain.trafficIssue === "no_public_ip") {
-    return { kind: "attention", message: "None of your servers has a public IP address.", action: "servers" };
-  }
-  if (domain.unreachable.length > 0) {
-    const addresses = domain.unreachable.map((server) => server.address).join(", ");
-    return { kind: "attention", message: `Traffic can’t reach ${addresses}. Make sure port 80 is open.`, action: "check" };
-  }
-  if (domain.certificateNotAfter !== null && domain.certificateNotAfter <= now) {
-    return { kind: "attention", message: "HTTPS isn’t working right now. We’re fixing it.", action: null };
-  }
+  if (domain.certificateNotAfter !== null && domain.certificateNotAfter <= now) return { kind: "attention", reason: "https_down" };
   if (domain.recordsSyncedAt === null || domain.certificateNotAfter === null) return { kind: "setting_up" };
   return { kind: "ready" };
 }

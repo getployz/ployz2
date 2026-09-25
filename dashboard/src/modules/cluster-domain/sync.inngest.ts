@@ -6,6 +6,7 @@ import {
   probeIngressServers,
   publishClusterDomainCertificate,
   publishClusterDomainRecords,
+  recordClusterDomainCheck,
   renewClusterDomainLease,
 } from "#/modules/cluster-domain/sync.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
@@ -22,9 +23,9 @@ const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Sc
 
 /**
  * Keeps the Organization's Cluster Domain correct: skip when none is reserved → probe ingress Servers →
- * full-set records PUT when a frame was read and something answered (which renews the lease), and the
- * check recorded either way → otherwise renew the lease → replace the wildcard certificate when missing
- * or near expiry → republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
+ * record what the probe found → full-set records PUT when something answered (which renews the lease)
+ * → otherwise renew the lease → replace the wildcard certificate when missing or near expiry →
+ * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
  */
 export async function executeSyncClusterDomain(
   { event, step }: { event: { data: unknown }; step: StepTools },
@@ -41,12 +42,15 @@ export async function executeSyncClusterDomain(
     runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
   if (name === null) return { organizationId, skipped: true };
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
-  const recordsPut = await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, probe)));
+  await step.run("record-check", () => runEffect(recordClusterDomainCheck(organizationId, probe)));
+  const reachable = probe.kind === "probed" ? probe.reachable : [];
+  const recordsPut = reachable.length > 0
+    && await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, reachable)));
   if (!recordsPut) await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
   // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
   const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
   const certificatePublished = await step.run("publish-certificate", () => runEffect(publishClusterDomainCertificate(organizationId)));
-  return { organizationId, name, observed: probe !== null, recordsPut, certificateIssued, certificatePublished };
+  return { organizationId, name, observed: probe.kind !== "unknown", recordsPut, certificateIssued, certificatePublished };
 }
 
 export async function executeScheduleClusterDomainSync({ step }: { step: StepTools }, runEffect: EffectRunner) {

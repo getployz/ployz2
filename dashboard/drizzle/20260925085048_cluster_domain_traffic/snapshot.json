@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "b912f886-99a4-4f44-8c88-e488b101cba7",
+  "id": "df735333-f8fd-4b9a-bca7-ff7cd6a4a51f",
   "prevIds": [
     "ef32bd1c-f331-44a7-a522-5191ceca212f"
   ],
@@ -5806,25 +5806,12 @@
     {
       "type": "jsonb",
       "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'[]'",
-      "generated": null,
-      "identity": null,
-      "name": "unreachable",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_cluster_domain"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "traffic_issue",
+      "name": "traffic",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_cluster_domain"
@@ -10483,8 +10470,8 @@
       "table": "organization_cluster_domain"
     },
     {
-      "value": "\"traffic_issue\" in ('no_servers', 'no_public_ip')",
-      "name": "organization_cluster_domain_traffic_issue_check",
+      "value": "\"traffic\" is null or \"traffic\"->>'kind' in ('no_servers', 'no_public_ip', 'probed')",
+      "name": "organization_cluster_domain_traffic_check",
       "entityType": "checks",
       "schema": "public",
       "table": "organization_cluster_domain"

@@ -2,31 +2,32 @@ import { describe, expect, it } from "vitest";
 import { type ClusterDomainRow, clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 
 const now = new Date("2026-09-25T12:00:00Z");
-const ready: Pick<ClusterDomainRow, "recordsSyncedAt" | "unreachable" | "trafficIssue" | "certificateNotAfter"> = {
+const ready: Pick<ClusterDomainRow, "recordsSyncedAt" | "traffic" | "certificateNotAfter"> = {
   recordsSyncedAt: new Date("2026-09-25T11:00:00Z"),
-  unreachable: [],
-  trafficIssue: null,
+  traffic: { kind: "probed", unreachable: [] },
   certificateNotAfter: new Date("2026-12-25T00:00:00Z"),
 };
-const blocked = [{ machineId: "a", address: "203.0.113.1" }, { machineId: "b", address: "2001:db8::1" }] as ClusterDomainRow["unreachable"];
+const blocked = [{ machineId: "a", address: "203.0.113.1" }, { machineId: "b", address: "2001:db8::1" }] as
+  Extract<NonNullable<ClusterDomainRow["traffic"]>, { kind: "probed" }>["unreachable"];
 
 describe("clusterDomainStatus", () => {
   it.each([
-    ["no name", null, { kind: "none" }],
     ["healthy", ready, { kind: "ready" }],
+    ["never checked, or the Cluster offline", { ...ready, traffic: null }, { kind: "ready" }],
     ["records not yet published", { ...ready, recordsSyncedAt: null }, { kind: "setting_up" }],
     ["no wildcard yet", { ...ready, certificateNotAfter: null }, { kind: "setting_up" }],
-    ["no Servers", { ...ready, trafficIssue: "no_servers" },
-      { kind: "attention", message: "Add a server to start receiving traffic.", action: "servers" }],
-    ["no public IP", { ...ready, trafficIssue: "no_public_ip" },
-      { kind: "attention", message: "None of your servers has a public IP address.", action: "servers" }],
-    ["port 80 blocked", { ...ready, unreachable: blocked },
-      { kind: "attention", message: "Traffic can’t reach 203.0.113.1, 2001:db8::1. Make sure port 80 is open.", action: "check" }],
+    ["no Servers", { ...ready, traffic: { kind: "no_servers" } }, { kind: "attention", reason: "no_servers" }],
+    ["no public IP", { ...ready, traffic: { kind: "no_public_ip" } }, { kind: "attention", reason: "no_public_ip" }],
+    ["port 80 blocked", { ...ready, traffic: { kind: "probed", unreachable: blocked } },
+      { kind: "attention", reason: "port_80", addresses: ["203.0.113.1", "2001:db8::1"] }],
     ["wildcard expired", { ...ready, certificateNotAfter: new Date("2026-09-24T00:00:00Z") },
-      { kind: "attention", message: "HTTPS isn’t working right now. We’re fixing it.", action: null }],
+      { kind: "attention", reason: "https_down" }],
     // What the user can fix comes before what Ployz is fixing or still setting up.
-    ["no Servers and nothing published", { ...ready, trafficIssue: "no_servers", recordsSyncedAt: null },
-      { kind: "attention", message: "Add a server to start receiving traffic.", action: "servers" }],
+    ["no Servers and nothing published", { ...ready, traffic: { kind: "no_servers" }, recordsSyncedAt: null },
+      { kind: "attention", reason: "no_servers" }],
+    ["port 80 blocked and wildcard expired",
+      { ...ready, traffic: { kind: "probed", unreachable: blocked }, certificateNotAfter: new Date("2026-09-24T00:00:00Z") },
+      { kind: "attention", reason: "port_80", addresses: ["203.0.113.1", "2001:db8::1"] }],
   ] as const)("%s", (_, domain, expected) => {
     expect(clusterDomainStatus(domain, now)).toEqual(expected);
   });

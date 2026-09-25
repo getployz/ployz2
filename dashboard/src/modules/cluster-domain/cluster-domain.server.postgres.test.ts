@@ -99,20 +99,16 @@ describe("Organization Cluster Domain", () => {
     await run(reserveClusterDomain(organizationId));
     const [row] = (await read()).rows;
     expect(row).toEqual({
-      id: organizationId, name: "acme.ployz.test", recordsSyncedAt: null, unreachable: [],
-      trafficIssue: null, certificateNotAfter: null, checkedAt: null,
+      id: organizationId, name: "acme.ployz.test", recordsSyncedAt: null, traffic: null,
+      certificateNotAfter: null, checkedAt: null,
     });
     expect(JSON.stringify(row)).not.toContain("token");
   });
 
-  it("Check again requests a sync only for a reserved name and never reserves one", async () => {
-    expect(await run(checkClusterDomainNow({ userId }, { organizationSlug: "acme" }).pipe(Effect.flip)))
-      .toMatchObject({ _tag: "NotFound" });
-    expect(hostedDns.requests).toEqual([]);
-    await run(reserveClusterDomain(organizationId));
-    send.mockClear();
+  it("Check again requests a sync for a member and never reserves a name", async () => {
     await run(checkClusterDomainNow({ userId }, { organizationSlug: "acme" }));
     expect(send.mock.calls).toEqual([[{ name: "cluster-domain/sync.requested", data: { organizationId } }]]);
+    expect(hostedDns.requests).toEqual([]);
     expect(await run(checkClusterDomainNow({ userId: organizationId }, { organizationSlug: "acme" }).pipe(Effect.flip)))
       .toMatchObject({ _tag: "NotFound" });
   });

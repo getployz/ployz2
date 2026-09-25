@@ -74,13 +74,12 @@ export const releaseClusterDomain = Effect.fn("ClusterDomain.release")(function*
   );
 });
 
-/** Server Settings' Check again: requests a sync of the Organization's reserved name. */
+/** Server Settings' Check again: requests a sync of the Organization's reserved name; the sync skips one with none. */
 export const checkClusterDomainNow = Effect.fn("ClusterDomain.checkNow")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
   const { id } = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
-  if (!(yield* loadClusterDomain(id))) return yield* new NotFound({ message: "The organization has no domain yet." });
   yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: id })).pipe(
     Effect.catchTag("InngestEventSendError", (error) => Effect.logWarning("Cluster Domain sync request failed.", error).pipe(
       Effect.andThen(Effect.fail(new Conflict({ message: "The domain couldn’t be checked. Try again shortly." }))),
