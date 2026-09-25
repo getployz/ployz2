@@ -7,7 +7,8 @@ import { Validation } from "#/server/public-error";
 import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/runtime-contract";
 
 const ACTIVE_DEPLOYMENT_CONSTRAINTS = new Set([
-  "environment_deployment_one_queued_target_idx",
+  "environment_deployment_one_building_attempt_idx",
+  "environment_deployment_one_pending_attempt_idx",
   "environment_deployment_one_started_attempt_idx",
   "environment_deployment_one_active_attempt_idx",
 ]);

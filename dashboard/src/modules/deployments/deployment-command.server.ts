@@ -5,7 +5,7 @@ import { createEnvironmentDeployCancelRequestedEvent } from "#/modules/inngest/e
 import type { CancelEnvironmentDeploymentInput } from "./deployment-contract";
 import "@tanstack/react-start/server-only";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
@@ -171,6 +171,7 @@ export const dispatchExistingQueuedEnvironmentDeployment = Effect.fn(
           and(
             eq(schemaEnvironmentDeployment.environmentId, context.environment.id),
             eq(schemaEnvironmentDeployment.status, "queued"),
+            isNull(schemaEnvironmentDeployment.inngestRunId),
           ),
         )
         .limit(1);

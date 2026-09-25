@@ -1,12 +1,13 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { failUndispatchedDeployment } from "./runtime-lifecycle.repository.server";
 import { Conflict } from "#/server/public-error";
 import {
+  type InngestClient,
   sendInngestEvent,
 } from "#/modules/inngest/client";
 import { createEnvironmentDeployRequestedEvent } from "#/modules/inngest/events";
@@ -30,6 +31,13 @@ const sendEnvironmentDeployment = Effect.fn(
   "Deployments.dispatchEnvironmentDeployment",
 )(function* (input: EnvironmentDeploymentDispatchInput) {
   const { drizzle } = yield* Database;
+  // The pending attempt waits for the building attempt to leave queued; dispatchPendingDeployment sends it then.
+  const [building] = yield* drizzle.select({ id: schemaEnvironmentDeployment.id }).from(schemaEnvironmentDeployment)
+    .where(and(eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
+      eq(schemaEnvironmentDeployment.status, "queued"), isNotNull(schemaEnvironmentDeployment.inngestRunId),
+      ne(schemaEnvironmentDeployment.id, input.environmentDeploymentId)))
+    .limit(1);
+  if (building) return { state: "pending" as const };
   const requestedAt = new Date();
   const requested = yield* drizzle
     .update(schemaEnvironmentDeployment)
@@ -66,6 +74,24 @@ const sendEnvironmentDeployment = Effect.fn(
   );
   return { state: "dispatched" as const };
 });
+
+/**
+ * Sends the Environment's pending attempt, if any, once no building attempt holds the queue.
+ * Typed explicitly: runtime-lifecycle calls this and this module calls runtime-lifecycle.
+ */
+export const dispatchPendingDeployment = (environmentId: string): Effect.Effect<void, never, Database | InngestClient> =>
+  Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [pending] = yield* drizzle.select({ id: schemaEnvironmentDeployment.id }).from(schemaEnvironmentDeployment)
+      .where(and(eq(schemaEnvironmentDeployment.environmentId, environmentId),
+        eq(schemaEnvironmentDeployment.status, "queued"), isNull(schemaEnvironmentDeployment.inngestRunId)))
+      .limit(1);
+    if (pending) yield* sendEnvironmentDeployment({ environmentDeploymentId: pending.id, environmentId });
+  }).pipe(
+    Effect.catch((error) => Effect.logError("Failed to dispatch the pending deployment", error)),
+    Effect.annotateLogs({ environmentId }),
+    Effect.withSpan("Deployments.dispatchPendingDeployment"),
+  );
 
 export const dispatchEnvironmentDeployment = Effect.fn("Deployments.dispatchAfterCommit")(
   (input: EnvironmentDeploymentDispatchInput) => afterDatabaseCommit(sendEnvironmentDeployment(input)).pipe(

@@ -31,6 +31,7 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { DeploymentProgress } from "./deployment-progress";
 import type { SdkDeployPreview } from "./runtime-preview";
 import { DeploymentQueueOccupied } from "./runtime-repository.contract";
+import { dispatchPendingDeployment } from "./dispatch.server";
 
 function dispatchReleasedVolumeRemoveAttempts(
   attempts: readonly { id: string }[],
@@ -67,6 +68,7 @@ function lockDeploymentEnvironment(environmentDeploymentId: string) {
     const [deployment] = yield* drizzle.select({ environmentId: schemaEnvironmentDeployment.environmentId })
       .from(schemaEnvironmentDeployment).where(eq(schemaEnvironmentDeployment.id, environmentDeploymentId));
     if (deployment) yield* lockEnvironmentDeploymentQueue(deployment.environmentId);
+    return deployment?.environmentId;
   });
 }
 
@@ -109,7 +111,7 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
     const updatedAt = new Date();
     return yield* database.transaction(
       Effect.gen(function* () {
-        yield* lockDeploymentEnvironment(input.environmentDeploymentId);
+        const environmentId = yield* lockDeploymentEnvironment(input.environmentDeploymentId);
         const tx = (yield* Database).drizzle;
         const patch: EnvironmentDeploymentStatusPatch = {
           status: input.status,
@@ -134,6 +136,8 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
           )
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
+        // An attempt leaving queued (building → planning, failed, cancelled) frees the queue for the pending attempt.
+        if (environmentId) yield* afterDatabaseCommit(dispatchPendingDeployment(environmentId));
         // An ended attempt stops its Image Builds; a running build step observes this and aborts.
         if (TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES.has(input.status)) {
           yield* tx.update(environmentDeploymentImageBuild).set({ status: "cancelled", finishedAt: updatedAt, updatedAt })

@@ -9,6 +9,7 @@ import {
   desc,
   eq,
   inArray,
+  isNull,
   not,
   type SQL,
 } from "drizzle-orm";
@@ -352,24 +353,19 @@ function writeQueuedSavedTarget(
       .select({
         id: schemaEnvironmentDeployment.id,
         createdAt: schemaEnvironmentDeployment.createdAt,
-        triggerOrigin: schemaEnvironmentDeployment.triggerOrigin,
-        inngestRunId: schemaEnvironmentDeployment.inngestRunId,
       })
       .from(schemaEnvironmentDeployment)
       .where(
         and(
           eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
           eq(schemaEnvironmentDeployment.status, "queued"),
+          // The building attempt (it has a run) is never replaced; the newest admission always replaces the pending one.
+          isNull(schemaEnvironmentDeployment.inngestRunId),
         ),
       )
       .for("update")
       .limit(1);
     const queued = queuedRows[0];
-    if (queued && (input.triggerOrigin.origin === "manual" || queued.triggerOrigin.origin === "manual" || queued.inngestRunId !== null)) {
-      return yield* new Conflict({
-        message: "An environment deployment is already queued. Wait for it to start or cancel it before deploying again.",
-      });
-    }
     const now = new Date();
     const deploymentRows = queued
       ? yield* drizzle
