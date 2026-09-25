@@ -264,7 +264,7 @@ async fn clear_persists_a_tombstone_of_public_keys_only() {
     assert_eq!(
         persisted.get("management_clients"),
         Some(&serde_json::json!({
-            "cloud": { "state": "cleared", "pending": public.as_bytes() },
+            "cloud": { "state": "cleared_pending", "pending": public.as_bytes() },
         }))
     );
     assert!(

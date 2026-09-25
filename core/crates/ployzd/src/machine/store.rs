@@ -382,12 +382,11 @@ impl LocalMachineStore {
         let Some(&slot) = self.record.management_clients.get(label) else {
             return Ok(());
         };
-        let cleared = slot.cleared();
-        if cleared == slot {
+        if slot.is_cleared() {
             return Ok(());
         }
         self.persist_management_clients(|clients| {
-            clients.insert(label.clone(), cleared);
+            clients.insert(label.clone(), slot.cleared());
         })
     }
 

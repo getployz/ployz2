@@ -166,13 +166,18 @@ enum ManagementClientSlot {
         accepted: [u8; 32],
         pending: [u8; 32],
     },
-    /// Tombstone left by Clear: the keys the slot held, which are never admitted
-    /// again, so a redial with one learns its removal was confirmed.
-    Cleared {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        accepted: Option<[u8; 32]>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pending: Option<[u8; 32]>,
+    // Tombstones left by Clear, one per live state, keeping that state's public
+    // keys. They are never admitted again, so a redial with one learns its removal
+    // was confirmed.
+    ClearedPending {
+        pending: [u8; 32],
+    },
+    ClearedActive {
+        accepted: [u8; 32],
+    },
+    ClearedRotating {
+        accepted: [u8; 32],
+        pending: [u8; 32],
     },
 }
 
@@ -180,37 +185,52 @@ impl ManagementClientSlot {
     fn accepted(self) -> Option<[u8; 32]> {
         match self {
             Self::Active { accepted } | Self::Rotating { accepted, .. } => Some(accepted),
-            Self::Pending { .. } | Self::Cleared { .. } => None,
+            Self::Pending { .. }
+            | Self::ClearedPending { .. }
+            | Self::ClearedActive { .. }
+            | Self::ClearedRotating { .. } => None,
         }
     }
 
     fn pending(self) -> Option<[u8; 32]> {
         match self {
             Self::Pending { pending } | Self::Rotating { pending, .. } => Some(pending),
-            Self::Active { .. } | Self::Cleared { .. } => None,
+            Self::Active { .. }
+            | Self::ClearedPending { .. }
+            | Self::ClearedActive { .. }
+            | Self::ClearedRotating { .. } => None,
         }
     }
 
     fn is_cleared(self) -> bool {
-        matches!(self, Self::Cleared { .. })
+        matches!(
+            self,
+            Self::ClearedPending { .. } | Self::ClearedActive { .. } | Self::ClearedRotating { .. }
+        )
     }
 
-    /// The tombstone this slot leaves when cleared; a tombstone stays unchanged.
+    /// Whether this tombstone holds `remote`.
+    fn clears(self, remote: &[u8; 32]) -> bool {
+        match self {
+            Self::ClearedPending { pending: key } | Self::ClearedActive { accepted: key } => {
+                key == *remote
+            }
+            Self::ClearedRotating { accepted, pending } => {
+                accepted == *remote || pending == *remote
+            }
+            Self::Pending { .. } | Self::Active { .. } | Self::Rotating { .. } => false,
+        }
+    }
+
+    /// The tombstone this slot leaves when cleared.
     fn cleared(self) -> Self {
         match self {
-            Self::Pending { pending } => Self::Cleared {
-                accepted: None,
-                pending: Some(pending),
-            },
-            Self::Active { accepted } => Self::Cleared {
-                accepted: Some(accepted),
-                pending: None,
-            },
-            Self::Rotating { accepted, pending } => Self::Cleared {
-                accepted: Some(accepted),
-                pending: Some(pending),
-            },
-            Self::Cleared { .. } => self,
+            Self::Pending { pending } => Self::ClearedPending { pending },
+            Self::Active { accepted } => Self::ClearedActive { accepted },
+            Self::Rotating { accepted, pending } => Self::ClearedRotating { accepted, pending },
+            Self::ClearedPending { .. }
+            | Self::ClearedActive { .. }
+            | Self::ClearedRotating { .. } => self,
         }
     }
 }
@@ -234,10 +254,9 @@ impl LocalMachineRecord {
     /// Whether `remote` is a key some Clear left in a tombstone.
     #[must_use]
     pub fn cleared_management_client(&self, remote: &[u8; 32]) -> bool {
-        self.management_clients.values().any(|slot| {
-            matches!(slot, ManagementClientSlot::Cleared { accepted, pending }
-                if accepted.as_ref() == Some(remote) || pending.as_ref() == Some(remote))
-        })
+        self.management_clients
+            .values()
+            .any(|slot| slot.clears(remote))
     }
 
     /// Public key `label` currently has accepted by the management transport.
