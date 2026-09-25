@@ -191,7 +191,7 @@ impl BuildFixture {
             }
             let terminal = self.terminal.lock().unwrap().clone();
             let outcome = terminal.unwrap_or_else(|| match definition.output {
-                Output::Validate => Outcome::Validated { machine_id },
+                Output::Validate | Output::Cache => Outcome::Validated { machine_id },
                 Output::Registry => Outcome::Published { machine_id },
                 Output::Load => {
                     let images = definition

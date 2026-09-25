@@ -405,7 +405,8 @@ fn receive_and_execute(
                     machine_id,
                     images: completed.images,
                 },
-                Output::Validate => Outcome::Validated { machine_id },
+                // The protocol cannot carry a cache export; it validated, producing no image.
+                Output::Validate | Output::Cache => Outcome::Validated { machine_id },
                 Output::Registry => Outcome::Published { machine_id },
             }
         }

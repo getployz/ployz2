@@ -111,6 +111,11 @@ pub enum Output {
     Registry,
     /// Validate the recipe without producing an image.
     Validate,
+    /// Upload the build cache to the GitHub Actions cache service without
+    /// producing an image. Only `ployz build` on a runner asks for it, so no
+    /// remote caller can.
+    #[serde(skip)]
+    Cache,
 }
 
 /// A completed image in the execution host's Docker image store, identified by
@@ -289,7 +294,9 @@ pub fn execute_admitted(
             ));
         }
     }
-    if request.output != Output::Load && request.targets.iter().any(|t| t.platforms.len() > 1) {
+    if matches!(request.output, Output::Registry | Output::Validate)
+        && request.targets.iter().any(|t| t.platforms.len() > 1)
+    {
         return Err(BuildError::Request(
             "multi-platform Railpack builds require local image output".into(),
         ));
@@ -344,14 +351,24 @@ pub fn execute_admitted(
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
-        let (multi, ordinary): (Vec<_>, Vec<_>) = planned
-            .into_iter()
-            .partition(|target| target.target.platforms.len() > 1);
+        // A cache export produces no image to assemble, so it solves each
+        // platform as its own run, as index assembly does.
+        let (multi, ordinary): (Vec<_>, Vec<_>) = planned.into_iter().partition(|target| {
+            target.target.platforms.len() > 1 && request.output != Output::Cache
+        });
         let mut images = Vec::new();
         // One image per Bake run, one run after another under the held builder
         // lock: each run's steps and output belong to one Image Build, and a
         // failed run cannot hide which earlier exports completed.
-        for target in &ordinary {
+        for (target, platform) in ordinary.iter().flat_map(|target| {
+            let platforms = target.target.platforms.as_slice();
+            let platforms = match (platforms.split_first(), request.output) {
+                (None, _) => std::slice::from_ref(&native),
+                (Some(_), Output::Cache) => platforms,
+                (Some((first, _)), _) => std::slice::from_ref(first),
+            };
+            platforms.iter().map(move |platform| (target, platform))
+        }) {
             // Per-run metadata, so a failed run never reads an earlier result.
             let metadata = request
                 .working_dir
@@ -364,15 +381,7 @@ pub fn execute_admitted(
                 overrides.as_deref(),
             );
             arguments.push("--set".into());
-            arguments.push(format!(
-                "{}.platform={}",
-                target.bake,
-                target
-                    .target
-                    .platforms
-                    .first()
-                    .map_or(native.as_str(), String::as_str)
-            ));
+            arguments.push(format!("{}.platform={platform}", target.bake));
             progress(Progress::Stage(Stage::Building));
             if let Err(error) = builder.run(&arguments, || {
                 progress(Progress::Target {
@@ -398,6 +407,7 @@ pub fn execute_admitted(
                     built_image(&docker, &metadata, target, progress)
                         .map_err(|error| error.at(Stage::Output))?,
                 ),
+                Output::Cache => {}
                 Output::Registry | Output::Validate => progress(Progress::Target {
                     name: target.target.name.clone(),
                     outcome: if request.output == Output::Validate {
@@ -496,6 +506,10 @@ fn bake_arguments(
             arguments.push("--metadata-file".to_owned());
             arguments.push(metadata.to_string_lossy().into_owned());
         }
+        Output::Cache => {
+            arguments.push("--set".to_owned());
+            arguments.push(format!("{}.output=type=cacheonly", planned.bake));
+        }
     }
     if request.no_cache {
         arguments.push("--no-cache".to_owned());
@@ -504,14 +518,15 @@ fn bake_arguments(
         arguments.push("--pull".to_owned());
     }
     // A GitHub Actions runner's cache service, which only `ployz build` passes through.
-    // Scoped per target so one repository's Services don't evict each other.
+    // Scoped per target so one repository's Services don't evict each other. Only a
+    // cache export writes to it, so uploading cache never delays the image.
     if request.environment.contains_key("ACTIONS_RUNTIME_TOKEN") {
-        for (field, mode) in [("cache-from", ""), ("cache-to", ",mode=max")] {
+        let bake = &planned.bake;
+        arguments.push("--set".to_owned());
+        arguments.push(format!("{bake}.cache-from=type=gha,scope={bake}"));
+        if request.output == Output::Cache {
             arguments.push("--set".to_owned());
-            arguments.push(format!(
-                "{bake}.{field}=type=gha,scope={bake}{mode}",
-                bake = planned.bake
-            ));
+            arguments.push(format!("{bake}.cache-to=type=gha,scope={bake},mode=max"));
         }
     }
     // Platforms travel in the captured Compose file, which upstream reads.

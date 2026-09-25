@@ -420,7 +420,7 @@ impl MachineRpc for DiscoveryService {
                 return;
             }
             let outcome = match definition.output {
-                Output::Validate => Outcome::Validated { machine_id },
+                Output::Validate | Output::Cache => Outcome::Validated { machine_id },
                 Output::Registry => Outcome::Published { machine_id },
                 Output::Load => Outcome::Images {
                     machine_id,

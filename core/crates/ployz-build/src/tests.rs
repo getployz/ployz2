@@ -433,7 +433,23 @@ fn requested_output_selects_exclusive_bake_behavior() {
         None,
     );
     assert!(runner.contains(&"api.cache-from=type=gha,scope=api".to_owned()));
-    assert!(runner.contains(&"api.cache-to=type=gha,scope=api,mode=max".to_owned()));
+    // Uploading cache never delays the image: only a cache export writes it, and it
+    // produces no image.
+    assert!(!runner.iter().any(|argument| argument.contains("cache-to")));
+    let export = bake_arguments(
+        &Request {
+            environment: &environment,
+            ..request(Output::Cache)
+        },
+        &builder_name(),
+        planned,
+        metadata,
+        None,
+    );
+    assert!(export.contains(&"api.cache-to=type=gha,scope=api,mode=max".to_owned()));
+    assert!(export.contains(&"api.output=type=cacheonly".to_owned()));
+    assert!(!export.contains(&"--load".to_owned()));
+    assert!(!export.contains(&"--metadata-file".to_owned()));
 }
 
 #[test]
