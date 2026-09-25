@@ -29,10 +29,10 @@ COVERAGE_GATE = 1.0  # max allowed growth of uncovered lines, in percent
 RUST_FEATURES = ["--workspace", "--all-features"]
 
 
-def run(cmd, cwd, **kwargs):
+def run(cmd, cwd, check=True):
     started = time.monotonic()
-    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, **kwargs)
-    if result.returncode != 0:
+    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    if check and result.returncode != 0:
         sys.exit(f"failed: {' '.join(cmd)}\n{result.stdout[-4000:]}\n{result.stderr[-4000:]}")
     return result.stdout, time.monotonic() - started
 
@@ -149,6 +149,10 @@ def mutant_output(target):
 def mutants(path, *nextest_args):
     """Run cargo-mutants on one file; return the multiset of caught mutant keys."""
     target = (Path.cwd() / path).resolve().relative_to(CORE)
+    # A killed in-place run leaves its mutant behind; never baseline or check on top of one.
+    leftovers, _ = run(["git", "grep", "-l", "changed by cargo-mutants", "--", "crates"], CORE, check=False)
+    if leftovers:
+        sys.exit(f"leftover mutants from a killed run; restore with git checkout:\n{leftovers}")
     output = mutant_output(target)
     output.mkdir(parents=True, exist_ok=True)
     # In place reuses the warm target dir; copying the tree would cold-build every job.
