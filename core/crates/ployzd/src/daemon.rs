@@ -199,7 +199,9 @@ impl Daemon {
             .parent()
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
+        let grants = Arc::new(management::BuildGrants::default());
         let machine_api = MachineApi::builder(local.clone())
+            .with_build_grants(Arc::clone(&grants))
             .with_builds(
                 crate::build::Runner::new(build_policy, shutdown.clone())
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
@@ -249,6 +251,7 @@ impl Daemon {
                             management_endpoint,
                             crate::machine::LocalMachine::new(local.clone()),
                             machine_api.clone(),
+                            grants,
                             shutdown.clone(),
                         )
                         .await;

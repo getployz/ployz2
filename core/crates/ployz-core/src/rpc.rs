@@ -6,7 +6,9 @@ use std::{
 };
 use ts_rs::TS;
 
+mod build_grant;
 mod upgrade;
+pub use build_grant::*;
 pub use upgrade::*;
 
 use ipnet::Ipv4Net;
@@ -936,6 +938,8 @@ define_responses! {
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
     ImagesRemoved(ImagesRemoved) => "images_removed";
+    BuildGrantMinted(BuildGrantMinted) => "build_grant_minted";
+    BuildGrantEnded(BuildGrantEnded) => "build_grant_ended";
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";

@@ -11,6 +11,29 @@ export type BindRecursive = "disabled" | "writable" | "readonly";
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
+export type BuildGrantEnded = {
+/**
+ * `sha256:` digest of the manifest the Machine verified and stored, when the
+ * push completed; absent when nothing was pushed.
+ */
+pushed: string | null, };
+
+export type BuildGrantId = string & { readonly __brand: "BuildGrantId" };
+
+export type BuildGrantMinted = {
+/**
+ * Handle for [`EndBuildGrantRequest`]; not secret.
+ */
+id: BuildGrantId,
+/**
+ * Secret-bearing grant for the pusher only.
+ */
+grant: string,
+/**
+ * The grant ends by itself this long after minting.
+ */
+expires_in_seconds: number, };
+
 export type BuildMethod = "dockerfile" | "railpack";
 
 export type ByteQuantity = number;
@@ -217,6 +240,8 @@ bound_bytes: number,
 used_bytes: number, };
 
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
+
+export type EndBuildGrantRequest = { id: BuildGrantId, };
 
 export type EnrollmentAssignment = {
 /**
@@ -449,6 +474,12 @@ docker_root_free_bytes: number, };
 export type ManagementClientLabel = string;
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
+
+export type MintBuildGrantRequest = {
+/**
+ * The only repository the push may write, as Docker names it (`ployz-build/web`).
+ */
+repository: string, };
 
 export type ObservationKind = "container" | "volume";
 

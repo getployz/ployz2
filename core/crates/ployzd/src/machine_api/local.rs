@@ -36,6 +36,7 @@ pub struct MachineService {
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
     pub(crate) builds: Arc<crate::build::Runner>,
+    pub(crate) grants: Arc<crate::management::BuildGrants>,
 }
 
 impl MachineService {
@@ -52,6 +53,7 @@ impl MachineService {
             runtime_watch: Arc::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
+            grants: Arc::default(),
         }
     }
 
@@ -635,6 +637,52 @@ impl MachineRpc for MachineService {
         finish(self.local.pull_image_from_machine(request).await)
     }
 
+    async fn mint_build_grant(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::MintBuildGrant>(request)?;
+        if !docker_repository(&request.repository) {
+            return respond(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "repository must be a Docker repository path without a registry or tag"
+                    .into(),
+                details: Value::Null,
+            });
+        }
+        // Opening ingest here surfaces its failure to the minting caller, not the pusher.
+        let opened = match self
+            .local
+            .ensure_image_ingest(Arc::clone(&self.ingest))
+            .await
+        {
+            Ok(opened) => opened.destination,
+            Err(error) => return local_error(error),
+        };
+        respond(self.grants.mint(
+            self.local_record().management_secret().public_key(),
+            request.repository,
+            std::net::SocketAddr::from((opened.management_address.0, opened.port)),
+        ))
+    }
+
+    async fn end_build_grant(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::EndBuildGrant>(request)?;
+        match self.grants.end(&request.id) {
+            Some(ended) => respond(ended),
+            None => respond(RpcError {
+                code: RpcErrorCode::NotFound,
+                message:
+                    "this Machine holds no such Build Grant; it expired or the daemon restarted"
+                        .into(),
+                details: Value::Null,
+            }),
+        }
+    }
+
     async fn get_ingress_proxy_config(
         &self,
         request: Request<OpaquePayload>,
@@ -839,6 +887,20 @@ fn finish(
         Ok(value) => respond(value),
         Err(error) => local_error(error),
     }
+}
+
+/// Docker's short repository form: lowercase path components, no registry or tag.
+fn docker_repository(value: &str) -> bool {
+    (1..=255).contains(&value.len())
+        && value.split('/').all(|component| {
+            component
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+                && component
+                    .bytes()
+                    .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+        })
 }
 
 fn unavailable(message: &str) -> RpcError {

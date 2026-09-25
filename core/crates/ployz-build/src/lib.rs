@@ -487,6 +487,17 @@ fn bake_arguments(
     if request.pull {
         arguments.push("--pull".to_owned());
     }
+    // A GitHub Actions runner's cache service, which only `ployz build` passes through.
+    // Scoped per target so one repository's Services don't evict each other.
+    if request.environment.contains_key("ACTIONS_RUNTIME_TOKEN") {
+        for (field, mode) in [("cache-from", ""), ("cache-to", ",mode=max")] {
+            arguments.push("--set".to_owned());
+            arguments.push(format!(
+                "{bake}.{field}=type=gha,scope={bake}{mode}",
+                bake = planned.bake
+            ));
+        }
+    }
     // Platforms travel in the captured Compose file, which upstream reads.
     for argument in request.build_args {
         arguments.push("--set".to_owned());

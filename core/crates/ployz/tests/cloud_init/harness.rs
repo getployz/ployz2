@@ -892,6 +892,18 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn mint_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    async fn end_build_grant(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn remove_images(
         &self,
         _request: Request<OpaquePayload>,

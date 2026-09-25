@@ -2,6 +2,7 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
+    pub const BUILD_GRANT: &str = "PLOYZ_BUILD_GRANT";
     pub const CONFIG: &str = "PLOYZ_CONFIG";
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
@@ -12,6 +13,7 @@ pub mod env {
 pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
         .arg(switch("version", Some('V')).help("Print version"))
+        .subcommand(build())
         .subcommand(cloud())
         .subcommand(ctx())
         .subcommand(ingress())
@@ -139,6 +141,36 @@ fn service_exec() -> Command {
         .arg(switch("no-tty", Some('T')))
         .arg(positional("service", true))
         .arg(trailing("command"))
+}
+
+fn build() -> Command {
+    Command::new("build")
+        .about("Build one Git Service and push it into a Machine with a Build Grant")
+        .arg(
+            value("grant", None)
+                .env(env::BUILD_GRANT)
+                .hide_env_values(true)
+                .required(true)
+                .help("Build Grant naming the receiving Machine; prefer the environment variable"),
+        )
+        .arg(
+            value("deployment", None)
+                .required(true)
+                .value_hint(ValueHint::FilePath)
+                .help("Frozen deployment JSON holding exactly one Git-sourced Service"),
+        )
+        .arg(value("commit", None).required(true).help("Commit to build"))
+        .arg(
+            value("fingerprint", None)
+                .required(true)
+                .help("Expected build-input fingerprint; the build is refused on mismatch"),
+        )
+        .arg(
+            value("source", None)
+                .default_value(".")
+                .value_hint(ValueHint::DirPath)
+                .help("Repository working tree of the Service"),
+        )
 }
 
 fn cloud() -> Command {

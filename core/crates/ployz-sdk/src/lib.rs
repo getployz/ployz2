@@ -190,6 +190,38 @@ impl Client {
         )
     }
 
+    /// Mint a Build Grant on this Machine for one image push into a repository.
+    ///
+    /// # Errors
+    /// Returns malformed input, transport failures, or the Machine's refusal.
+    #[napi]
+    pub async fn mint_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        let request = serde_json::from_value(request).map_err(invalid_argument)?;
+        to_json(
+            &self
+                .inner
+                .mint_build_grant(request)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
+    }
+
+    /// End a Build Grant and read the digest this Machine received under it.
+    ///
+    /// # Errors
+    /// Returns malformed input, transport failures, or `not_found` for an expired grant.
+    #[napi]
+    pub async fn end_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        let request = serde_json::from_value(request).map_err(invalid_argument)?;
+        to_json(
+            &self
+                .inner
+                .end_build_grant(request)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors

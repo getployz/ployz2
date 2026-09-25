@@ -78,6 +78,14 @@ class Client {
     return withRpcError(this._inner.publishCertificateMaterial(request));
   }
 
+  mintBuildGrant(request) {
+    return withRpcError(this._inner.mintBuildGrant(request));
+  }
+
+  endBuildGrant(request) {
+    return withRpcError(this._inner.endBuildGrant(request));
+  }
+
   prepare(input, options = {}) {
     options.signal?.throwIfAborted();
     let pending;

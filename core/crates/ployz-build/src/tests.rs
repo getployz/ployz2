@@ -400,6 +400,21 @@ fn requested_output_selects_exclusive_bake_behavior() {
     assert!(registry.contains(&"--push".to_owned()));
     assert!(!registry.contains(&"--load".to_owned()));
     assert!(!registry.contains(&"--metadata-file".to_owned()));
+    assert!(!load.iter().any(|argument| argument.contains("type=gha")));
+
+    // Only a runner exposing its cache service gets the GitHub cache.
+    let environment = BTreeMap::from([("ACTIONS_RUNTIME_TOKEN".to_owned(), "t".to_owned())]);
+    let runner = bake_arguments(
+        &Request {
+            environment: &environment,
+            ..request(Output::Load)
+        },
+        planned,
+        metadata,
+        None,
+    );
+    assert!(runner.contains(&"api.cache-from=type=gha,scope=api".to_owned()));
+    assert!(runner.contains(&"api.cache-to=type=gha,scope=api,mode=max".to_owned()));
 }
 
 #[test]
