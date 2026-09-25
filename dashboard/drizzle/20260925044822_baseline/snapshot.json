@@ -10233,6 +10233,235 @@
       "entityType": "checks",
       "schema": "public",
       "table": "organization_billing_state"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "organization_cluster_domain",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "endpoint",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "encrypted_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reserved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "lease_renewed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "records_synced_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "record_addresses",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "unreachable",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "encrypted_certificate_private_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "certificate_chain",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "certificate_not_after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "organization_cluster_domain_eJqKfNjJBhUj_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "columns": [
+        "organization_id"
+      ],
+      "nameExplicit": false,
+      "name": "organization_cluster_domain_pkey",
+      "schema": "public",
+      "table": "organization_cluster_domain",
+      "entityType": "pks"
+    },
+    {
+      "value": "jsonb_typeof(\"record_addresses\") = 'array'",
+      "name": "organization_cluster_domain_record_addresses_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_cluster_domain"
+    },
+    {
+      "value": "num_nulls(\"encrypted_certificate_private_key\", \"certificate_chain\", \"certificate_not_after\") in (0, 3)",
+      "name": "organization_cluster_domain_certificate_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_cluster_domain"
     }
   ],
   "renames": []

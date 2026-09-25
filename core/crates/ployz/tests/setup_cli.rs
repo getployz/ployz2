@@ -35,7 +35,6 @@ fn ssh_setup_with_no_install_skips_the_bootstrap() {
             "--yes",
             "--storage",
             "none",
-            "--no-dns",
             "--accepts-ingress=false",
             "--context",
             "setup-no-install",
