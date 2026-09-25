@@ -125,9 +125,7 @@ impl Client {
         };
         tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
-            .map_err(|_| ConnectError::EntryNotReady {
-                waited: CONNECT_CONFIRM_TIMEOUT,
-            })?
+            .map_err(|_| ConnectError::EntryNotReady)?
     }
 
     /// Issue one unary RPC. The response type is derived from the RPC, so a request

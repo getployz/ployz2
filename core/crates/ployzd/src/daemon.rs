@@ -1,13 +1,9 @@
 //! Local Machine daemon lifecycle.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::File,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
-        net as std_net,
-    },
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -35,16 +31,15 @@ use crate::{
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
-    filesystem::{PLOYZ_DIR_MODE, set_ployz_group},
     ingress,
     machine::{
         LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped,
         StoreError,
     },
     machine_api::MachineApi,
+    machine_api_socket::MachineApiSocket,
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
-    socket_activation,
 };
 
 /// How the daemon attaches a Container Runtime.
@@ -109,7 +104,7 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
-        let socket = claim_machine_api_socket(&config.socket)?;
+        let socket = MachineApiSocket::claim(&config.socket)?;
         let run_dir = config
             .socket
             .parent()
@@ -645,53 +640,6 @@ enum StopKind {
     WatchFailed(&'static str),
 }
 
-/// Claims the Machine API socket and takes its listener, before startup spawns
-/// any thread or subprocess that could inherit the systemd socket.
-fn claim_machine_api_socket(path: &Path) -> io::Result<MachineApiSocket> {
-    let lock = claim_socket(path)?;
-    Ok(MachineApiSocket {
-        lock,
-        listener: socket_activation::machine_api_listener(path)?,
-    })
-}
-
-struct MachineApiSocket {
-    lock: File,
-    listener: std_net::UnixListener,
-}
-
-fn claim_socket(path: &Path) -> io::Result<File> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
-    let parent_created = !parent.exists();
-    fs::create_dir_all(parent)?;
-    if parent_created {
-        fs::set_permissions(parent, fs::Permissions::from_mode(PLOYZ_DIR_MODE))?;
-        set_ployz_group(parent)?;
-    }
-
-    let mut lock_path = path.as_os_str().to_owned();
-    lock_path.push(".lock");
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|error| {
-        if error.kind() == io::ErrorKind::WouldBlock {
-            io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "socket is owned by another daemon",
-            )
-        } else {
-            error
-        }
-    })?;
-    Ok(lock)
-}
-
 fn notify(state: NotifyState<'_>) {
     if let Err(error) = sd_notify::notify(&[state]) {
         eprintln!("systemd notification failed: {error}");
@@ -737,7 +685,7 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs, io,
+        fs,
         path::{Path, PathBuf},
     };
 
@@ -750,8 +698,8 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, ManagementConfig, claim_machine_api_socket,
-        claim_socket, wait_for_participation, wait_until_socket_accepts,
+        ContainerMode, Daemon, DaemonConfig, MachineApiSocket, ManagementConfig,
+        wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -839,7 +787,7 @@ mod tests {
         .unwrap();
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
         let run_dir = config.socket.parent().unwrap().to_owned();
-        let claimed = claim_machine_api_socket(&config.socket).unwrap();
+        let claimed = MachineApiSocket::claim(&config.socket).unwrap();
         let daemon = Daemon::start_with_build_policy(config, claimed, policy.clone(), run_dir)
             .await
             .unwrap();
@@ -1016,28 +964,6 @@ mod tests {
         shutdown.cancel();
         drop(owner);
         assert!(!wait_for_participation(records, shutdown).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn claimed_socket_path_refuses_connections_until_listen() {
-        let root = TestDir::new("ployzd-socket-claim");
-        fs::create_dir_all(root.0.join("run")).unwrap();
-        let path = root.0.join("run/ployz.sock");
-        let _lock = claim_socket(&path).unwrap();
-        let error = tokio::net::UnixStream::connect(&path)
-            .await
-            .expect_err("claim must not listen");
-        assert!(
-            matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ),
-            "{error}"
-        );
-        let _listener = crate::socket_activation::machine_api_listener(&path).unwrap();
-        tokio::net::UnixStream::connect(&path)
-            .await
-            .expect("listen must queue connections");
     }
 
     #[tokio::test]

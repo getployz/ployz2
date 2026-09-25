@@ -28,6 +28,7 @@ pub mod installer;
 pub mod logs;
 pub mod machine;
 pub mod machine_api;
+pub(crate) mod machine_api_socket;
 #[doc(hidden)]
 pub mod machine_pool;
 pub mod management;

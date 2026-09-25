@@ -425,7 +425,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             }
         }
         error @ (ConnectError::Attempt(_)
-        | ConnectError::EntryNotReady { .. }
+        | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
@@ -626,9 +626,10 @@ pub enum ConnectError {
     Attempt(Cow<'static, str>),
     /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
     #[error(
-        "connection attempt failed: entry Machine daemon did not answer within {waited:?}; it may still be starting, retry shortly"
+        "connection attempt failed: entry Machine daemon did not answer within {:?}; it may still be starting, retry shortly",
+        CONNECT_CONFIRM_TIMEOUT
     )]
-    EntryNotReady { waited: Duration },
+    EntryNotReady,
     #[error("connection attempt failed: {0}")]
     Io(#[from] io::Error),
     #[error("connection attempt failed: {0}")]
@@ -707,7 +708,7 @@ impl ConnectError {
             | Self::Join(_) => true,
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
-            | Self::EntryNotReady { .. }
+            | Self::EntryNotReady
             | Self::IdentityMismatch { .. }
             | Self::RefusedByIdentity
             | Self::PairingCleared
@@ -738,7 +739,7 @@ impl ConnectError {
                 setup_retryable, ..
             } => *setup_retryable,
             // A socket-activated daemon accepts before it serves; setup waits it out.
-            Self::EntryNotReady { .. } => true,
+            Self::EntryNotReady => true,
             Self::SshProbe { detail, .. } => [
                 "Connection timed out",
                 "Operation timed out",
@@ -773,7 +774,7 @@ impl ConnectError {
         matches!(
             self,
             Self::Attempt(_)
-                | Self::EntryNotReady { .. }
+                | Self::EntryNotReady
                 | Self::Io(_)
                 | Self::Dial(_)
                 | Self::AllFailed { .. }

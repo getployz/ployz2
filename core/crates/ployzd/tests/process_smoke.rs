@@ -331,7 +331,7 @@ fn wait_for_exit(child: &mut Child, stage: &str) -> (ExitStatus, String) {
 /// Runs `ployzd <args>` behind `systemd-socket-activate` listening on
 /// `sockets`, once the first socket exists.
 fn socket_activated(sockets: &[&Path], args: &[&str]) -> ChildGuard {
-    let plugin = ChildGuard(
+    let child = ChildGuard(
         Command::new("systemd-socket-activate")
             .args(
                 sockets
@@ -351,7 +351,7 @@ fn socket_activated(sockets: &[&Path], args: &[&str]) -> ChildGuard {
         assert!(Instant::now() < deadline, "systemd socket was not created");
         thread::sleep(Duration::from_millis(10));
     }
-    plugin
+    child
 }
 
 fn inspect(path: &Path) -> ployz_core::MachineDetails {
