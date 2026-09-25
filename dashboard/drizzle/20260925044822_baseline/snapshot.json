@@ -1040,6 +1040,19 @@
       "table": "user"
     },
     {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "open_started_deployments",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,

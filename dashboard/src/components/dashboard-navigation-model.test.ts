@@ -37,12 +37,11 @@ describe("dashboard navigation model", () => {
 
     expect(items.map((item) => item.label)).toEqual([
       "Architecture",
-      "Deployments",
       "Logs",
       "Settings",
     ]);
     expect(items[1]).toMatchObject({
-      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
+      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
       params: {
         organizationSlug: "acme",
         projectSlug: "storefront",
@@ -125,11 +124,6 @@ describe("dashboard navigation model", () => {
   });
 
   it("derives active sections from route IDs rather than URL positions", () => {
-    expect(
-      getDashboardSectionFromRouteId(
-        "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments",
-      ),
-    ).toBe("deployments");
     expect(
       getDashboardSectionFromRouteId(
         "/_protected/cloud/$organizationSlug/_org/~/settings",

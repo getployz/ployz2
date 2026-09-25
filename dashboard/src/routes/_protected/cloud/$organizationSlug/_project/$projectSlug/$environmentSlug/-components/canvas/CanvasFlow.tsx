@@ -13,13 +13,13 @@ import { Button } from "#/components/ui/button";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import { ApplyChangesBar } from "./ApplyChangesBar";
+import { ApplyZone } from "./ApplyZone";
 import { SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { CanvasServicesProvider } from "./CanvasServicesContext";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
-import { useCanvasNavigation } from "./useCanvasNavigation";
+import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useServiceCreator } from "./useServiceCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
@@ -97,7 +97,7 @@ export function CanvasFlow({
     canvasNodes,
     selectedNodeId,
   });
-  const { onNodeClick, getViewportCenter } = useCanvasNavigation(
+  const { getViewportCenter } = useCanvasNavigation(
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
@@ -114,6 +114,7 @@ export function CanvasFlow({
     discardRowChange,
     requestSave,
     requestDeploy,
+    isSubmittingDeploymentSnapshot,
     prepareDestructiveReview,
     confirmDestructiveAction,
     reviewAction,
@@ -168,7 +169,7 @@ export function CanvasFlow({
               minZoom={0.4}
               maxZoom={1.35}
               onInit={() => setFlowReady(true)}
-              onNodeClick={onNodeClick}
+              onNodeClick={blurClickedNodeLink}
               onNodeDrag={onNodeDrag}
               onNodeDragStop={onNodeDrag}
               onPaneContextMenu={(event) => {
@@ -198,11 +199,11 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <ApplyChangesBar
+      <ApplyZone
           key={locationKey}
           groups={diffGroups}
           totalChanges={totalChanges}
-          canDeploy={canDeploy}
+          canDeploy={canDeploy && !isSubmittingDeploymentSnapshot}
           commitMessage={commitMessage}
           canSaveWithoutDeploying={canSave}
           onCommitMessageChange={setCommitMessage}

@@ -75,7 +75,8 @@ CREATE TABLE "user" (
 	"email" text NOT NULL UNIQUE,
 	"email_verified" boolean DEFAULT false NOT NULL,
 	"name" text NOT NULL,
-	"image" text
+	"image" text,
+	"open_started_deployments" boolean DEFAULT true NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "verification" (
