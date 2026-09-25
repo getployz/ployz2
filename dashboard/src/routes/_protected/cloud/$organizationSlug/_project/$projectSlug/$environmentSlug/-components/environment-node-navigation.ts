@@ -8,7 +8,6 @@ import {
   getVolumeResourcesCollection,
   type EnvironmentParams,
 } from "#/modules/services/services.collection";
-import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment.collection";
 import type { DeploymentServicePage, ServicePage } from "../services/$serviceId/-components/service-pages";
 import {
   ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -48,16 +47,6 @@ export function nodeDestination(
         },
         search: {},
       });
-}
-
-/** The services whose image an attempt built; navigation renders above the Org Store gate, so it reads none until the store is ready. */
-export function useAttemptBuildServiceIds(organizationSlug: string, deploymentId: string | undefined): readonly string[] {
-  const scope = useCollectionScope();
-  const ready = useOrgStoreStatus(organizationSlug);
-  const summaries = ready.data && deploymentId ? getOrganizationDeploymentsCollection(organizationSlug, scope) : null;
-  const { data } = useLiveQuery({ queryKey: ["navigation-attempt-builds", summaries?.id ?? null, deploymentId], query: (q) =>
-    summaries && deploymentId ? q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.id, deploymentId)) : undefined });
-  return data?.[0]?.buildServiceIds ?? [];
 }
 
 export function useEnvironmentNavigationNodes(params: EnvironmentParams) {

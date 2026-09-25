@@ -9,7 +9,8 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { nodeOutcomeLabels, outcomeBadges, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
+import { outcomeBadges } from "#/components/deployment-outcome-badges";
+import { nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
   DEPLOYMENT_SERVICE_PAGES, deploymentServicePageSchema, type DeploymentServicePage,
 } from "../services/$serviceId/-components/service-pages";

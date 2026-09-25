@@ -102,7 +102,7 @@ export function ServiceNode({
         }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
-        style={canvasNodeTransition(service.id)}
+        {...canvasNodeTransition(service.id)}
         preload="intent"
         draggable={false}
         className="block h-36 w-72"

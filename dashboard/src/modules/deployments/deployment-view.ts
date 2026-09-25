@@ -32,8 +32,6 @@ export type DeploymentView = {
   deployed: number; changed: number;
   nodes: DeploymentNodeView[];
 };
-/** One Environment Node of the Attempt Target. `image` names its Image Build (the service's private DNS name) when built. */
-export type AttemptNode = { nodeId: string; changed: boolean; removed?: boolean; image?: string | null };
 /** The attempt's Build Steps and their output, as the build log read returns them. */
 type BuildStep = { id: number; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null };
 export type BuildLog = {
@@ -47,7 +45,7 @@ export type DeploymentViewInput = {
     deployPreview: unknown;
   };
   progress: DeploymentProgress | null;
-  nodes: readonly AttemptNode[];
+  nodes: readonly AttemptTargetNode[];
   buildLog?: BuildLog | null;
 };
 
@@ -195,7 +193,17 @@ function attemptBuildStage({ deployment, progress, nodes }: DeploymentViewInput,
   return progress?.preparation ? "running" : "queued";
 }
 
-function nodeBuildStage(node: AttemptNode, image: ImageBuild | null, attempt: AttemptFacts): Stage {
+/** What the rules read about one node: its target entry, its Engine rows and its Image Build. */
+type NodeFacts = {
+  node: AttemptTargetNode;
+  own: readonly DeploymentProgressRow[];
+  failedRow: DeploymentProgressRow | undefined;
+  image: ImageBuild | null;
+  /** Every operation on the node completed, or the whole attempt succeeded. */
+  done: boolean;
+};
+
+function nodeBuildStage({ node, image }: NodeFacts, attempt: AttemptFacts): Stage {
   // A prebuilt image has nothing to build.
   if (!node.image) return { state: "none" };
   if (image?.failed) return { state: "failed", durationMs: image.durationMs };
@@ -214,26 +222,26 @@ function nodeBuildStage(node: AttemptNode, image: ImageBuild | null, attempt: At
  * Without a runtime outcome, a failed attempt blames the image whose build failed,
  * or else every node it could have reached: built nodes, or all of them once images were ready.
  */
-function failedBeforeRuntime(node: AttemptNode, build: Stage, attempt: AttemptFacts): boolean {
+function failedBeforeRuntime({ node }: NodeFacts, build: Stage, attempt: AttemptFacts): boolean {
   if (attempt.status !== "failed" || !attempt.noOutcome) return false;
   if (attempt.blamed) return build.state === "failed";
-  return Boolean(node.image) || attempt.ready;
+  return node.image !== null || attempt.ready;
 }
 
-function nodeDeployStage(node: AttemptNode, rows: readonly DeploymentProgressRow[], done: boolean, preRuntimeFailure: boolean, attempt: AttemptFacts): Stage {
+function nodeDeployStage({ node, own, done }: NodeFacts, preRuntimeFailure: boolean, attempt: AttemptFacts): Stage {
   // An unchanged node has nothing to roll out.
   if (!node.changed) return { state: "skipped" };
-  const spans = rows.flatMap((row) => row.startedAt !== null && row.finishedAt !== null ? [[row.startedAt, row.finishedAt] as const] : []);
+  const spans = own.flatMap((row) => row.startedAt !== null && row.finishedAt !== null ? [[row.startedAt, row.finishedAt] as const] : []);
   const durationMs = spans.length ? Math.max(...spans.map(([, end]) => end)) - Math.min(...spans.map(([start]) => start)) : undefined;
-  if (rows.some((row) => row.status === "failed")) return { state: "failed", durationMs };
+  if (own.some((row) => row.status === "failed")) return { state: "failed", durationMs };
   if (done) return { state: "done", durationMs };
   // An ended attempt either failed before the runtime reported on this node, or never reached it.
   if (!attempt.active) return { state: preRuntimeFailure && attempt.ready ? "failed" : "skipped" };
-  if (rows.some((row) => row.status === "running")) return { state: "running" };
+  if (own.some((row) => row.status === "running")) return { state: "running" };
   return { state: "queued" };
 }
 
-function nodeFailure(node: AttemptNode, failedRow: DeploymentProgressRow | undefined, done: boolean, preRuntimeFailure: boolean, build: Stage, attempt: AttemptFacts): DeploymentNodeView["failure"] {
+function nodeFailure({ node, failedRow, done }: NodeFacts, preRuntimeFailure: boolean, build: Stage, attempt: AttemptFacts): DeploymentNodeView["failure"] {
   // The Engine's failed operation names the error and, when it has one, the container.
   if (failedRow) return { message: failedRow.error ?? "Deployment failed", containerId: failedRow.containerId };
   // A pre-runtime failure carries the attempt's message.
@@ -243,7 +251,7 @@ function nodeFailure(node: AttemptNode, failedRow: DeploymentProgressRow | undef
   return null;
 }
 
-function nodeOutcome(node: AttemptNode, failure: DeploymentNodeView["failure"], done: boolean, build: Stage, deploy: Stage, attempt: AttemptFacts): DeploymentNodeView["outcome"] {
+function nodeOutcome({ node, done }: NodeFacts, failure: DeploymentNodeView["failure"], build: Stage, deploy: Stage, attempt: AttemptFacts): DeploymentNodeView["outcome"] {
   if (!node.changed) return "unchanged";
   if (failure) return "failed";
   if (done) return node.removed ? "removed" : "deployed";
@@ -255,12 +263,12 @@ function nodeOutcome(node: AttemptNode, failure: DeploymentNodeView["failure"], 
 }
 
 /** The tail follows the stage that matters: the error when failed, else the rollout once it started, else the build. */
-function nodeTail(failure: DeploymentNodeView["failure"], failedRow: DeploymentProgressRow | undefined, build: Stage, image: ImageBuild | null, rows: readonly DeploymentProgressRow[]): string[] {
+function nodeTail({ own, failedRow, image }: NodeFacts, failure: DeploymentNodeView["failure"], build: Stage): string[] {
   if (failure && failedRow) return [`${failedRow.machineName ?? failedRow.machineId} · ${failure.message}`];
   // A failed build shows its own output and error.
   if (failure && build.state === "failed" && image?.errorLines.length) return image.errorLines;
   if (failure) return [failure.message];
-  const started = rows.filter((row) => row.status === "running" || row.status === "completed");
+  const started = own.filter((row) => row.status === "running" || row.status === "completed");
   if (started.length) return started.map(rowLine);
   return image?.lines ?? [];
 }
@@ -286,16 +294,17 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
 
   const views = nodes.map((node): DeploymentNodeView => {
     const own = rows.filter((row) => row.serviceId === node.nodeId);
-    const failedRow = own.find((row) => row.status === "failed");
-    const image = images.get(node.nodeId) ?? null;
-    const done = (own.length > 0 && own.every((row) => row.status === "completed")) || succeeded;
-    const buildStage = nodeBuildStage(node, image, attempt);
-    const preRuntimeFailure = failedBeforeRuntime(node, buildStage, attempt);
-    const deploy = nodeDeployStage(node, own, done, preRuntimeFailure, attempt);
-    const failure = nodeFailure(node, failedRow, done, preRuntimeFailure, buildStage, attempt);
+    const facts: NodeFacts = {
+      node, own, failedRow: own.find((row) => row.status === "failed"), image: images.get(node.nodeId) ?? null,
+      done: (own.length > 0 && own.every((row) => row.status === "completed")) || succeeded,
+    };
+    const buildStage = nodeBuildStage(facts, attempt);
+    const preRuntimeFailure = failedBeforeRuntime(facts, buildStage, attempt);
+    const deploy = nodeDeployStage(facts, preRuntimeFailure, attempt);
+    const failure = nodeFailure(facts, preRuntimeFailure, buildStage, attempt);
     return {
-      nodeId: node.nodeId, outcome: nodeOutcome(node, failure, done, buildStage, deploy, attempt),
-      build: buildStage, deploy, failure, tail: nodeTail(failure, failedRow, buildStage, image, own).slice(-TAIL_LINES),
+      nodeId: node.nodeId, outcome: nodeOutcome(facts, failure, buildStage, deploy, attempt),
+      build: buildStage, deploy, failure, tail: nodeTail(facts, failure, buildStage).slice(-TAIL_LINES),
     };
   });
 
@@ -310,17 +319,26 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
 
 type AttemptRow = { id: string; status: EnvironmentDeploymentStatus; createdAt: Date };
 type SnapshotRow = { environmentDeploymentId: string; nodeType: "service" | "volume"; nodeId: string; config: unknown };
-/** An Attempt Target node with the configuration it was deployed (or last deployed, when removed) with, parsed once here. */
-export type AttemptTargetNode = { nodeId: string; changed: boolean; removed: boolean } & (
-  | { nodeType: "service"; config: ServiceConfig; image: string | null }
+type ParsedSnapshot = { row: SnapshotRow } & ({ nodeType: "service"; config: ServiceConfig } | { nodeType: "volume"; config: VolumeConfig });
+/**
+ * One Environment Node of the Attempt Target with the configuration it was deployed (or last deployed, when removed) with,
+ * parsed once. `image` names its Image Build (a git service's private DNS name); null when nothing is built.
+ */
+export type AttemptTargetNode = { nodeId: string; changed: boolean; removed: boolean; image: string | null } & (
+  | { nodeType: "service"; config: ServiceConfig }
   | { nodeType: "volume"; config: VolumeConfig }
 );
 
-function targetNode(row: SnapshotRow, removed: boolean): AttemptTargetNode {
-  if (row.nodeType === "volume") return { nodeId: row.nodeId, nodeType: "volume", config: decodeStrict(persistedVolumeConfigSchema, row.config), changed: removed, removed };
-  const config = parseServiceConfig(row.config);
-  // A git service's Image Build is named after its private DNS name; a removed service builds nothing.
-  return { nodeId: row.nodeId, nodeType: "service", config, image: config.source.type === "git" && !removed ? config.privateDns : null, changed: removed, removed };
+const parseSnapshot = (row: SnapshotRow): ParsedSnapshot => row.nodeType === "volume"
+  ? { row, nodeType: "volume", config: decodeStrict(persistedVolumeConfigSchema, row.config) }
+  : { row, nodeType: "service", config: parseServiceConfig(row.config) };
+
+function targetNode(snapshot: ParsedSnapshot, changed: boolean, removed: boolean): AttemptTargetNode {
+  const { nodeId } = snapshot.row;
+  if (snapshot.nodeType === "volume") return { nodeId, nodeType: "volume", config: snapshot.config, image: null, changed, removed };
+  const { config } = snapshot;
+  // A removed service builds nothing.
+  return { nodeId, nodeType: "service", config, image: config.source.type === "git" && !removed ? config.privateDns : null, changed, removed };
 }
 
 /**
@@ -340,19 +358,22 @@ export function attemptTarget({ attempt, progress, history, snapshots }: {
   const own = snapshots.filter((row) => row.environmentDeploymentId === attempt.id);
   const prior = base ? snapshots.filter((row) => row.environmentDeploymentId === base.id) : [];
   const sameNode = (a: SnapshotRow) => (b: SnapshotRow) => a.nodeType === b.nodeType && a.nodeId === b.nodeId;
-  const removed = prior.filter((row) => !own.some(sameNode(row))).map((row) => targetNode(row, true));
-  const kept = own.map((row) => ({ row, node: targetNode(row, false) }));
-  const serviceFor = (name: string | null) => [...kept.map(({ node }) => node), ...removed]
-    .find((node) => node.nodeType === "service" && node.config.privateDns === name)?.nodeId ?? null;
+  const removed = prior.filter((row) => !own.some(sameNode(row))).map(parseSnapshot);
+  const kept = own.map(parseSnapshot);
+  const serviceFor = (name: string | null) => [...kept, ...removed]
+    .find((snapshot) => snapshot.nodeType === "service" && snapshot.config.privateDns === name)?.row.nodeId ?? null;
   const resolved = progress && { ...progress, rows: progress.rows.map((row) => row.serviceId ? row : { ...row, serviceId: serviceFor(row.serviceName) }) };
   const rows = resolved?.rows ?? [];
-  const changed = (row: SnapshotRow, node: AttemptTargetNode) => {
-    if (node.nodeType === "service" && rows.length > 0) return rows.some((r) => r.serviceId === node.nodeId);
-    if (node.nodeType === "service" && node.image !== null) return true;
-    const before = prior.find(sameNode(row));
-    return !before || canonicalJson(before.config) !== canonicalJson(row.config);
+  const changed = (snapshot: ParsedSnapshot) => {
+    if (snapshot.nodeType === "service" && rows.length > 0) return rows.some((r) => r.serviceId === snapshot.row.nodeId);
+    if (snapshot.nodeType === "service" && snapshot.config.source.type === "git") return true;
+    const before = prior.find(sameNode(snapshot.row));
+    return !before || canonicalJson(before.config) !== canonicalJson(snapshot.row.config);
   };
-  return { nodes: [...kept.map(({ row, node }) => ({ ...node, changed: changed(row, node) })), ...removed], progress: resolved };
+  return {
+    nodes: [...kept.map((snapshot) => targetNode(snapshot, changed(snapshot), false)), ...removed.map((snapshot) => targetNode(snapshot, true, true))],
+    progress: resolved,
+  };
 }
 
 /** User-facing whole-deployment status: "Deployed" or "Failed · 2 of 4 deployed". Never "Partial". */
@@ -365,12 +386,6 @@ export const nodeOutcomeLabels = {
   deployed: "Deployed", removed: "Removed", failed: "Failed", not_attempted: "Not attempted", unchanged: "Unchanged",
   queued: "Queued", building: "Building", deploying: "Deploying",
 } satisfies Record<DeploymentNodeView["outcome"], string>;
-
-/** The Badge variant per outcome; cards take the same colour, except that secondary leaves them plain. */
-export const outcomeBadges = {
-  deployed: "success", removed: "secondary", failed: "destructive", not_attempted: "secondary", unchanged: "secondary",
-  queued: "secondary", building: "info", deploying: "info",
-} as const satisfies Record<DeploymentNodeView["outcome"], "success" | "secondary" | "destructive" | "info">;
 
 /** The first eight characters: how the UI names an attempt next to its message. */
 export const shortDeploymentId = (id: string) => id.slice(0, 8);

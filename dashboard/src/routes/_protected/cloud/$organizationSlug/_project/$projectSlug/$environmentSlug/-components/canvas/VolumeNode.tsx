@@ -72,7 +72,7 @@ export function VolumeNode({
       }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={data.resourceId}
-      style={canvasNodeTransition(data.resourceId)}
+      {...canvasNodeTransition(data.resourceId)}
       preload="intent"
       draggable={false}
       className="block h-36 w-72"

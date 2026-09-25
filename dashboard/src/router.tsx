@@ -13,6 +13,7 @@ import { defaultShouldDehydrateQuery, environmentManager, QueryClient } from "@t
 import { NotFoundPage } from "./components/not-found-page";
 import { PloyzMark } from "./components/icons/ployz-logo";
 import { RouteContentSkeleton } from "./components/route-content-skeleton";
+import { shownDeployment } from "./routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
 
 function AppPending() {
   const hydrated = useHydrated();
@@ -43,9 +44,6 @@ function AppPending() {
     </div>
   );
 }
-
-/** The canvas's `deployment` search param: the attempt Deployment Mode shows. */
-const shownDeployment = (searchStr: string) => new URLSearchParams(searchStr).get("deployment");
 
 export function getRouter() {
   const queryClient = new QueryClient({

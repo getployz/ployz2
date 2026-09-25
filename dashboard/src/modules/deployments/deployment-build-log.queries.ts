@@ -37,6 +37,6 @@ export function deploymentBuildLogQueryOptions(organizationSlug: string, deploym
 /** Reads nothing without an attempt. */
 export function useBuildLog(organizationSlug: string, deploymentId: string | null) {
   return useQuery(deploymentId === null
-    ? { queryKey: ["deployment-build-log", organizationSlug, null], queryFn: skipToken, staleTime: 0 }
+    ? { queryKey: ["deployment-build-log", organizationSlug, null], queryFn: skipToken }
     : deploymentBuildLogQueryOptions(organizationSlug, deploymentId));
 }

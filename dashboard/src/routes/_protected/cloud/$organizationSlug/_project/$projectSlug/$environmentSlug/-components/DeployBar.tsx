@@ -7,11 +7,12 @@ import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Drawer, DrawerContent, DrawerTitle, DrawerTrigger } from "#/components/ui/drawer";
-import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Empty, EmptyDescription } from "#/components/ui/empty";
+import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemSeparator, ItemTitle } from "#/components/ui/item";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { useIsMobile } from "#/hooks/use-mobile";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
-import { isQueuedForNextTrigger, useDeployQueuedNow, useRetryDeployment } from "#/modules/deployments/deployment-commands";
+import { useDeployQueuedNow, useRetryDeployment } from "#/modules/deployments/deployment-commands";
 import { useEnvironmentDeployments, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { deploymentStatusLabel, shortDeploymentId, type DeploymentView } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
@@ -114,7 +115,7 @@ export function DeployBar({ children }: { children?: ReactNode }) {
         ) : (
           <Popover open={listOpen} onOpenChange={setListOpen}>
             {openRunning ? null : <PopoverTrigger render={listTrigger} />}
-            <PopoverContent anchor={barRef} side="top" sideOffset={8} padding="none" className="w-[min(26rem,calc(100vw-2rem))]">
+            <PopoverContent anchor={barRef} side="top" sideOffset={8} className="w-[min(26rem,calc(100vw-2rem))]">
               <PopoverTitle className="sr-only">Deployments</PopoverTitle>
               {list}
             </PopoverContent>
@@ -136,7 +137,8 @@ function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSu
   const cancellable = !deployment.cancellationRequestedAt && isActiveDeployment(deployment.status);
   return <>
     {deployment.canRetry ? <Button size="sm" variant="outline" disabled={isRetrying} onClick={() => void retry()}>Retry</Button> : null}
-    {isQueuedForNextTrigger(deployment) ? <Button size="sm" variant="outline" disabled={isDispatching} onClick={() => void deployNow()}>Deploy now</Button> : null}
+    {/* Queued with no dispatch requested: it waits for the environment's next trigger. */}
+    {deployment.status === "queued" && !deployment.dispatchRequestedAt ? <Button size="sm" variant="outline" disabled={isDispatching} onClick={() => void deployNow()}>Deploy now</Button> : null}
     {cancellable ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}
     <CancelDeploymentDialog open={cancelOpen} onOpenChange={setCancelOpen} organizationSlug={organizationSlug} deployment={deployment} />
   </>;
@@ -145,18 +147,18 @@ function DeploymentActions({ deployment }: { deployment: EnvironmentDeploymentSu
 /** Live first, then the environment's deployments newest first. */
 function DeploymentList({ attempts, viewedId, environmentSlug }: { attempts: DeploymentAttempt[]; viewedId: string | null; environmentSlug: string }) {
   return (
-    <nav aria-label="Deployments" className="max-h-[min(28rem,70dvh)] overflow-y-auto p-1.5">
+    <nav aria-label="Deployments" className="max-h-[min(28rem,70dvh)] overflow-y-auto"><ItemGroup>
       <ListRow current={viewedId === null} search={{ deployment: undefined }}
         icon={<span className="size-2 rounded-full bg-success" />} title="Live" detail={`${environmentSlug} as it is now`} />
-      <p className="px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground">Deployments</p>
-      {attempts.length === 0 ? <p className="px-2.5 py-2 text-sm text-muted-foreground">No deployments yet</p> : null}
+      <ItemSeparator />
+      {attempts.length === 0 ? <Empty variant="placeholder"><EmptyDescription>No deployments yet</EmptyDescription></Empty> : null}
       {attempts.map(({ deployment, view }) => (
         <ListRow key={deployment.id} current={deployment.id === viewedId} search={{ deployment: deployment.id }}
           icon={<StatusIcon view={view} />}
           title={<><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</>}
           detail={`${deploymentStatusLabel(view)} · ${formatRelativeTime(deployment.createdAt)}`} />
       ))}
-    </nav>
+    </ItemGroup></nav>
   );
 }
 

@@ -39,7 +39,3 @@ export function useDeployQueuedNow(deployment: EnvironmentDeploymentSummary) {
   return useDeploymentCommand(deployment, { success: "Deployment requested.", failure: "Could not request this deployment." },
     async (target) => { await dispatchQueuedEnvironmentDeploymentServerFn({ data: target }); });
 }
-
-/** Queued with no dispatch requested: the attempt waits for the environment's next trigger. */
-export const isQueuedForNextTrigger = (deployment: EnvironmentDeploymentSummary) =>
-  deployment.status === "queued" && !deployment.dispatchRequestedAt;
