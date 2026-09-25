@@ -1,19 +1,28 @@
 import "@tanstack/react-start/server-only";
-import type { BuildReceipt, BuildReceipts, MachineId } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { BuildGrantId, BuildReceipt, BuildReceipts, MachineId } from "@ployz/sdk";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { organizationIdForDeployment } from "#/db/scope-values.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { githubImageBuildSchema, type GithubImageBuild, type SkipReason } from "./image-build";
 import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "./runtime-contract";
 import type { DeploymentContext } from "./runtime-repository.contract";
-import { environmentDeployment, environmentDeploymentImageBuild, type ImageBuildStatus, type ServerChoice } from "./tables";
+import { environmentDeployment, environmentDeploymentImageBuild as table, type ImageBuildStatus, type ServerChoice } from "./tables";
+
+/**
+ * Image Build rows and every transition they make. Each transition is one guarded update and
+ * returns what happened, so no caller re-reads a row to learn it:
+ *
+ *   start ──▶ building ─┬─ claim for GitHub ─▶ check-in ─▶ grant ─▶ report …
+ *                       ├─ skip (not once started) ─▶ building, next Builder
+ *                       └─ settle ─▶ built | failed | cancelled
+ */
 
 const buildReceiptSchema = Schema.Struct({
   fingerprint: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
-  machine_id: Schema.declare<MachineId>((value): value is MachineId =>
-    Schema.is(rustMachineIdSchema)(value)),
+  machine_id: rustMachineIdSchema,
   image: Schema.Struct({
     reference: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
     tags: Schema.mutable(Schema.Array(Schema.String)),
@@ -30,16 +39,27 @@ export type ImageBuildTarget = { id: string; deploymentId: string; serviceId: st
 
 export type ImageBuildOutcome =
   | { status: "built"; receipt: BuildReceipt }
-  | { status: "failed"; message: string; machineId: string | null }
+  | { status: "failed"; message: string; machineId: MachineId | null }
   | { status: "cancelled" };
 
 export type ImageBuildResult = { imageBuildId: string; image: string; status: ImageBuildStatus };
 /** One Builder's go at an Image Build: it settled there, or the Builder didn't take it and the walk moves on. */
-export type ImageBuildAttempt = { kind: "settled"; result: ImageBuildResult } | { kind: "skipped"; reason: string };
+export type ImageBuildAttempt = { kind: "settled"; result: ImageBuildResult } | { kind: "skipped"; reason: SkipReason };
 
 /** How long a Builder that isn't last in the walk has to start a build before the next Builder gets it. */
 export const START_WITHIN_MINUTES = 3;
-export const START_WITHIN_MS = START_WITHIN_MINUTES * 60_000;
+
+type Build = Pick<ImageBuildTarget, "id" | "image">;
+/** An Image Build that settled as `status`, as the walk reports it. */
+export const settled =(build: Build, status: ImageBuildStatus) =>
+  ({ kind: "settled", result: { imageBuildId: build.id, image: build.image, status } }) satisfies ImageBuildAttempt;
+
+/** The row's status once a guarded transition found it moved on. A vanished row reads failed. */
+const statusNow = Effect.fn("Deployments.imageBuildStatus")(function* (imageBuildId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ status: table.status }).from(table).where(eq(table.id, imageBuildId)).limit(1);
+  return row?.status ?? "failed";
+});
 
 /** The attempt's Git Services each get one Image Build. */
 export const imageBuildServices = (context: Pick<DeploymentContext, "snapshots">) =>
@@ -55,27 +75,110 @@ export const startImageBuilds = Effect.fn("Deployments.startImageBuilds")(functi
     inArray(environmentDeployment.status, [...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES]),
   )).limit(1);
   if (!owned || !services.length) return [];
-  yield* drizzle.insert(environmentDeploymentImageBuild).values(services.map((snapshot) => ({
+  yield* drizzle.insert(table).values(services.map((snapshot) => ({
     organizationId: organizationIdForDeployment(deploymentId), deploymentId, inngestRunId: runId,
     serviceId: snapshot.serviceId, image: snapshot.config.privateDns,
   }))).onConflictDoNothing();
-  const rows = yield* drizzle.select({
-    id: environmentDeploymentImageBuild.id, deploymentId: environmentDeploymentImageBuild.deploymentId,
-    serviceId: environmentDeploymentImageBuild.serviceId, image: environmentDeploymentImageBuild.image,
-  }).from(environmentDeploymentImageBuild).where(eq(environmentDeploymentImageBuild.deploymentId, deploymentId))
-    .orderBy(environmentDeploymentImageBuild.serviceId);
+  const rows = yield* drizzle.select({ id: table.id, deploymentId: table.deploymentId, serviceId: table.serviceId, image: table.image })
+    .from(table).where(eq(table.deploymentId, deploymentId)).orderBy(table.serviceId);
   return rows.map((row, buildIndex): ImageBuildTarget => ({ ...row, buildIndex }));
 });
 
-/** Records the Server the Engine chose while the row still builds, so the choice shows during the build. */
-export const recordServerChoice = Effect.fn("Deployments.recordServerChoice")(function* (imageBuildId: string, machineId: string, serverChoice: ServerChoice) {
+/** One Image Build as stored, its GitHub state decoded; undefined once gone. */
+export const loadImageBuild = Effect.fn("Deployments.loadImageBuild")(function* (imageBuildId: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(environmentDeploymentImageBuild).set({ machineId, serverChoice, updatedAt: new Date() })
-    .where(and(eq(environmentDeploymentImageBuild.id, imageBuildId), eq(environmentDeploymentImageBuild.status, "building")));
+  const [row] = yield* drizzle.select().from(table).where(eq(table.id, imageBuildId)).limit(1);
+  if (!row) return undefined;
+  // Cloud wrote it; a row that doesn't decode is a defect, not a user error.
+  const github = row.github === null ? null : yield* Schema.decodeUnknownEffect(githubImageBuildSchema)(row.github).pipe(Effect.orDie);
+  return { ...row, github };
 });
 
-/** Settles a building row once. Receipts are private evidence and stored encrypted. */
-export const settleImageBuild = Effect.fn("Deployments.settleImageBuild")(function* (imageBuildId: string, outcome: ImageBuildOutcome) {
+/** Records the Server the Engine chose while the row still builds, so the choice shows during the build. */
+export const recordServerChoice = Effect.fn("Deployments.recordServerChoice")(function* (imageBuildId: string, machineId: MachineId, serverChoice: ServerChoice) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(table).set({ machineId, serverChoice, updatedAt: new Date() })
+    .where(and(eq(table.id, imageBuildId), eq(table.status, "building")));
+});
+
+/** GitHub takes a building row: its dispatched run. Settled meanwhile (cancelled): nothing is claimed. */
+export const claimForGithub = Effect.fn("Deployments.claimImageBuildForGithub")(function* (build: Build, github: GithubImageBuild) {
+  const { drizzle } = yield* Database;
+  const [claimed] = yield* drizzle.update(table).set({ builder: "github", github, machineId: null, serverChoice: null, updatedAt: new Date() })
+    .where(and(eq(table.id, build.id), eq(table.status, "building"))).returning({ id: table.id });
+  return claimed ? { kind: "claimed" as const } : settled(build, yield* statusNow(build.id));
+});
+
+/** Not checked in yet: the build hasn't started on GitHub, so it may still move. */
+const notStarted = or(isNull(table.github), sql`${table.github} -> 'checkedInAt' = 'null'::jsonb`);
+
+/**
+ * Adds the current Builder to the skip trail and clears what it left, so the next one starts clean.
+ * Refused once the build started (GitHub checked in: `started`) or settled: a started build never moves.
+ */
+export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(function* (build: Build, reason: SkipReason) {
+  const { drizzle } = yield* Database;
+  const [skipped] = yield* drizzle.update(table).set({
+    skips: sql`${table.skips} || ${JSON.stringify([reason])}::jsonb`,
+    builder: "server", github: null, machineId: null, serverChoice: null, updatedAt: new Date(),
+  }).where(and(eq(table.id, build.id), eq(table.status, "building"), notStarted)).returning({ id: table.id });
+  if (skipped) return { kind: "skipped", reason } satisfies ImageBuildAttempt;
+  const status = yield* statusNow(build.id);
+  return status === "building" ? { kind: "started" as const } : settled(build, status);
+});
+
+/** Skips a Builder that cannot have started the build: nothing checked in for it. */
+export const skipUnstarted = (build: Build, reason: SkipReason) => skipImageBuilder(build, reason).pipe(
+  Effect.flatMap((skip) => skip.kind === "started"
+    ? Effect.die(new Error("An Image Build started without checking in."))
+    : Effect.succeed<ImageBuildAttempt>(skip)),
+);
+
+/**
+ * The runner of `runId` checks in: the build starts on GitHub. Only while that run still holds the
+ * build and once; the "start within" skip updates the same row, so exactly one of them wins.
+ */
+export const checkInImageBuild = Effect.fn("Deployments.checkInImageBuild")(function* (imageBuildId: string, runId: number) {
+  const { drizzle } = yield* Database;
+  const [checkedIn] = yield* drizzle.update(table).set({
+    github: sql`jsonb_set(${table.github}, '{checkedInAt}', ${JSON.stringify(Date.now())}::jsonb)`, updatedAt: new Date(),
+  }).where(and(
+    eq(table.id, imageBuildId), eq(table.status, "building"),
+    sql`(${table.github} ->> 'runId')::bigint = ${runId}`, sql`${table.github} -> 'checkedInAt' = 'null'::jsonb`,
+  )).returning({ id: table.id });
+  return checkedIn !== undefined;
+});
+
+/** The Build Grant minted for a checked-in run, on the Machine it pushes into. */
+export const recordGithubGrant = Effect.fn("Deployments.recordGithubGrant")(function* (
+  imageBuildId: string, machineId: MachineId, grant: { id: BuildGrantId; fingerprint: string },
+) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(table).set({
+    machineId, github: sql`jsonb_set(${table.github}, '{grant}', ${JSON.stringify(grant)}::jsonb)`, updatedAt: new Date(),
+  }).where(and(eq(table.id, imageBuildId), eq(table.status, "building"), eq(table.builder, "github")));
+});
+
+/**
+ * The runner's Build Steps after `received` earlier events, while the build runs and until the
+ * runner reported its end. Guarded on `received`, so a report is taken once.
+ */
+export const recordGithubReport = Effect.fn("Deployments.recordGithubReport")(function* (
+  imageBuildId: string, received: number, report: NonNullable<GithubImageBuild["report"]>,
+) {
+  const { drizzle } = yield* Database;
+  const [recorded] = yield* drizzle.update(table).set({
+    github: sql`jsonb_set(${table.github}, '{report}', ${JSON.stringify(report)}::jsonb)`, updatedAt: new Date(),
+  }).where(and(
+    eq(table.id, imageBuildId), eq(table.status, "building"), eq(table.builder, "github"),
+    sql`coalesce((${table.github} -> 'report' ->> 'received')::int, 0) = ${received}`,
+    sql`coalesce(${table.github} -> 'report' -> 'platforms', 'null'::jsonb) = 'null'::jsonb`,
+  )).returning({ id: table.id });
+  return recorded !== undefined;
+});
+
+/** Settles a building row once and reports the status it has now. Receipts are private evidence and stored encrypted. */
+export const settleImageBuild = Effect.fn("Deployments.settleImageBuild")(function* (build: Build, outcome: ImageBuildOutcome) {
   const { drizzle } = yield* Database;
   const encryption = yield* SecretEncryption;
   const now = new Date();
@@ -86,37 +189,19 @@ export const settleImageBuild = Effect.fn("Deployments.settleImageBuild")(functi
       )
     : outcome.status === "failed" ? { status: "failed" as const, machineId: outcome.machineId, failureMessage: outcome.message }
     : { status: "cancelled" as const };
-  yield* drizzle.update(environmentDeploymentImageBuild).set({ ...patch, finishedAt: now, updatedAt: now })
-    .where(and(eq(environmentDeploymentImageBuild.id, imageBuildId), eq(environmentDeploymentImageBuild.status, "building")));
-  return patch.status;
-});
-
-export const settleImageBuildResult = (build: Pick<ImageBuildTarget, "id" | "image">, outcome: ImageBuildOutcome) =>
-  settleImageBuild(build.id, outcome).pipe(Effect.map((status): ImageBuildResult => ({ imageBuildId: build.id, image: build.image, status })));
-
-/**
- * Adds a Builder that didn't take the build to its skip trail and clears what that Builder left, so
- * the next one starts clean. Refused once the build started on GitHub (checked in) or settled: a
- * build that started never moves.
- */
-export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(function* (imageBuildId: string, reason: string) {
-  const { drizzle } = yield* Database;
-  const table = environmentDeploymentImageBuild;
-  const [skipped] = yield* drizzle.update(table).set({
-    skips: sql`array_append(${table.skips}, ${reason})`, builder: "server", machineId: null, serverChoice: null,
-    githubRunId: null, githubRunUrl: null, githubWorkflowRef: null, updatedAt: new Date(),
-  }).where(and(eq(table.id, imageBuildId), eq(table.status, "building"), isNull(table.checkedInAt))).returning({ id: table.id });
-  return skipped !== undefined;
+  const [updated] = yield* drizzle.update(table).set({ ...patch, finishedAt: now, updatedAt: now })
+    .where(and(eq(table.id, build.id), eq(table.status, "building"))).returning({ status: table.status });
+  return settled(build, updated?.status ?? (yield* statusNow(build.id)));
 });
 
 /** An Image Build is wanted while it builds and its attempt is active and not being cancelled. */
 export const imageBuildWanted = Effect.fn("Deployments.imageBuildWanted")(function* (imageBuildId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({
-    build: environmentDeploymentImageBuild.status, attempt: environmentDeployment.status, cancelling: environmentDeployment.cancellationRequestedAt,
-  }).from(environmentDeploymentImageBuild)
-    .innerJoin(environmentDeployment, eq(environmentDeployment.id, environmentDeploymentImageBuild.deploymentId))
-    .where(eq(environmentDeploymentImageBuild.id, imageBuildId)).limit(1);
+    build: table.status, attempt: environmentDeployment.status, cancelling: environmentDeployment.cancellationRequestedAt,
+  }).from(table)
+    .innerJoin(environmentDeployment, eq(environmentDeployment.id, table.deploymentId))
+    .where(eq(table.id, imageBuildId)).limit(1);
   return row !== undefined && row.build === "building" && row.cancelling === null && ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES.has(row.attempt);
 });
 
@@ -127,7 +212,6 @@ export const imageBuildWanted = Effect.fn("Deployments.imageBuildWanted")(functi
 export const loadBuildReceipts = Effect.fn("Deployments.loadBuildReceipts")(function* (scope: { deploymentId: string } | { environmentId: string }) {
   const { drizzle } = yield* Database;
   const encryption = yield* SecretEncryption;
-  const table = environmentDeploymentImageBuild;
   const rows = yield* drizzle.selectDistinctOn([table.image], { image: table.image, receipt: table.encryptedReceipt })
     .from(table).innerJoin(environmentDeployment, eq(environmentDeployment.id, table.deploymentId))
     .where(and(eq(table.status, "built"), "deploymentId" in scope

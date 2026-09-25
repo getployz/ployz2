@@ -29,9 +29,7 @@ import {
   createDefaultServiceRestartPolicy,
   projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
-import {
-  DeploymentRuntimeInvalid,
-} from "#/modules/deployments/runtime-activities.server";
+import { DeploymentRuntimeInvalid } from "#/modules/deployments/runtime-session.server";
 
 const sdkPreview = {
   project_name: "production",

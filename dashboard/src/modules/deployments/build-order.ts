@@ -1,4 +1,6 @@
+import type { MachineId } from "@ployz/sdk";
 import { Schema } from "effect";
+import type { CandidateReason } from "#/modules/deployments/image-build";
 import { OrganizationSlug } from "#/modules/environment-design/workspace-schemas";
 
 export const BUILD_ORDERS = ["servers-only", "github-then-servers", "servers-then-github", "github-only"] as const;
@@ -24,26 +26,30 @@ export type BuildOrderRow = { id: string; buildOrder: BuildOrder | null };
  */
 export const defaultBuildOrder = (githubSetUp: boolean): BuildOrder => githubSetUp ? "github-then-servers" : "servers-only";
 
-/** One Builder an Image Build may try. `machineId` is a Preferred Server: the Cluster's first choice. */
-export type BuildCandidate = { builder: "servers"; machineId?: string } | { builder: "github" };
+/**
+ * One Builder an Image Build may try, and why it is in the walk. `machineId` is a Preferred Server:
+ * the Cluster's first choice.
+ */
+export type BuildCandidate = { builder: "servers" | "github"; reason: CandidateReason; machineId?: MachineId };
 
 /** The Builders a Build Order tries, in turn. */
-export const buildOrderCandidates = (order: BuildOrder): BuildCandidate[] => ({
-  "servers-only": [{ builder: "servers" }],
-  "github-then-servers": [{ builder: "github" }, { builder: "servers" }],
-  "servers-then-github": [{ builder: "servers" }, { builder: "github" }],
-  "github-only": [{ builder: "github" }],
-} satisfies Record<BuildOrder, BuildCandidate[]>)[order];
+const ORDERED_BUILDERS = {
+  "servers-only": ["servers"],
+  "github-then-servers": ["github", "servers"],
+  "servers-then-github": ["servers", "github"],
+  "github-only": ["github"],
+} satisfies Record<BuildOrder, readonly BuildCandidate["builder"][]>;
 
 /**
  * The Builders one Image Build walks: the Service's Preferred Builder, then the Build Order without
  * that Builder. A Preferred Server stands in for "your servers", with it first.
  */
-export const imageBuildWalk = (order: BuildOrder, preferred: string | undefined): BuildCandidate[] => {
-  const candidates = buildOrderCandidates(order);
-  if (preferred === undefined) return candidates;
-  const first: BuildCandidate = preferred === "github" ? { builder: "github" } : { builder: "servers", machineId: preferred };
-  return [first, ...candidates.filter((candidate) => candidate.builder !== first.builder)];
+export const imageBuildWalk = (order: BuildOrder, preferred: "github" | MachineId | undefined): BuildCandidate[] => {
+  const walk: BuildCandidate[] = [];
+  if (preferred === "github") walk.push({ builder: "github", reason: "preferred" });
+  else if (preferred !== undefined) walk.push({ builder: "servers", reason: "preferred", machineId: preferred });
+  const rest = ORDERED_BUILDERS[order].filter((builder) => !walk.some((first) => first.builder === builder));
+  return [...walk, ...rest.map((builder, index): BuildCandidate => ({ builder, reason: index === 0 ? "first_in_build_order" : "next_in_build_order" }))];
 };
 
 export const buildOrderEditSchema = Schema.Struct({

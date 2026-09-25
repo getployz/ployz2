@@ -1,8 +1,8 @@
 import { Schema } from "effect";
-import { MACHINE_ID_PATTERN } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 
 /** A Service's Preferred Builder: GitHub Actions or one Server. Absent is Auto. */
-const preferredBuilderSchema = Schema.Union([Schema.Literal("github"), Schema.String.check(Schema.isPattern(MACHINE_ID_PATTERN))]);
+export const preferredBuilderSchema = Schema.Union([Schema.Literal("github"), rustMachineIdSchema]);
 
 /** Immediate trigger preferences. Never part of an Environment configuration. */
 export const servicePolicySchema = Schema.Struct({

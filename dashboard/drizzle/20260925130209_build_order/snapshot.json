@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "9c1e45ba-896f-42f4-ab20-ce3e5bb4f338",
+  "id": "fbbeb81a-8b97-43c5-a0d9-bb642eb5c9d4",
   "prevIds": [
     "9f4f9765-79be-49b7-9c87-9d75ba4a7cd7"
   ],
@@ -2594,9 +2594,9 @@
     {
       "type": "text",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
-      "default": "''",
+      "default": null,
       "generated": null,
       "identity": null,
       "name": "image",
@@ -2956,118 +2956,27 @@
       "table": "environment_deployment_image_build"
     },
     {
-      "type": "bigint",
+      "type": "jsonb",
       "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "github_run_id",
+      "name": "github",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment_image_build"
     },
     {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "github_run_url",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "github_workflow_ref",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "checked_in_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "grant_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "fingerprint",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 1,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "platforms",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
+      "type": "jsonb",
       "typeSchema": null,
       "notNull": true,
-      "dimensions": 1,
-      "default": "'{}'",
+      "dimensions": 0,
+      "default": "'[]'",
       "generated": null,
       "identity": null,
       "name": "skips",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "boolean",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "false",
-      "generated": null,
-      "identity": null,
-      "name": "preferred",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment_image_build"
@@ -10344,7 +10253,7 @@
         "build",
         "key"
       ],
-      "nullsNotDistinct": false,
+      "nullsNotDistinct": true,
       "name": "environment_deployment_build_step_key_unique",
       "entityType": "uniques",
       "schema": "public",
@@ -10492,6 +10401,13 @@
     {
       "value": "\"builder\" in ('server', 'github')",
       "name": "environment_deployment_image_build_builder_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "environment_deployment_image_build"
+    },
+    {
+      "value": "(\"builder\" = 'github') = (\"github\" is not null)",
+      "name": "environment_deployment_image_build_github_check",
       "entityType": "checks",
       "schema": "public",
       "table": "environment_deployment_image_build"

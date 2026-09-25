@@ -24,18 +24,20 @@ import { TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/
 import { DeploymentExecutionError } from "#/modules/deployments/execution-error";
 import {
   cleanUpDeploymentImages,
-  executeImageBuild,
   executeLatestEnvironmentDeployment,
 } from "#/modules/deployments/runtime-activities.server";
 import {
-  settleImageBuildResult,
+  settleImageBuild,
   START_WITHIN_MINUTES,
-  START_WITHIN_MS,
   startImageBuilds,
   type ImageBuildAttempt,
   type ImageBuildTarget,
 } from "#/modules/deployments/image-builds.server";
+import type { BuildCandidate } from "#/modules/deployments/build-order";
 import { imageBuildCandidates } from "#/modules/deployments/build-order.server";
+import { skipReasonText } from "#/modules/deployments/deployment-view";
+import type { SkipReason } from "#/modules/deployments/image-build";
+import { buildOnServers } from "#/modules/deployments/server-image-builds.server";
 import {
   cancelGithubImageBuilds,
   checkGithubImageBuild,
@@ -143,10 +145,39 @@ export type EnvironmentDeploymentStepTools = Pick<
   "run" | "sleep" | "sendEvent" | "waitForEvent"
 >;
 
+/** Where one Builder's go at an Image Build sits in its walk. */
+type Walk = { key: string; last: boolean; step: EnvironmentDeploymentStepTools; runEffect: DeploymentInngestEffectRunner };
+type Builder = (build: ImageBuildTarget, candidate: BuildCandidate, walk: Walk) => Promise<ImageBuildAttempt>;
+
+/** Your servers: one Cluster build, which is withdrawn unstarted at "start within" unless it is last. */
+const walkServers: Builder = (build, candidate, { key, last, step, runEffect }) =>
+  step.run(`build-image-${key}`, () => runEffect(buildOnServers(build, candidate, last ? undefined : START_WITHIN_MINUTES * 60_000)));
+
 /**
- * One Image Build walks its Builders in turn: its Service's Preferred Builder, then the Build Order. Each but the last has "start within" to start it,
- * else the next gets it; the last waits. A Builder that can't take it is skipped at once. A build
- * that started never moves. Every skip lands on the Image Build's trail.
+ * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The Workflow run
+ * webhook ends a wait at once; each timeout checks the run on GitHub too, which catches a completion
+ * that landed between two waits. Not last: the first check is the "start within" limit, and a run
+ * that hasn't checked in by then is withdrawn. Last: it waits for the run to start without a limit.
+ */
+const walkGithub: Builder = async (build, candidate, { key, last, step, runEffect }) => {
+  const started = await step.run(`start-github-build-${key}`, () => runEffect(startGithubImageBuild(build, candidate)));
+  if (started.kind !== "dispatched") return started;
+  const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
+  for (let check = 0; ; check += 1) {
+    const startLimit = check === 0 && !last;
+    const ended = await step.waitForEvent(`wait-github-run-${key}-${check}`, { ...run, timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL });
+    const found = await step.run(`check-github-build-${key}-${check}`, () => runEffect(checkGithubImageBuild(build, { ended: ended !== null, startLimit })));
+    if (found.kind !== "waiting") return found;
+  }
+};
+
+const BUILDERS = { servers: walkServers, github: walkGithub } satisfies Record<BuildCandidate["builder"], Builder>;
+
+/**
+ * One Image Build walks its Builders in turn: its Service's Preferred Builder, then the Build Order.
+ * Each but the last has "start within" to start it, else the next gets it; the last waits. A Builder
+ * that can't take it is skipped at once. A build that started never moves. Every skip lands on the
+ * Image Build's trail.
  *
  *   candidates ─▶ [servers | github] ─ skipped ─▶ next ─ … ─▶ none left: failed
  *                        └─ settled (built / failed / cancelled) ─▶ done
@@ -157,42 +188,17 @@ async function runImageBuild(
   runEffect: DeploymentInngestEffectRunner,
 ) {
   const candidates = await step.run(`plan-image-build-${build.serviceId}`, () => runEffect(imageBuildCandidates(build)));
-  let reason = "No Builder can take this build.";
+  let skipped: SkipReason | null = null;
   for (const [index, candidate] of candidates.entries()) {
-    const last = index === candidates.length - 1;
-    const key = `${build.serviceId}-${index}`;
-    const attempt: ImageBuildAttempt = candidate.builder === "github"
-      ? await buildOnGithub(build, key, last, step, runEffect)
-      : await step.run(`build-image-${key}`, () => runEffect(executeImageBuild(build, last ? undefined : START_WITHIN_MS, candidate.machineId)));
+    const walk = { key: `${build.serviceId}-${index}`, last: index === candidates.length - 1, step, runEffect };
+    const attempt = await BUILDERS[candidate.builder](build, candidate, walk);
     if (attempt.kind === "settled") return attempt.result;
-    reason = attempt.reason;
+    skipped = attempt.reason;
   }
-  return step.run(`fail-image-build-${build.serviceId}`, () =>
-    runEffect(settleImageBuildResult(build, { status: "failed", message: reason, machineId: null })));
-}
-
-/**
- * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The Workflow run
- * webhook ends a wait at once; each timeout checks the run on GitHub too, which catches a completion
- * that landed between two waits. Not last: the first check is the "start within" limit, and a run
- * that hasn't checked in by then is withdrawn. Last: it waits for the run to start without a limit.
- */
-async function buildOnGithub(
-  build: ImageBuildTarget,
-  key: string,
-  last: boolean,
-  step: EnvironmentDeploymentStepTools,
-  runEffect: DeploymentInngestEffectRunner,
-): Promise<ImageBuildAttempt> {
-  const started = await step.run(`start-github-build-${key}`, () => runEffect(startGithubImageBuild(build)));
-  if (started.kind !== "dispatched") return started;
-  const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
-  for (let check = 0; ; check += 1) {
-    const startLimit = check === 0 && !last;
-    const ended = await step.waitForEvent(`wait-github-run-${key}-${check}`, { ...run, timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL });
-    const found = await step.run(`check-github-build-${key}-${check}`, () => runEffect(checkGithubImageBuild(build, { ended: ended !== null, startLimit })));
-    if (found.kind !== "waiting") return found;
-  }
+  const message = skipped ? skipReasonText(skipped) : "No Builder can take this build.";
+  const failed = await step.run(`fail-image-build-${build.serviceId}`, () =>
+    runEffect(settleImageBuild(build, { status: "failed", message, machineId: null })));
+  return failed.result;
 }
 
 export type EnvironmentDeployEventData =

@@ -6,6 +6,17 @@ export type BuildStepWrite = { build: number; key: string; name: string; started
 export type BuildOutputWrite = { build: number; step: string; stderr: boolean; text: string };
 export type PreparationWrites = { progress: PreparationProgress | null; steps: BuildStepWrite[]; output: BuildOutputWrite[] };
 
+/**
+ * Where a collector left off, as JSON: enough to fold a later batch of the same build's events as
+ * if it had never stopped. A GitHub runner reports its Build Steps in batches.
+ */
+export type CollectorCheckpoint = {
+  build: number;
+  open: string | null;
+  stepFailed: boolean;
+  rows: readonly (Omit<BuildStepWrite, "startedAt" | "completedAt"> & { startedAt: string | null; completedAt: string | null })[];
+};
+
 /** Builder messages outside any BuildKit step, such as a Dockerfile parse error. */
 export const BUILD_OUTPUT_KEY = "build-output";
 
@@ -43,14 +54,17 @@ const rowId = (build: number, key: string) => `${build}:${key}`;
  * image, attributing the run's steps and output to that Image Build.
  * Provider errors and rejection dumps are never logs.
  */
-export function preparationProgressCollector(now: () => Date = () => new Date()) {
+export function preparationProgressCollector(now: () => Date = () => new Date(), resume?: CollectorCheckpoint) {
+  // ponytail: a multibyte character split across two resumed batches decodes as replacement characters.
   const decoder = new TextDecoder();
   let current: PreparationProgress = { phase: "selection", serviceId: null, machineId: null, machineName: null, message: null };
+  const date = (value: string | null) => value === null ? null : new Date(value);
   /** Ployz-owned rows by build and key, mutated in place; the open phase is the one without a completion. */
-  const rows = new Map<string, BuildStepWrite>();
-  let open: string | null = null;
-  let build = 0;
-  let stepFailed = false;
+  const rows = new Map<string, BuildStepWrite>((resume?.rows ?? []).map((row) =>
+    [rowId(row.build, row.key), { ...row, startedAt: date(row.startedAt), completedAt: date(row.completedAt) }]));
+  let open: string | null = resume?.open ?? null;
+  let build = resume?.build ?? 0;
+  let stepFailed = resume?.stepFailed ?? false;
   let finished = false;
   const create = (key: string, name: string): BuildStepWrite => {
     const row = { build, key, name, startedAt: now(), completedAt: null, cached: false, error: null };
@@ -77,6 +91,10 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
   };
   return {
     current: () => current,
+    checkpoint: (): CollectorCheckpoint => ({
+      build, open, stepFailed,
+      rows: [...rows.values()].map((row) => ({ ...row, startedAt: row.startedAt?.toISOString() ?? null, completedAt: row.completedAt?.toISOString() ?? null })),
+    }),
     event(event: PreparationEvent): PreparationWrites {
       if (event === "Transfer") {
         current = { ...current, phase: "transfer", message: "Delivering images" };

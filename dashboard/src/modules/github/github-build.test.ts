@@ -13,7 +13,7 @@ const action = (file: string) => readFileSync(actionPath(file), "utf8");
 describe("GitHub build workflow", () => {
   it("is exactly the workflow the Action documents and accepts", () => {
     expect(GITHUB_BUILD_WORKFLOW).toBe(action("ployz-build.yml"));
-    expect(action("README.md")).toContain(GITHUB_BUILD_WORKFLOW);
+    expect(action("README.md")).toContain("[`ployz-build.yml`](ployz-build.yml)");
     const inputs = action("action.yml");
     for (const input of ["build", "cloud", "ployz_version"]) {
       expect(GITHUB_BUILD_WORKFLOW).toContain(`${input}: \${{ inputs.${input} }}`);

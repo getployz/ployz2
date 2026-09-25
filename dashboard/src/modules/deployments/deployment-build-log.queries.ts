@@ -5,7 +5,7 @@ type BuildLogPage = Awaited<ReturnType<typeof listDeploymentBuildLogServerFn>>;
 export type BuildStepRow = BuildLogPage["steps"][number];
 export type BuildOutputRow = BuildLogPage["output"][number];
 
-type BuildLog = { steps: BuildStepRow[]; output: BuildOutputRow[]; serverChoices: BuildLogPage["serverChoices"]; finished: boolean };
+type BuildLog = { steps: BuildStepRow[]; output: BuildOutputRow[]; imageBuilds: BuildLogPage["imageBuilds"]; finished: boolean };
 
 /** Polls the step tree while the attempt runs, resuming output from the last row already held. */
 export function deploymentBuildLogQueryOptions(organizationSlug: string, deploymentId: string) {
@@ -18,7 +18,7 @@ export function deploymentBuildLogQueryOptions(organizationSlug: string, deploym
     queryFn: async ({ signal, client }) => {
       const previous = client.getQueryData<BuildLog>(queryKey);
       let steps: BuildStepRow[] = [];
-      let serverChoices: BuildLogPage["serverChoices"] = [];
+      let imageBuilds: BuildLogPage["imageBuilds"] = [];
       const output: BuildOutputRow[] = [...previous?.output ?? []];
       let finished = false;
       const last = output.at(-1);
@@ -26,12 +26,12 @@ export function deploymentBuildLogQueryOptions(organizationSlug: string, deploym
       while (afterSequence !== null) {
         const page = await listDeploymentBuildLogServerFn({ data: { organizationSlug, deploymentId, afterSequence, limit: 100 }, signal });
         steps = page.steps;
-        serverChoices = page.serverChoices;
+        imageBuilds = page.imageBuilds;
         output.push(...page.output);
         finished = page.finished;
         afterSequence = page.nextSequence;
       }
-      return { steps, output, serverChoices, finished };
+      return { steps, output, imageBuilds, finished };
     },
   });
 }

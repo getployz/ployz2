@@ -14,7 +14,7 @@ function row(index: number, operation?: DeployOperation): OperationRow {
 /** The Engine serializes keys alphabetically, unlike the planned rows. */
 const engineOrdered = <T,>(value: T): T => JSON.parse(canonicalJson(value)) as T;
 const context = { serviceIdFor: (name: string | null) => name };
-const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null, image = "") =>
+const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null, image: string | null = null) =>
   ({ id, image, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
 const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: Partial<DeploymentViewInput["deployment"]> = {}): DeploymentViewInput["deployment"] =>
   ({ status, failureMessage: null, deployPreview: null, ...extra });
@@ -100,19 +100,20 @@ describe("deployment view projection", () => {
   it("says which Server each image builds on and why, only once the Engine chose", () => {
     const view = deploymentView({
       deployment: deployment("queued"), progress: null,
-      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki", "shop", "mail"].map((image) => node({ nodeId: image, changed: true, image })),
+      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki", "shop", "mail", "cron"].map((image) => node({ nodeId: image, changed: true, image })),
       buildLog: {
         steps: [], output: [],
-        serverChoices: [
-          { image: "site", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/1" },
-          { image: "api", serverChoice: { machineName: "nuc", reason: { kind: "had_cache" } } },
-          { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } } },
-          { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "c".repeat(32) as MachineId, name: "nuc" } } },
-          { image: "worker", serverChoice: null },
-          { image: "blog", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/2", skips: ["Your servers: none started it in 3 min"] },
-          { image: "wiki", serverChoice: null, skips: ["GitHub: no workflow in o/r"] },
-          { image: "shop", serverChoice: { machineName: "fast", reason: { kind: "preferred" } }, preferred: true },
-          { image: "mail", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/3", preferred: true },
+        imageBuilds: [
+          { image: "site", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/1", reason: "first_in_build_order" }, skips: [] },
+          { image: "api", serverChoice: { machineName: "nuc", reason: { kind: "had_cache" } }, github: null, skips: [] },
+          { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } }, github: null, skips: [] },
+          { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "c".repeat(32) as MachineId, name: "nuc" } }, github: null, skips: [] },
+          { image: "worker", serverChoice: null, github: null, skips: [] },
+          { image: "blog", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/2", reason: "next_in_build_order" }, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] },
+          { image: "wiki", serverChoice: null, github: null, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }] },
+          { image: "shop", serverChoice: { machineName: "fast", reason: { kind: "preferred" } }, github: null, skips: [] },
+          { image: "mail", serverChoice: null, github: { runUrl: "https://github.com/o/r/actions/runs/3", reason: "preferred" }, skips: [] },
+          { image: "cron", serverChoice: { machineName: "hel-1", reason: { kind: "preferred_unavailable", preferred: "d".repeat(32) as MachineId, name: null } }, github: null, skips: [] },
         ],
       },
     });
@@ -126,6 +127,7 @@ describe("deployment view projection", () => {
       { server: null, reason: null, skipped: ["GitHub: no workflow in o/r"] },
       { server: "fast", reason: "preferred builder", skipped: [] },
       { server: "GitHub Actions", reason: "preferred builder", runUrl: "https://github.com/o/r/actions/runs/3", skipped: [] },
+      { server: "hel-1", reason: "the preferred Server is no longer in the Cluster", skipped: [] },
     ]);
     // The skip trail reads after the Builder that took the build, or alone before one did.
     expect(view.nodes.slice(5, 7).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([

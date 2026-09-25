@@ -29,6 +29,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
+import { Field, FieldLabel } from "#/components/ui/field";
 import { Switch } from "#/components/ui/switch";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import {
@@ -187,16 +188,17 @@ function RuntimeMachineRow({
             <Badge variant="outline">
               Membership: {machine.membership.replaceAll("_", " ")}
             </Badge>
-            <label className="flex items-center gap-2 text-muted-foreground text-sm">
-              Builds
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor={`builds-${machine.id}`}>Builds</FieldLabel>
               <Switch
+                id={`builds-${machine.id}`}
                 size="sm"
                 checked={policy.acceptsBuilds}
                 onCheckedChange={(acceptsBuilds) =>
                   policy.request({ acceptsBuilds })
                 }
               />
-            </label>
+            </Field>
             <MachineActionsMenu
               machine={machine}
               organizationSlug={organizationSlug}

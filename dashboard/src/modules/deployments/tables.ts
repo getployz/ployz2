@@ -1,9 +1,11 @@
-import type { BuilderReason, PruneRefusal } from "@ployz/sdk";
+import type { BuilderReason, MachineId, PruneRefusal } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type JsonValue, updatedAt } from "#/db/tables";
 
 import { type DeploymentTriggerOrigin } from "#/modules/deployments/deployment";
 
 import { type BuildOrder } from "#/modules/deployments/build-order";
+
+import type { GithubImageBuild, SkipReason } from "#/modules/deployments/image-build";
 
 import { type EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
 
@@ -220,8 +222,8 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
   id: bigserial("id", { mode: "number" }).primaryKey(),
   organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   deploymentId: uuid("deployment_id").notNull().references(() => environmentDeployment.id, { onDelete: "cascade" }),
-  /** The Image Build that reported the step, by image name; empty for the deploy step's own preparation. */
-  image: text("image").notNull().default(""),
+  /** The Image Build that reported the step, by image name; null for the deploy step's own preparation. */
+  image: text("image"),
   /** Which BuildKit run of the Image Build the step belongs to; 0 before the first. One build may run several (per platform). */
   build: integer("build").notNull().default(0),
   /** BuildKit digest or `stage:<Stage>`; stable across repeated reports within one run. */
@@ -233,7 +235,7 @@ export const environmentDeploymentBuildStep = pgTable("environment_deployment_bu
   error: text("error"),
   createdAt,
   updatedAt,
-}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.image, table.build, table.key)]);
+}, (table) => [unique("environment_deployment_build_step_key_unique").on(table.deploymentId, table.image, table.build, table.key).nullsNotDistinct()]);
 
 /** Append-only output attributed to one build step. */
 export const environmentDeploymentBuildOutput = pgTable("environment_deployment_build_output", {
@@ -263,8 +265,8 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   /** The Service's private DNS name: names the image in Build Steps and Build Receipts. */
   image: text("image").notNull(),
   status: text("status").notNull().default("building").$type<ImageBuildStatus>(),
-  /** The Server that built, or already held, the image. */
-  machineId: text("machine_id"),
+  /** The Server that built, or already held, the image; for GitHub, the Machine it pushed into. */
+  machineId: text("machine_id").$type<MachineId>(),
   /** Which Server the Engine chose to build on and why, recorded when it chose. */
   serverChoice: jsonb("server_choice").$type<ServerChoice>(),
   /** Private: fingerprints include effective secret build variables. */
@@ -272,29 +274,19 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   failureMessage: text("failure_message"),
   inngestRunId: text("inngest_run_id").notNull(),
   finishedAt: timestamp("finished_at", { mode: "date", withTimezone: true }),
-  // The Builder. A GitHub build records its dispatched run, then its one check-in.
+  /** The Builder that holds the build now. */
   builder: text("builder").notNull().default("server").$type<ImageBuilder>(),
-  githubRunId: bigint("github_run_id", { mode: "number" }),
-  githubRunUrl: text("github_run_url"),
-  /** The `job_workflow_ref` the run's OIDC token must carry: the build workflow on the default branch. */
-  githubWorkflowRef: text("github_workflow_ref"),
-  checkedInAt: timestamp("checked_in_at", { mode: "date", withTimezone: true }),
-  /** The Build Grant minted at check-in, on the Machine in `machineId`. */
-  grantId: text("grant_id"),
-  /** The fingerprint the runner was told to build; the receipt carries it. */
-  fingerprint: text("fingerprint"),
-  /** Platforms the runner reported building; the Machine's store proves them at reuse. */
-  platforms: text("platforms").array(),
+  /** GitHub's run, check-in and Build Steps; present exactly while GitHub is the Builder. */
+  github: jsonb("github").$type<GithubImageBuild>(),
   /** Why each Builder tried before this one didn't take the build, in order: the skip trail. */
-  skips: text("skips").array().notNull().default(sql`'{}'::text[]`),
-  /** The walk started with the Service's Preferred Builder. */
-  preferred: boolean("preferred").notNull().default(false),
+  skips: jsonb("skips").notNull().default(sql`'[]'::jsonb`).$type<readonly SkipReason[]>(),
   createdAt,
   updatedAt,
 }, (table) => [
   unique("environment_deployment_image_build_service_unique").on(table.deploymentId, table.serviceId),
   check("environment_deployment_image_build_receipt_check", sql`(${table.status} = 'built') = (${table.encryptedReceipt} is not null)`),
   check("environment_deployment_image_build_builder_check", sql`${table.builder} in ('server', 'github')`),
+  check("environment_deployment_image_build_github_check", sql`(${table.builder} = 'github') = (${table.github} is not null)`),
 ]);
 
 export type ImageBuilder = "server" | "github";

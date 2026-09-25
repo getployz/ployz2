@@ -8,15 +8,15 @@ import type { DeploymentContext } from "#/modules/deployments/runtime-repository
 import * as runtimeHydration from "#/modules/deployments/runtime-hydration.repository.server";
 import * as runtimeLifecycle from "#/modules/deployments/runtime-lifecycle.repository.server";
 import * as runtimeActivities from "#/modules/deployments/runtime-activities.server";
-import {
-  DeploymentRuntimeInvalid,
-  type DeploymentRuntimeOutcome,
-} from "#/modules/deployments/runtime-activities.server";
+import type { DeploymentRuntimeOutcome } from "#/modules/deployments/runtime-activities.server";
+import { DeploymentRuntimeInvalid } from "#/modules/deployments/runtime-session.server";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import * as imageBuilds from "#/modules/deployments/image-builds.server";
 import * as buildOrder from "#/modules/deployments/build-order.server";
+import { imageBuildWalk } from "#/modules/deployments/build-order";
+import * as serverImageBuilds from "#/modules/deployments/server-image-builds.server";
 import type { ImageBuildTarget } from "#/modules/deployments/image-builds.server";
-import { createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
+import { createProcessEnvironmentDeployment, IMAGE_BUILDS_AT_ONCE } from "./environment-deployment.inngest";
 
 const activity = {
   claim: vi.fn(),
@@ -32,9 +32,9 @@ const activity = {
 const build = (image: string, buildIndex = 0): ImageBuildTarget => ({ id: `build-${image}`, deploymentId: "deployment-1", serviceId: `service-${image}`, image, buildIndex });
 
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.promise(() => activity.startBuilds()));
-vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((target) =>
+vi.spyOn(serverImageBuilds, "buildOnServers").mockImplementation((target) =>
   Effect.promise(async () => ({ kind: "settled" as const, result: await activity.build(target) })));
-vi.spyOn(buildOrder, "imageBuildCandidates").mockImplementation(() => Effect.succeed([{ builder: "servers" }]));
+vi.spyOn(buildOrder, "imageBuildCandidates").mockImplementation(() => Effect.succeed(imageBuildWalk("servers-only", undefined)));
 
 function runtimeFailure(
   operation: "execute",
@@ -144,7 +144,7 @@ describe("process-environment-deployment Inngest adapter", () => {
     activity.terminalizeFailure.mockResolvedValue(true);
   });
 
-  it("preserves the durable trigger and retries, with no concurrency limit to stall Image Builds", () => {
+  it("preserves the durable trigger and retries, limiting concurrency per attempt so Image Builds run side by side", () => {
     const processEnvironmentDeployment = createProcessEnvironmentDeployment(
       new Inngest({ id: "test" }),
     );
@@ -155,7 +155,7 @@ describe("process-environment-deployment Inngest adapter", () => {
         triggers: [{ event: environmentDeployRequestedEventType }],
       }),
     );
-    expect(processEnvironmentDeployment.opts.concurrency).toBeUndefined();
+    expect(processEnvironmentDeployment.opts.concurrency).toEqual([{ key: "event.data.environmentDeploymentId", limit: IMAGE_BUILDS_AT_ONCE }]);
   });
 
   it("starts every Image Build before taking the Environment slot, then deploys", async () => {
@@ -184,7 +184,7 @@ describe("process-environment-deployment Inngest adapter", () => {
       ({ imageBuildId: image, image, status: image === "api" ? "failed" : "built" }));
     const output = await makeEngine().execute();
     expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
-    // SAFETY: executeImageBuild's spy passes each build its ImageBuildTarget.
+    // SAFETY: buildOnServers' spy passes each build its ImageBuildTarget.
     const images = activity.build.mock.calls.map(([target]) => (target as ImageBuildTarget).image);
     // The test engine may replay a build step; each image still built.
     expect(new Set(images)).toEqual(new Set(["api", "web"]));

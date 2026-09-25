@@ -4,12 +4,15 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import type { BuildCandidate } from "#/modules/deployments/build-order";
+import type { MachineId } from "@ployz/sdk";
+import { imageBuildWalk, type BuildCandidate } from "#/modules/deployments/build-order";
+import type { SkipReason } from "#/modules/deployments/image-build";
 import * as buildOrder from "#/modules/deployments/build-order.server";
 import * as githubImageBuilds from "#/modules/deployments/github-image-builds.server";
 import * as imageBuilds from "#/modules/deployments/image-builds.server";
 import type { ImageBuildAttempt, ImageBuildOutcome, ImageBuildTarget } from "#/modules/deployments/image-builds.server";
 import * as runtimeActivities from "#/modules/deployments/runtime-activities.server";
+import * as serverImageBuilds from "#/modules/deployments/server-image-builds.server";
 import * as runtimeHydration from "#/modules/deployments/runtime-hydration.repository.server";
 import * as runtimeLifecycle from "#/modules/deployments/runtime-lifecycle.repository.server";
 import type { DeploymentContext } from "#/modules/deployments/runtime-repository.server";
@@ -22,7 +25,9 @@ import { createProcessEnvironmentDeployment } from "./environment-deployment.inn
 
 const target: ImageBuildTarget = { id: "build-api", deploymentId: "deployment-1", serviceId: "service-api", image: "api", buildIndex: 0 };
 const settled = (status: "built" | "failed"): ImageBuildAttempt => ({ kind: "settled", result: { imageBuildId: target.id, image: "api", status } });
-const skipped = (reason: string): ImageBuildAttempt => ({ kind: "skipped", reason });
+const skipped = (reason: SkipReason): ImageBuildAttempt => ({ kind: "skipped", reason });
+const serversNotStarted: SkipReason = { builder: "servers", kind: "not_started", minutes: 3 };
+const START_WITHIN_MS = imageBuilds.START_WITHIN_MINUTES * 60_000;
 const RUN_ID = 77;
 
 const fake = {
@@ -30,7 +35,8 @@ const fake = {
   /** Each server go: what it returns, and the start limit it was given. */
   servers: [] as ImageBuildAttempt[],
   serverLimits: [] as (number | undefined)[],
-  serverPreferred: [] as (string | undefined)[],
+  serverPreferred: [] as (MachineId | undefined)[],
+  githubReasons: [] as BuildCandidate["reason"][],
   githubStart: null as githubImageBuilds.GithubBuildStart | null,
   /** The Workflow run webhook: the run's completion, or nothing before the wait's timeout. */
   runCompletes: [] as boolean[],
@@ -64,19 +70,22 @@ vi.spyOn(runtimeActivities, "executeLatestEnvironmentDeployment").mockImplementa
 }));
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.succeed([target]));
 vi.spyOn(buildOrder, "imageBuildCandidates").mockImplementation(() => Effect.sync(() => fake.candidates));
-vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((_build, startWithinMs, preferredMachine) => Effect.sync(() => {
+vi.spyOn(serverImageBuilds, "buildOnServers").mockImplementation((_build, candidate, startWithinMs) => Effect.sync(() => {
   fake.serverLimits.push(startWithinMs);
-  fake.serverPreferred.push(preferredMachine);
+  fake.serverPreferred.push(candidate.machineId);
   return fake.servers.shift() ?? settled("built");
 }));
-vi.spyOn(githubImageBuilds, "startGithubImageBuild").mockImplementation(() => Effect.sync(() => fake.githubStart ?? { kind: "dispatched", runId: RUN_ID }));
+vi.spyOn(githubImageBuilds, "startGithubImageBuild").mockImplementation((_build, candidate) => Effect.sync(() => {
+  fake.githubReasons.push(candidate.reason);
+  return fake.githubStart ?? { kind: "dispatched", runId: RUN_ID };
+}));
 vi.spyOn(githubImageBuilds, "checkGithubImageBuild").mockImplementation((_build, seen) => Effect.sync(() => {
   fake.seen.push(seen);
   return fake.checks.shift() ?? (seen.ended ? settled("built") : { kind: "waiting" });
 }));
-vi.spyOn(imageBuilds, "settleImageBuildResult").mockImplementation((build, outcome: ImageBuildOutcome) => Effect.sync(() => {
+vi.spyOn(imageBuilds, "settleImageBuild").mockImplementation((build, outcome: ImageBuildOutcome) => Effect.sync(() => {
   if (outcome.status === "failed") fake.failed.push(outcome.message);
-  return { imageBuildId: build.id, image: build.image, status: outcome.status };
+  return imageBuilds.settled(build, outcome.status);
 }));
 
 function walk() {
@@ -109,28 +118,36 @@ describe("walking the Build Order", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.assign(fake, {
-      candidates: [], servers: [], serverLimits: [], serverPreferred: [], githubStart: null, runCompletes: [], waits: [], answered: new Map(),
+      candidates: [], servers: [], serverLimits: [], serverPreferred: [], githubReasons: [], githubStart: null, runCompletes: [], waits: [], answered: new Map(),
       checks: [], seen: [], failed: [], deployed: 0,
     });
   });
 
   it("gives a lone Builder no start limit: your servers only waits in the queue", async () => {
-    fake.candidates = [{ builder: "servers" }];
+    fake.candidates = imageBuildWalk("servers-only", undefined);
     expect(await outcome()).toMatchObject({ deployed: true });
     expect(new Set(fake.serverLimits)).toEqual(new Set([undefined]));
   });
 
-  it("hands a build the servers didn't start in time to GitHub, whose last place waits for the run", async () => {
-    fake.candidates = [{ builder: "servers" }, { builder: "github" }];
-    fake.servers = [skipped("Your servers: none started it in 3 min")];
+  it("tells GitHub why it is in the walk, so it records the reason when it takes the build", async () => {
+    fake.candidates = imageBuildWalk("servers-then-github", "github");
+    expect(fake.candidates).toEqual([{ builder: "github", reason: "preferred" }, { builder: "servers", reason: "first_in_build_order" }]);
     fake.runCompletes = [true];
     expect(await outcome()).toMatchObject({ deployed: true });
-    expect(fake.serverLimits[0]).toBe(imageBuilds.START_WITHIN_MS);
+    expect(fake.githubReasons).toEqual(["preferred"]);
+  });
+
+  it("hands a build the servers didn't start in time to GitHub, whose last place waits for the run", async () => {
+    fake.candidates = imageBuildWalk("servers-then-github", undefined);
+    fake.servers = [skipped(serversNotStarted)];
+    fake.runCompletes = [true];
+    expect(await outcome()).toMatchObject({ deployed: true });
+    expect(fake.serverLimits[0]).toBe(START_WITHIN_MS);
     expect(fake.waits).toEqual(["10m"]);
   });
 
   it("lets GitHub in last place wait for its run to start without a limit", async () => {
-    fake.candidates = [{ builder: "github" }];
+    fake.candidates = imageBuildWalk("github-only", undefined);
     fake.runCompletes = [false, false, false, true];
     expect(await outcome()).toMatchObject({ deployed: true });
     expect(fake.waits).toEqual(["10m", "10m", "10m", "10m"]);
@@ -138,7 +155,7 @@ describe("walking the Build Order", () => {
   });
 
   it("settles a run whose completion no webhook delivered once a check finds it on GitHub", async () => {
-    fake.candidates = [{ builder: "github" }];
+    fake.candidates = imageBuildWalk("github-only", undefined);
     fake.runCompletes = [false];
     fake.checks = [settled("built")];
     expect(await outcome()).toMatchObject({ deployed: true });
@@ -146,9 +163,9 @@ describe("walking the Build Order", () => {
   });
 
   it("falls to the servers, which then wait, when no GitHub runner checks in within the limit", async () => {
-    fake.candidates = [{ builder: "github" }, { builder: "servers" }];
+    fake.candidates = imageBuildWalk("github-then-servers", undefined);
     fake.runCompletes = [false];
-    fake.checks = [skipped("GitHub: no runner in 3 min")];
+    fake.checks = [skipped({ builder: "github", kind: "not_started", minutes: 3 })];
     expect(await outcome()).toMatchObject({ deployed: true });
     expect(fake.waits[0]).toBe("3m");
     expect(fake.seen[0]).toEqual({ ended: false, startLimit: true });
@@ -156,24 +173,24 @@ describe("walking the Build Order", () => {
   });
 
   it("skips GitHub at once when it can't take the build", async () => {
-    fake.candidates = [{ builder: "github" }, { builder: "servers" }];
-    fake.githubStart = skipped("GitHub: needs amd64+arm64");
+    fake.candidates = imageBuildWalk("github-then-servers", undefined);
+    fake.githubStart = skipped({ builder: "github", kind: "multi_platform", platforms: ["amd64", "arm64"] });
     expect(await outcome()).toMatchObject({ deployed: true });
     expect(fake.waits).toEqual([]);
     expect(fake.serverLimits.length).toBeGreaterThan(0);
   });
 
   it("moves on when the Workflow run webhook reports the run ended before it checked in", async () => {
-    fake.candidates = [{ builder: "github" }, { builder: "servers" }];
+    fake.candidates = imageBuildWalk("github-then-servers", undefined);
     fake.runCompletes = [true];
-    fake.checks = [skipped("GitHub: the run ended before it started")];
+    fake.checks = [skipped({ builder: "github", kind: "ended_before_start" })];
     expect(await outcome()).toMatchObject({ deployed: true });
     expect(fake.seen[0]).toEqual({ ended: true, startLimit: true });
     expect(fake.serverLimits.length).toBeGreaterThan(0);
   });
 
   it("keeps a GitHub run that checked in before the limit, and never moves it when it fails", async () => {
-    fake.candidates = [{ builder: "github" }, { builder: "servers" }];
+    fake.candidates = imageBuildWalk("github-then-servers", undefined);
     fake.runCompletes = [false, true];
     fake.checks = [{ kind: "waiting" }, settled("failed")];
     const result = await outcome();
@@ -183,26 +200,27 @@ describe("walking the Build Order", () => {
   });
 
   it("never moves a server build that started and failed", async () => {
-    fake.candidates = [{ builder: "servers" }, { builder: "github" }];
+    fake.candidates = imageBuildWalk("servers-then-github", undefined);
     fake.servers = [settled("failed")];
     expect(await outcome()).toMatchObject({ deployed: false });
     expect(githubImageBuilds.startGithubImageBuild).not.toHaveBeenCalled();
   });
 
   it("asks the Cluster for a Preferred Server first, then walks the Build Order without your servers", async () => {
-    const preferred = "a".repeat(32);
-    fake.candidates = [{ builder: "servers", machineId: preferred }, { builder: "github" }];
-    fake.servers = [skipped("Your servers: none started it in 3 min")];
+    const preferred = "a".repeat(32) as MachineId;
+    fake.candidates = imageBuildWalk("github-only", preferred);
+    fake.servers = [skipped(serversNotStarted)];
     fake.runCompletes = [true];
     expect(await outcome()).toMatchObject({ deployed: true });
-    expect(fake.serverLimits[0]).toBe(imageBuilds.START_WITHIN_MS);
+    expect(fake.serverLimits[0]).toBe(START_WITHIN_MS);
     expect(new Set(fake.serverPreferred)).toEqual(new Set([preferred]));
     expect(fake.waits).toEqual(["10m"]);
+    expect(fake.githubReasons).toEqual(["first_in_build_order"]);
   });
 
   it("fails the build with the last skip's reason when every Builder was skipped", async () => {
-    fake.candidates = [{ builder: "github" }];
-    fake.githubStart = skipped("GitHub: no workflow in acme/api");
+    fake.candidates = imageBuildWalk("github-only", undefined);
+    fake.githubStart = skipped({ builder: "github", kind: "no_workflow", repository: "acme/api" });
     expect(await outcome()).toMatchObject({ deployed: false, error: expect.objectContaining({ message: "Image Build failed: api." }) });
     expect(fake.failed).toContain("GitHub: no workflow in acme/api");
   });

@@ -12,20 +12,14 @@ CREATE TABLE "environment_deployment_image_build" (
 	"inngest_run_id" text NOT NULL,
 	"finished_at" timestamp with time zone,
 	"builder" text DEFAULT 'server' NOT NULL,
-	"github_run_id" bigint,
-	"github_run_url" text,
-	"github_workflow_ref" text,
-	"checked_in_at" timestamp with time zone,
-	"grant_id" text,
-	"fingerprint" text,
-	"platforms" text[],
-	"skips" text[] DEFAULT '{}'::text[] NOT NULL,
-	"preferred" boolean DEFAULT false NOT NULL,
+	"github" jsonb,
+	"skips" jsonb DEFAULT '[]' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "environment_deployment_image_build_service_unique" UNIQUE("deployment_id","service_id"),
 	CONSTRAINT "environment_deployment_image_build_receipt_check" CHECK (("status" = 'built') = ("encrypted_receipt" is not null)),
-	CONSTRAINT "environment_deployment_image_build_builder_check" CHECK ("builder" in ('server', 'github'))
+	CONSTRAINT "environment_deployment_image_build_builder_check" CHECK ("builder" in ('server', 'github')),
+	CONSTRAINT "environment_deployment_image_build_github_check" CHECK (("builder" = 'github') = ("github" is not null))
 );
 --> statement-breakpoint
 CREATE TABLE "organization_build_order" (
@@ -36,10 +30,10 @@ CREATE TABLE "organization_build_order" (
 	CONSTRAINT "organization_build_order_check" CHECK ("build_order" in ('servers-only', 'github-then-servers', 'servers-then-github', 'github-only'))
 );
 --> statement-breakpoint
-ALTER TABLE "environment_deployment_build_step" ADD COLUMN "image" text DEFAULT '' NOT NULL;--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_step" ADD COLUMN "image" text;--> statement-breakpoint
 ALTER TABLE "environment_deployment_secret" DROP COLUMN "encrypted_build_receipts";--> statement-breakpoint
 ALTER TABLE "environment_deployment_build_step" DROP CONSTRAINT "environment_deployment_build_step_key_unique";--> statement-breakpoint
-ALTER TABLE "environment_deployment_build_step" ADD CONSTRAINT "environment_deployment_build_step_key_unique" UNIQUE("deployment_id","image","build","key");--> statement-breakpoint
+ALTER TABLE "environment_deployment_build_step" ADD CONSTRAINT "environment_deployment_build_step_key_unique" UNIQUE NULLS NOT DISTINCT("deployment_id","image","build","key");--> statement-breakpoint
 ALTER TABLE "environment_deployment_image_build" ADD CONSTRAINT "environment_deployment_image_build_omhRa2gD2UgI_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "environment_deployment_image_build" ADD CONSTRAINT "environment_deployment_image_build_Ss4XYtuD2fFu_fkey" FOREIGN KEY ("deployment_id") REFERENCES "environment_deployment"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "organization_build_order" ADD CONSTRAINT "organization_build_order_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint

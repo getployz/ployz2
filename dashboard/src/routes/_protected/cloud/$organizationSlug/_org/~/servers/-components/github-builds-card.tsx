@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CheckIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import {
   Dialog,
   DialogContent,
@@ -51,16 +52,19 @@ export function GithubBuildsCard({ organizationSlug }: { organizationSlug: strin
                   Each repository needs one small workflow file. It only runs when Ployz starts a build, and build secrets are sent to the runner.
                 </DialogDescription>
               </DialogHeader>
-              <div className="flex flex-col divide-y rounded-lg border">
+              <ItemGroup>
                 {repositories.map((repository) => (
-                  <div key={githubBuildRepositoryKey(repository)} className="flex h-11 items-center justify-between gap-3 px-3">
-                    <span className="truncate font-mono text-sm">{repository.fullName}</span>
+                  <Item key={githubBuildRepositoryKey(repository)} variant="outline" size="sm">
+                    <ItemContent>
+                      <ItemTitle>{repository.fullName}</ItemTitle>
+                    </ItemContent>
+                    <ItemActions>
                     {repository.readiness === "ready" ? (
                       <CheckIcon className="size-4 text-success" aria-label="Set up" />
                     ) : repository.readiness === "no_permission" ? (
-                      <span className="text-muted-foreground text-sm">Installation lacks permission</span>
+                      <ItemDescription>Installation lacks permission</ItemDescription>
                     ) : waiting(repository) ? (
-                      <span className="text-muted-foreground text-sm">Waiting for commit</span>
+                      <ItemDescription>Waiting for commit</ItemDescription>
                     ) : repository.defaultBranch === null ? null : (
                       <Button
                         size="xs"
@@ -78,9 +82,10 @@ export function GithubBuildsCard({ organizationSlug }: { organizationSlug: strin
                         Add workflow ↗
                       </Button>
                     )}
-                  </div>
+                    </ItemActions>
+                  </Item>
                 ))}
-              </div>
+              </ItemGroup>
             </DialogContent>
           </Dialog>
         </CardAction>

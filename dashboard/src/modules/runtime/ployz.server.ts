@@ -42,10 +42,10 @@ import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { connect: connectSdk, buildFingerprints, ployzVersion } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect" | "buildFingerprints" | "ployzVersion">;
+const { connect: connectSdk, buildFingerprints, buildGrantTag, ployzVersion } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect" | "buildFingerprints" | "buildGrantTag" | "ployzVersion">;
 
 /** Pure SDK computations; they need no Machine. */
-export { buildFingerprints, ployzVersion };
+export { buildFingerprints, buildGrantTag, ployzVersion };
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",

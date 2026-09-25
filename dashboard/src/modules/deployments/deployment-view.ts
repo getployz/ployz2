@@ -4,6 +4,7 @@ import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
+import type { CandidateReason, SkipReason } from "./image-build";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 import { isActiveDeployment } from "./runtime-contract";
@@ -38,13 +39,43 @@ export type DeploymentView = {
   deployed: number; changed: number;
   nodes: DeploymentNodeView[];
 };
-/** The attempt's Build Steps and their output, as the build log read returns them. */
-type BuildStep = { id: number; image: string; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null };
+/** The attempt's Build Steps and their output, as the build log read returns them. `image` is null for the deploy step's own. */
+type BuildStep = { id: number; image: string | null; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null };
+/** What an Image Build recorded about its Builders: the Server choice or GitHub run, and the skip trail. */
+export type ImageBuildEvidence = {
+  image: string;
+  serverChoice: ServerChoice | null;
+  github: { runUrl: string; reason: CandidateReason } | null;
+  skips: readonly SkipReason[];
+};
 export type BuildLog = {
   steps: readonly BuildStep[];
   output: readonly { stepId: number; text: string }[];
-  serverChoices?: readonly { image: string; serverChoice: ServerChoice | null; githubRunUrl?: string | null; skips?: readonly string[]; preferred?: boolean }[];
+  imageBuilds?: readonly ImageBuildEvidence[];
 };
+
+/** Why a Builder didn't take an Image Build, as the canvas, the build log and a failed build say it. */
+export function skipReasonText(reason: SkipReason): string {
+  const builder = reason.builder === "github" ? "GitHub" : "Your servers";
+  switch (reason.kind) {
+    case "not_connected": return `${builder}: the repository isn't connected through the GitHub App`;
+    case "no_permission": return `${builder}: no permission in ${reason.repository}`;
+    case "no_workflow": return `${builder}: no workflow in ${reason.repository}`;
+    case "multi_platform": return `${builder}: needs ${reason.platforms.join("+")}`;
+    case "dispatch_failed": return `${builder}: could not start the build (${reason.message})`;
+    case "ended_before_start": return `${builder}: the run ended before it started`;
+    case "not_started": return reason.builder === "github"
+      ? `${builder}: no runner in ${reason.minutes} min`
+      : `${builder}: none started it in ${reason.minutes} min`;
+  }
+}
+
+/** Why GitHub Actions took an Image Build, as recorded when it did. */
+const githubReasonText = {
+  preferred: "preferred builder",
+  first_in_build_order: "first in the build order",
+  next_in_build_order: "next in the build order",
+} satisfies Record<CandidateReason, string>;
 
 /** Why the Engine chose a Server: recorded evidence, never a prediction. */
 function builderReason(reason: ServerChoice["reason"]): string {
@@ -60,15 +91,13 @@ function builderReason(reason: ServerChoice["reason"]): string {
 }
 
 /**
- * Where an image builds and why, from its Image Build's recorded Server choice or GitHub run, and
- * the Builders it skipped on the way. Before a Builder takes it, only the skips are known.
+ * Where an image builds and why, from what its Image Build recorded: the Server choice or GitHub
+ * run, and the Builders it skipped on the way. Before a Builder takes it, only the skips are known.
  */
-export function builtOn(log: Pick<BuildLog, "serverChoices"> | null | undefined, image: string | null): BuiltOn | null {
-  const row = image ? log?.serverChoices?.find((candidate) => candidate.image === image) : undefined;
-  const skipped = row?.skips ?? [];
-  if (row?.githubRunUrl) {
-    return { server: "GitHub Actions", reason: skipped.length ? "next in the build order" : row.preferred ? "preferred builder" : "first in the build order", runUrl: row.githubRunUrl, skipped };
-  }
+export function builtOn(log: Pick<BuildLog, "imageBuilds"> | null | undefined, image: string | null): BuiltOn | null {
+  const row = image ? log?.imageBuilds?.find((candidate) => candidate.image === image) : undefined;
+  const skipped = (row?.skips ?? []).map(skipReasonText);
+  if (row?.github) return { server: "GitHub Actions", reason: githubReasonText[row.github.reason], runUrl: row.github.runUrl, skipped };
   if (row?.serverChoice) return { server: row.serverChoice.machineName, reason: builderReason(row.serverChoice.reason), skipped };
   return skipped.length ? { server: null, reason: null, skipped } : null;
 }
@@ -178,15 +207,15 @@ export const stripAnsi = (text: string) => text.replaceAll(ansi, "");
 const logLines = (text: string) => stripAnsi(text).split("\n").filter((line) => line.trim());
 
 /**
- * One Image Build's steps: every step it filed under its image. The deploy step's own preparation (image "")
+ * One Image Build's steps: every step it filed under its image. The deploy step's own preparation (image null)
  * adds the runs whose Building heading names the image, when an image had to be rebuilt at delivery (a
  * multi-platform image has several), without the attempt-wide cleanup and delivery filed under the last run.
  * Its build 0 (upload, builder preparation) is shared: it counts only when it failed, because that stopped every image.
  */
 export function imageBuildSteps<Step extends BuildStep>(steps: readonly Step[], image: string): Step[] {
-  const deploy = steps.filter((step) => step.image === "");
+  const deploy = steps.filter((step) => step.image === null);
   const runs = new Set(deploy.filter((step) => step.key === BUILDING_KEY && step.name === image).map((step) => step.build));
-  return steps.filter((step) => step.image === image || step.image === "" && (step.build === 0
+  return steps.filter((step) => step.image === image || step.image === null && (step.build === 0
     ? step.error !== null : runs.has(step.build) && step.key !== CLEANUP_KEY && step.key !== TRANSFER_KEY));
 }
 
