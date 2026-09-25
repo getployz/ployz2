@@ -491,6 +491,31 @@ impl Session {
             .await
     }
 
+    /// Apply one Server Policy edit to `machine` and return its updated record.
+    ///
+    /// One-shot: a lost response is read back from observation, never replayed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the update is empty or illegal, or the Machine
+    /// does not respond.
+    pub async fn update_machine(
+        &self,
+        machine: &str,
+        update: ployz_core::MachineUpdate,
+    ) -> Result<ployz_core::MachineUpdated, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let client = self.client()?;
+        self.until_closed(client.invoke::<op::UpdateMachine>(
+            ployz_core::UpdateMachineRequest { update },
+            &target,
+            Some(crate::connect::TARGET_RPC_TIMEOUT),
+        ))
+        .await
+    }
+
     /// Live Observation of Data Loss that destroying `project` would cause.
     ///
     /// [`VolumeFate::Preserve`] yields an empty list. Mutates nothing.

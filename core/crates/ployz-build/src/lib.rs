@@ -330,8 +330,14 @@ pub fn execute_admitted(
         let native = builder
             .native_platform(request.targets, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
-        preparation = railpack::prepare(&docker, request, &native, &admission.resources)
-            .map_err(|error| error.at(Stage::Preparation))?;
+        preparation = railpack::prepare(
+            &docker,
+            request,
+            &native,
+            builder.name(),
+            &admission.resources,
+        )
+        .map_err(|error| error.at(Stage::Preparation))?;
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
@@ -347,7 +353,13 @@ pub fn execute_admitted(
             let metadata = request
                 .working_dir
                 .join(format!("build-metadata-{}.json", target.bake));
-            let mut arguments = bake_arguments(request, target, &metadata, overrides.as_deref());
+            let mut arguments = bake_arguments(
+                request,
+                builder.name(),
+                target,
+                &metadata,
+                overrides.as_deref(),
+            );
             arguments.push("--set".into());
             arguments.push(format!(
                 "{}.platform={}",
@@ -415,7 +427,7 @@ pub fn execute_admitted(
     let result = result.and_then(|images| {
         admission
             .resources
-            .collect_cache(&docker.releasing())
+            .collect_cache(&docker.releasing(), builder.name())
             .map_err(|error| error.at(Stage::Cleanup))?;
         Ok(images)
     });
@@ -451,6 +463,7 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
 
 fn bake_arguments(
     request: &Request<'_>,
+    builder: &str,
     planned: &Planned<'_>,
     metadata: &Path,
     overrides: Option<&Path>,
@@ -459,7 +472,7 @@ fn bake_arguments(
         "buildx".to_owned(),
         "bake".to_owned(),
         "--builder".to_owned(),
-        builder_name(),
+        builder.to_owned(),
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
     ];

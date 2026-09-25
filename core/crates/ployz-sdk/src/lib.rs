@@ -408,6 +408,30 @@ impl Client {
         to_json(&removed)
     }
 
+    /// Apply one Server Policy edit to `machine`.
+    ///
+    /// `update` is a partial MachineUpdate; omitted fields keep their values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `update` is not a
+    /// MachineUpdate, the session is closed, or the Machine refuses the edit.
+    #[napi]
+    pub async fn update_machine(
+        &self,
+        machine: String,
+        update: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let update: ployz_core::MachineUpdate =
+            serde_json::from_value(update).map_err(invalid_argument)?;
+        let updated = self
+            .inner
+            .update_machine(&machine, update)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&updated)
+    }
+
     /// Live Observation of Data Loss that destroying `project_name` would cause.
     ///
     /// `destroy_volumes` false is empty. Mutates nothing.
