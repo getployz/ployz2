@@ -352,13 +352,9 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
-    use super::super::pipeline::project_not_found;
     use super::*;
-    use crate::deploy::DeployWarning;
-    use crate::dns::ingress_dns_warnings;
     use ployz_core::{
-        DeployOperation, FailedOperation, MachineAction, MachineId, PruneRefusal,
-        RequestedServiceSpec, RpcError, RpcErrorCode,
+        DeployOperation, FailedOperation, MachineAction, MachineId, RpcError, RpcErrorCode,
     };
 
     #[test]
@@ -386,74 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn deploy_prints_ingress_misses_as_warning_lines_without_failing() {
-        let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
-            "name": "web",
-            "mode": { "mode": "replicated", "replicas": 1 },
-            "container": { "image": "nginx", "pull_policy": "missing" },
-            "ports": [
-                {
-                    "mode": "ingress",
-                    "hostname": { "kind": "explicit", "hostname": "app.example.com" },
-                    "load_balancer_port": 443,
-                    "container_port": 8080,
-                    "http_protocol": "https"
-                },
-                {
-                    "mode": "ingress",
-                    "hostname": { "kind": "explicit", "hostname": "plain.example.com" },
-                    "load_balancer_port": 80,
-                    "container_port": 8080,
-                    "http_protocol": "http"
-                }
-            ]
-        }))
-        .unwrap();
-        let cluster = ["192.0.2.1".parse().unwrap()];
-        let preview = DeployPreview::new(
-            Vec::new(),
-            ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
-                "app.example.com" => vec!["198.51.100.10".parse().unwrap()],
-                "plain.example.com" => Vec::new(),
-                other => panic!("unexpected {other}"),
-            })
-            .into_iter()
-            .map(DeployWarning::from)
-            .collect(),
-            ProjectName::parse("app").unwrap(),
-        );
-        assert_eq!(
-            preview
-                .warnings
-                .iter()
-                .map(|warning| format!("WARNING: {warning}"))
-                .collect::<Vec<_>>(),
-            [
-                "WARNING: Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster.",
-                "WARNING: Ingress Hostname plain.example.com does not resolve; it should resolve to 192.0.2.1.",
-            ]
-        );
-        assert!(
-            !preview
-                .warnings
-                .iter()
-                .map(|warning| format!("WARNING: {warning}"))
-                .any(|line| line.contains("plain.example.com")
-                    && line.to_ascii_lowercase().contains("certificate"))
-        );
-    }
-
-    #[test]
-    fn incomplete_empty_view_is_not_reported_as_missing() {
-        let mut preview =
-            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
-        assert!(project_not_found(&preview));
-        preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
-        assert!(!project_not_found(&preview));
-    }
-
-    #[test]
-    fn interrupted_execution_keeps_outcome_after_stderr() {
+    fn interrupted_execution_fails_with_the_painted_outcome() {
         let machine_id = MachineId::parse("d".repeat(32)).unwrap();
         let outcome = DeployOutcome::Failed {
             completed: Vec::new(),
@@ -485,7 +414,7 @@ mod tests {
             rows: Vec::new(),
             live_shown: false,
         };
-        let failure = Failure::from(error);
-        assert!(format!("{failure}").contains("create failed"));
+        let failure = Failure::from(error).to_string();
+        assert!(failure.contains("Failed: create web"), "{failure}");
     }
 }

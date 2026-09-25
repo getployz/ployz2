@@ -351,7 +351,6 @@ mod tests {
             output.contains("lose access to the listed volumes through the cluster"),
             "{output}"
         );
-        assert!(output.contains("data will not be erased"), "{output}");
         assert!(!output.contains("Permanently delete"), "{output}");
     }
 

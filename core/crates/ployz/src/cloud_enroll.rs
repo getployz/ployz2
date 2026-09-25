@@ -471,25 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn cloud_pairing_accepts_only_a_non_empty_secret() {
-        assert_eq!(
-            serde_json::from_value::<CloudPairing>(
-                serde_json::json!({ "secret": "pairing-secret" })
-            )
-            .unwrap(),
-            pairing()
-        );
-        assert!(PairingCredential::parse("").is_err());
-        for value in [
-            serde_json::json!({}),
-            serde_json::json!({ "secret": "" }),
-            serde_json::json!({ "secret": "pairing-secret", "futureField": 1 }),
-        ] {
-            assert!(serde_json::from_value::<CloudPairing>(value).is_err());
-        }
-    }
-
-    #[test]
     fn pairing_credential_debug_redacts_the_bearer() {
         assert!(!format!("{:?}", pairing()).contains("pairing-secret"));
     }
@@ -535,134 +516,83 @@ mod tests {
     }
 
     #[test]
-    fn join_payload_is_pairing_plus_registration() {
-        let value = serde_json::json!({
+    fn enroll_responses_decode_known_kinds_and_tolerate_newer_fields() {
+        let join = serde_json::to_vec(&serde_json::json!({
             "kind": "join",
             "storage": "zfs",
-            "pairing": {
-                "secret": "pairing-secret",
-            },
+            "pairing": { "secret": "pairing-secret" },
             "registration": registration(),
-        });
-        let Response::Join(join) =
-            parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
-        else {
-            panic!("expected join");
+            "futureHint": "cloud-defined",
+        }))
+        .unwrap();
+        let initialize = |mode| Response::Initialize {
+            mode,
+            pairing: pairing(),
+            storage: StorageChoice::None,
         };
-        assert_eq!(join.pairing, pairing());
-        assert_eq!(join.storage, ployz_core::StorageChoice::Zfs);
-        assert_eq!(join.registration, registration());
-    }
-
-    #[test]
-    fn pairing_with_an_unknown_field_is_rejected() {
-        let value = serde_json::json!({
-            "kind": "join",
-            "storage": "none",
-            "pairing": {
-                "secret": "pairing-secret",
-                "unexpectedCredential": "unexpected-value",
-            },
-            "registration": registration(),
-        });
-        let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
-    }
-
-    #[test]
-    fn enrollment_rejects_empty_pairing_credential() {
-        let error = parse_enroll(
-            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":""}}"#,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("Pairing Credential"), "{error}");
-    }
-
-    #[test]
-    fn initialize_payload_is_cloud_pairing() {
-        let value = serde_json::json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": {
-                "secret": "pairing-secret",
-            },
-        });
-        let Response::Initialize {
-            mode, pairing: got, ..
-        } = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
-        else {
-            panic!("expected initialize");
+        let not_yet = |seconds| Response::NotYet {
+            retry_after: Duration::from_secs(seconds),
         };
-        assert_eq!(mode, InitializeMode::New);
-        assert_eq!(got, pairing());
-    }
-
-    #[test]
-    fn initialize_requires_the_resume_directive() {
-        let error = parse_enroll(br#"{"kind":"initialize","pairing":{"secret":"pairing-secret"}}"#)
-            .unwrap_err();
-        assert!(error.to_string().contains("resumed"), "{error}");
-    }
-
-    #[test]
-    fn initialize_pairing_with_an_unknown_field_is_rejected() {
-        let value = serde_json::json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": {
-                "secret": "pairing-secret",
-                "unexpectedCredential": "unexpected-value",
-            },
-        });
-        let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
-    }
-
-    #[test]
-    fn enrollment_defaults_missing_storage_to_none() {
-        let Response::Initialize { storage, .. } = parse_enroll(
-            br#"{"kind":"initialize","resumed":false,"pairing":{"secret":"pairing-secret"}}"#,
-        )
-        .unwrap() else {
-            panic!("expected initialize");
-        };
-        assert_eq!(storage, StorageChoice::None);
-    }
-
-    #[test]
-    fn not_yet_defaults_retry_after_to_two_seconds() {
-        let Response::NotYet { retry_after } = parse_enroll(br#"{"kind":"not_yet"}"#).unwrap()
-        else {
-            panic!("expected not_yet");
-        };
-        assert_eq!(retry_after, Duration::from_secs(2));
-    }
-
-    #[test]
-    fn not_yet_honors_retry_after_seconds() {
-        let Response::NotYet { retry_after } =
-            parse_enroll(br#"{"kind":"not_yet","retryAfter":5}"#).unwrap()
-        else {
-            panic!("expected not_yet");
-        };
-        assert_eq!(retry_after, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn enrollment_ignores_fields_from_a_newer_cloud() {
-        for (newer, known) in [
+        for (body, expected) in [
             (
-                br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#.as_slice(),
-                br#"{"kind":"not_yet","retryAfter":5}"#.as_slice(),
+                join.as_slice(),
+                Response::Join(Box::new(Join {
+                    pairing: pairing(),
+                    storage: StorageChoice::Zfs,
+                    registration: registration(),
+                })),
             ),
             (
                 br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":"pairing-secret"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#.as_slice(),
-                br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":"pairing-secret"}}"#.as_slice(),
+                initialize(InitializeMode::New),
+            ),
+            (
+                br#"{"kind":"initialize","resumed":true,"pairing":{"secret":"pairing-secret"}}"#.as_slice(),
+                initialize(InitializeMode::Resume),
+            ),
+            (br#"{"kind":"not_yet"}"#.as_slice(), not_yet(2)),
+            (
+                br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#.as_slice(),
+                not_yet(5),
             ),
         ] {
-            assert_eq!(parse_enroll(newer).unwrap(), parse_enroll(known).unwrap());
+            assert_eq!(parse_enroll(body).unwrap(), expected, "{}", String::from_utf8_lossy(body));
+        }
+    }
+
+    #[test]
+    fn enroll_responses_reject_missing_directives_and_loose_pairings() {
+        let loose_join = serde_json::to_vec(&serde_json::json!({
+            "kind": "join",
+            "storage": "none",
+            "pairing": {
+                "secret": "pairing-secret",
+                "unexpectedCredential": "unexpected-value",
+            },
+            "registration": registration(),
+        }))
+        .unwrap();
+        for (body, needle) in [
+            (
+                br#"{"kind":"initialize","resumed":false,"pairing":{}}"#.as_slice(),
+                "secret",
+            ),
+            (
+                br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":""}}"#.as_slice(),
+                "Pairing Credential",
+            ),
+            (
+                br#"{"kind":"initialize","pairing":{"secret":"pairing-secret"}}"#.as_slice(),
+                "resumed",
+            ),
+            (
+                br#"{"kind":"initialize","resumed":false,"pairing":{"secret":"pairing-secret","unexpectedCredential":"unexpected-value"}}"#.as_slice(),
+                "unknown field",
+            ),
+            (loose_join.as_slice(), "unknown field"),
+        ] {
+            let error = parse_enroll(body).unwrap_err().to_string();
+            assert!(error.contains(needle), "{needle}: {error}");
         }
     }
 

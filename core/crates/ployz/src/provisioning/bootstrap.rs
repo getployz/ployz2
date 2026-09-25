@@ -281,9 +281,13 @@ mod tests {
     async fn bounded_output_kills_and_reaps_a_hung_child() {
         let mut command = Command::new("sh");
         command.args(["-c", "exec sleep 30"]);
-        let error = command_output(command, Duration::from_millis(20))
-            .await
-            .unwrap_err();
+        let error = timeout(
+            Duration::from_secs(1),
+            command_output(command, Duration::from_millis(20)),
+        )
+        .await
+        .expect("a hung child must be killed, not waited out")
+        .unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }

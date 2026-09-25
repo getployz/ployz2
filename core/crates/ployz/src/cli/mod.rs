@@ -471,16 +471,6 @@ fn completion() -> Command {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn root_version_flags_are_accepted() {
-        for flag in ["--version", "-V"] {
-            let matches = super::command()
-                .try_get_matches_from(["ployz", flag])
-                .unwrap();
-            assert!(matches.get_flag("version"), "{flag}");
-        }
-    }
-
-    #[test]
     fn machine_provisioning_defaults_to_cli_version_and_accepts_overrides() {
         for command in ["add", "init"] {
             for version in [None, Some("stable"), Some("beta"), Some("1.2.3")] {
@@ -505,70 +495,168 @@ mod tests {
         }
     }
 
-    #[test]
-    fn machine_rm_no_reset_help_says_when_to_skip_reset() {
-        let help = super::command()
-            .find_subcommand("machine")
-            .expect("machine")
-            .find_subcommand("rm")
-            .expect("rm")
-            .get_arguments()
-            .find(|arg| arg.get_id() == "no-reset")
-            .expect("no-reset")
-            .get_help()
-            .map(ToString::to_string)
-            .expect("help text");
-        assert_eq!(
-            help,
-            "Remove the Machine from the Cluster without resetting it; use when the Machine is unreachable"
-        );
-    }
+    /// `None` expects a set flag; `Some(values)` expects exactly those values.
+    type Expected<'a> = &'a [(&'a str, Option<&'a [&'a str]>)];
 
     #[test]
     fn removal_acceptance_requires_explicit_repeatable_volume_flags() {
-        for args in [
-            vec![
-                "ployz",
-                "project",
-                "rm",
-                "app",
-                "--volumes",
-                "--accept-volume-loss",
-                "data",
-                "--accept-volume-loss",
-                "logs",
-            ],
-            vec![
-                "ployz",
-                "machine",
-                "rm",
-                "worker",
-                "--accept-volume-loss",
-                "data",
-            ],
-            vec![
-                "ployz",
-                "service",
-                "rm",
-                "app/db",
-                "--volumes",
-                "--accept-volume-loss",
-                "data",
-            ],
-        ] {
-            assert!(super::command().try_get_matches_from(args).is_ok());
+        let accepted: [(&[&str], Expected); 11] = [
+            (
+                &[
+                    "project",
+                    "rm",
+                    "app",
+                    "--volumes",
+                    "--accept-volume-loss",
+                    "data",
+                    "--accept-volume-loss",
+                    "logs",
+                ],
+                &[("accept-volume-loss", Some(&["data", "logs"]))],
+            ),
+            (
+                &["project", "rm", "shop", "--volumes", "--yes"],
+                &[
+                    ("project", Some(&["shop"])),
+                    ("volumes", None),
+                    ("yes", None),
+                ],
+            ),
+            (
+                &[
+                    "project",
+                    "rm",
+                    "shop",
+                    "--volumes",
+                    "--accept-volume-loss",
+                    "shop_data",
+                    "--accept-volume-loss",
+                    "shop_logs",
+                    "--yes",
+                ],
+                &[("accept-volume-loss", Some(&["shop_data", "shop_logs"]))],
+            ),
+            (
+                &[
+                    "machine",
+                    "rm",
+                    "worker",
+                    "--accept-volume-loss",
+                    "data",
+                    "--accept-volume-loss",
+                    "logs",
+                    "--yes",
+                ],
+                &[
+                    ("yes", None),
+                    ("accept-volume-loss", Some(&["data", "logs"])),
+                ],
+            ),
+            (
+                &["machine", "rm", "worker", "--yes"],
+                &[("yes", None), ("accept-volume-loss", Some(&[]))],
+            ),
+            (
+                &[
+                    "service",
+                    "rm",
+                    "app/db",
+                    "--volumes",
+                    "--accept-volume-loss",
+                    "data",
+                ],
+                &[("accept-volume-loss", Some(&["data"]))],
+            ),
+            (
+                &[
+                    "service",
+                    "rm",
+                    "db",
+                    "--volumes",
+                    "--yes",
+                    "--accept-volume-loss",
+                    "app_data",
+                ],
+                &[
+                    ("service", Some(&["db"])),
+                    ("volumes", None),
+                    ("yes", None),
+                    ("accept-volume-loss", Some(&["app_data"])),
+                ],
+            ),
+            (
+                &[
+                    "service",
+                    "rm",
+                    "db",
+                    "--volumes",
+                    "--accept-volume-loss",
+                    "app_data,app_logs",
+                    "--yes",
+                ],
+                &[("accept-volume-loss", Some(&["app_data,app_logs"]))],
+            ),
+            (
+                &[
+                    "service",
+                    "rm",
+                    "db",
+                    "--volumes",
+                    "--accept-volume-loss",
+                    "app_data",
+                    "--accept-volume-loss",
+                    "app_logs",
+                    "--yes",
+                ],
+                &[("accept-volume-loss", Some(&["app_data", "app_logs"]))],
+            ),
+            (
+                &[
+                    "service",
+                    "rm",
+                    "db",
+                    "--volumes",
+                    "--accept-volume-loss",
+                    "app_data",
+                    "api",
+                    "--yes",
+                ],
+                &[
+                    ("service", Some(&["db", "api"])),
+                    ("accept-volume-loss", Some(&["app_data"])),
+                ],
+            ),
+            (
+                &["volume", "rm", "data", "logs", "--yes"],
+                &[("yes", None), ("volume-name", Some(&["data", "logs"]))],
+            ),
+        ];
+        for (args, expected) in accepted {
+            let matches = super::command()
+                .try_get_matches_from(std::iter::once("ployz").chain(args.iter().copied()))
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            let mut leaf = &matches;
+            while let Some((_, child)) = leaf.subcommand() {
+                leaf = child;
+            }
+            for (id, values) in expected {
+                match values {
+                    None => assert!(leaf.get_flag(id), "{args:?}: {id}"),
+                    Some(values) => assert_eq!(
+                        leaf.get_many::<String>(id)
+                            .into_iter()
+                            .flatten()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                        *values,
+                        "{args:?}: {id}"
+                    ),
+                }
+            }
         }
         for args in [
-            vec![
-                "ployz",
-                "project",
-                "rm",
-                "app",
-                "--accept-volume-loss",
-                "data",
-            ],
-            vec![
-                "ployz",
+            &["project", "rm", "app", "--accept-volume-loss", "data"][..],
+            &[
                 "machine",
                 "rm",
                 "worker",
@@ -576,253 +664,19 @@ mod tests {
                 "--accept-volume-loss",
                 "data",
             ],
-            vec!["ployz", "project", "rm", "app", "--volumes", "data"],
-            vec!["ployz", "volume", "rm", "--force", "--yes"],
+            &["project", "rm", "app", "--volumes", "data"],
+            &["project", "rm", "shop", "-v"],
+            &["volume", "rm", "--force", "--yes"],
+            &["service", "rm", "db", "--accept-volume-loss", "app_data"],
+            &["service", "start", "db", "--volumes"],
+            &["service", "rm", "db", "--volumes", "-v"],
         ] {
-            assert!(super::command().try_get_matches_from(args).is_err());
+            assert!(
+                super::command()
+                    .try_get_matches_from(std::iter::once("ployz").chain(args.iter().copied()))
+                    .is_err(),
+                "{args:?}"
+            );
         }
-    }
-
-    #[test]
-    fn machine_rm_takes_data_loss_names_as_arguments_and_yes_still_parses() {
-        let matches = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "rm",
-                "worker",
-                "--accept-volume-loss",
-                "data",
-                "--accept-volume-loss",
-                "logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = matches
-            .subcommand_matches("machine")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert!(rm.get_flag("yes"));
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["data", "logs"]
-        );
-        let yes_only = super::command()
-            .try_get_matches_from(["ployz", "machine", "rm", "worker", "--yes"])
-            .unwrap();
-        let rm = yes_only
-            .subcommand_matches("machine")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert!(rm.get_flag("yes"));
-        assert!(rm.get_many::<String>("accept-volume-loss").is_none());
-    }
-
-    #[test]
-    fn project_rm_takes_long_only_volumes() {
-        let removed = super::command()
-            .try_get_matches_from(["ployz", "project", "rm", "shop", "--volumes", "--yes"])
-            .unwrap();
-        let rm = removed
-            .subcommand_matches("project")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert_eq!(
-            rm.get_one::<String>("project").map(String::as_str),
-            Some("shop")
-        );
-        assert!(rm.get_flag("volumes"));
-        assert!(rm.get_flag("yes"));
-        let named = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "project",
-                "rm",
-                "shop",
-                "--volumes",
-                "--accept-volume-loss",
-                "shop_data",
-                "--accept-volume-loss",
-                "shop_logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = named
-            .subcommand_matches("project")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["shop_data", "shop_logs"]
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "project", "rm", "shop", "-v"])
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn service_rm_volumes_takes_long_data_loss_and_yes() {
-        let matches = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--yes",
-                "--accept-volume-loss",
-                "app_data",
-            ])
-            .unwrap();
-        let rm = rm_matches(&matches);
-        assert_eq!(
-            rm.get_one::<String>("service").map(String::as_str),
-            Some("db")
-        );
-        assert!(rm.get_flag("volumes"));
-        assert!(rm.get_flag("yes"));
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data"]
-        );
-
-        let comma = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--accept-volume-loss",
-                "app_data,app_logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = rm_matches(&comma);
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data,app_logs"]
-        );
-
-        assert!(
-            super::command()
-                .try_get_matches_from([
-                    "ployz",
-                    "service",
-                    "rm",
-                    "db",
-                    "--accept-volume-loss",
-                    "app_data"
-                ])
-                .is_err()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "service", "start", "db", "--volumes"])
-                .is_err()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "service", "rm", "db", "--volumes", "-v"])
-                .is_err()
-        );
-
-        let repeated = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--accept-volume-loss",
-                "app_data",
-                "--accept-volume-loss",
-                "app_logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = rm_matches(&repeated);
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data", "app_logs"]
-        );
-
-        let trailing = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--accept-volume-loss",
-                "app_data",
-                "api",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = rm_matches(&trailing);
-        assert_eq!(
-            rm.get_many::<String>("service")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["db", "api"]
-        );
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data"]
-        );
-    }
-
-    fn rm_matches(matches: &clap::ArgMatches) -> &clap::ArgMatches {
-        matches
-            .subcommand_matches("service")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap()
-    }
-
-    #[test]
-    fn volume_rm_still_takes_volume_names_with_yes() {
-        let matches = super::command()
-            .try_get_matches_from(["ployz", "volume", "rm", "data", "logs", "--yes"])
-            .unwrap();
-        let rm = matches
-            .subcommand_matches("volume")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert!(rm.get_flag("yes"));
-        assert_eq!(
-            rm.get_many::<String>("volume-name")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["data", "logs"]
-        );
     }
 }

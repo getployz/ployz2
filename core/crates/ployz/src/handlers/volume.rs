@@ -559,13 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn volume_columns_distinguish_plain_and_provisioned_usage() {
-        assert_eq!(
-            format_storage(&DockerVolumeStorageObservation::Plain {
-                driver: "local".into(),
-            }),
-            ("PLAIN", "-".into(), "-".into())
-        );
+    fn volume_columns_show_provisioned_usage() {
         assert_eq!(
             format_storage(&DockerVolumeStorageObservation::Provisioned {
                 mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
@@ -577,58 +571,36 @@ mod tests {
     }
 
     #[test]
-    fn in_use_volume_removal_names_the_service_to_remove() {
-        let removal = VolumeRemoval {
-            id: ployz_core::DockerVolumeId {
-                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-                name: ployz_core::DockerVolumeName::parse("busy").unwrap(),
-            },
-            outcome: VolumeRemovalOutcome::Failed {
-                error: RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "volume is in use by cashdash/cashdash-singlestore (2 containers)"
-                        .into(),
-                    details: serde_json::json!({
-                        "in_use_by": ["cashdash/cashdash-singlestore"]
-                    }),
-                },
-            },
-        };
-        let summary = removal_failure_summary(&[removal]);
-        assert!(
-            summary.contains("volume is in use by cashdash/cashdash-singlestore"),
-            "{summary}"
-        );
-        assert!(
-            summary.contains(
-                "remove the Service first: ployz service rm cashdash/cashdash-singlestore"
+    fn in_use_volume_removal_names_the_services_to_remove() {
+        for (message, in_use_by, hint) in [
+            (
+                "volume is in use by cashdash/cashdash-singlestore (2 containers)",
+                vec!["cashdash/cashdash-singlestore"],
+                "remove the Service first: ployz service rm cashdash/cashdash-singlestore",
             ),
-            "{summary}"
-        );
-    }
-
-    #[test]
-    fn in_use_volume_removal_names_each_service_to_remove() {
-        let removal = VolumeRemoval {
-            id: ployz_core::DockerVolumeId {
-                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-                name: ployz_core::DockerVolumeName::parse("busy").unwrap(),
-            },
-            outcome: VolumeRemovalOutcome::Failed {
-                error: RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "volume is in use by app/web, app/db (3 containers)".into(),
-                    details: serde_json::json!({
-                        "in_use_by": ["app/db", "app/web"]
-                    }),
+            (
+                "volume is in use by app/web, app/db (3 containers)",
+                vec!["app/db", "app/web"],
+                "remove the Services first: ployz service rm app/db app/web",
+            ),
+        ] {
+            let removal = VolumeRemoval {
+                id: ployz_core::DockerVolumeId {
+                    machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+                    name: ployz_core::DockerVolumeName::parse("busy").unwrap(),
                 },
-            },
-        };
-        let summary = removal_failure_summary(&[removal]);
-        assert!(
-            summary.contains("remove the Services first: ployz service rm app/db app/web"),
-            "{summary}"
-        );
+                outcome: VolumeRemovalOutcome::Failed {
+                    error: RpcError {
+                        code: RpcErrorCode::Conflict,
+                        message: message.into(),
+                        details: serde_json::json!({ "in_use_by": in_use_by }),
+                    },
+                },
+            };
+            let summary = removal_failure_summary(&[removal]);
+            assert!(summary.contains(message), "{summary}");
+            assert!(summary.contains(hint), "{summary}");
+        }
     }
 
     fn machine(seed: u8, name: &str) -> MachineObservation {

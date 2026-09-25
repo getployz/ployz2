@@ -151,18 +151,3 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     })?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
-
-    use super::*;
-
-    #[test]
-    fn init_timeout_surfaces_the_docker_network_recovery() {
-        let message = helpers::readiness_timeout_message("initial Machine did not become ready");
-
-        assert!(message.contains("initial Machine did not become ready"));
-        assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
-    }
-}

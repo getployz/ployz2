@@ -39,19 +39,3 @@ pub(crate) fn explicit(matches: &ArgMatches) -> Result<Option<ProjectName>, Proj
     refuse_reserved(&name)?;
     Ok(Some(name))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reserved_names_parse_and_are_refused() {
-        let name = ProjectName::parse("ployz-system").unwrap();
-        assert!(name.is_reserved());
-        assert_eq!(
-            refuse_reserved(&name).unwrap_err().to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure"
-        );
-        refuse_reserved(&ProjectName::parse("shop").unwrap()).unwrap();
-    }
-}

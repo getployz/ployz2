@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn first_and_middle_failures_report_the_complete_ordered_suffix() {
+    fn a_failure_reports_the_complete_ordered_suffix() {
         let machines = [
             machine('a', 1),
             machine('b', 2),
@@ -401,15 +401,6 @@ mod tests {
                 "Machine b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
                 "Machine c (cccccccccccccccccccccccccccccccc): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
                 "Machine d (dddddddddddddddddddddddddddddddd): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
-            ]
-        );
-
-        let middle = unattempted_lines(&machines[2..], &machines[1]);
-        assert_eq!(
-            middle,
-            [
-                "Machine c (cccccccccccccccccccccccccccccccc): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
-                "Machine d (dddddddddddddddddddddddddddddddd): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
             ]
         );
     }

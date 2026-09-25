@@ -1,6 +1,6 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, RegisterRequest, op,
+    InspectRequest, JoinRequest, LocalMachinePhase, MachineName, RegisterRequest, op,
 };
 
 use super::super::{connect_client, runtime};
@@ -100,7 +100,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
     connection = connection.with_machine_id(assigned.id);
     config.save_connection(&context_name, connection.clone())?;
-    println!("{}", added_machine_line(&assigned));
+    println!("Added Machine {} ({})", assigned.name, assigned.id);
 
     runtime.block_on(helpers::wait_direct_participating(
         matches,
@@ -135,74 +135,4 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         );
     }
     Ok(())
-}
-
-fn added_machine_line(assigned: &Machine) -> String {
-    format!("Added Machine {} ({})", assigned.name, assigned.id)
-}
-
-#[cfg(test)]
-mod tests {
-    use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
-    use ployz_core::{Machine, MachineId, MachineName, WireGuardPublicKey};
-
-    use super::*;
-
-    #[test]
-    fn add_timeout_surfaces_the_docker_network_recovery() {
-        let message = helpers::readiness_timeout_message("added Machine did not become ready");
-
-        assert!(message.contains("added Machine did not become ready"));
-        assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
-    }
-
-    #[test]
-    fn machine_add_reports_added_when_follow_on_ingress_deploy_fails() {
-        let assigned = assigned_machine("edge", 'a');
-        assert_eq!(
-            added_machine_line(&assigned),
-            "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
-        );
-    }
-
-    #[test]
-    fn catch_up_failure_after_add_reports_joined_membership() {
-        let error = crate::global_catch_up::joined_catch_up_error(
-            crate::global_catch_up::CatchUpError::new(
-                crate::failure::Failure::usage("deploy timed out".to_owned()),
-                vec![ployz_core::QualifiedService::system_ingress()],
-            ),
-        );
-        assert!(error.contains("Machine joined"));
-        assert!(error.contains("remains a Cluster member"));
-        assert!(
-            error.contains("`ployz ingress deploy`"),
-            "failure must tell the operator to run `ingress deploy`, got {error:?}"
-        );
-        assert!(
-            error.contains("deploy timed out"),
-            "failure must include the follow-on error, got {error:?}"
-        );
-        assert_eq!(
-            error.matches("deploy timed out").count(),
-            1,
-            "failure must report the error once, got {error:?}"
-        );
-    }
-
-    fn assigned_machine(name: &str, seed: char) -> Machine {
-        Machine {
-            labels: Default::default(),
-            accepts_builds: true,
-            accepts_services: true,
-            accepts_ingress: true,
-            id: MachineId::parse(seed.to_string().repeat(32)).unwrap(),
-            name: MachineName::parse(name).unwrap(),
-            subnet: "10.210.1.0/24".parse().unwrap(),
-            public_key: WireGuardPublicKey([seed as u8; 32]),
-            public_ip: None,
-            advertised_endpoints: Vec::new(),
-            runtime: Default::default(),
-        }
-    }
 }

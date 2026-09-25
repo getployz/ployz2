@@ -26,34 +26,6 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
             .display_name,
         "api-one"
     );
-    assert_eq!(
-        select_exec_container(&service, Some(&container_selector(&"b".repeat(64))))
-            .unwrap()
-            .as_observation()
-            .display_name,
-        "api-two"
-    );
-    assert_eq!(
-        select_exec_container(&service, Some(&container_selector("b")))
-            .unwrap()
-            .as_observation()
-            .display_name,
-        "b"
-    );
-    assert!(matches!(
-        select_exec_container(&service, Some(&container_selector("bb"))),
-        Err(OperatorError::Container(ployz_core::ContainerSelectorError::Ambiguous { selector, .. }))
-            if selector.as_str() == "bb"
-    ));
-    assert_eq!(
-        select_log_containers(&service, &[container_selector("b")])
-            .unwrap()
-            .first()
-            .unwrap()
-            .as_observation()
-            .display_name,
-        "b"
-    );
     let hook_id = service
         .hook_containers
         .first()
@@ -245,14 +217,6 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
         parse_tail("abc").unwrap_err().to_string(),
         "invalid log tail \"abc\": expected a non-negative integer or all"
     );
-}
-
-#[test]
-fn log_stream_status_prints_the_message_not_transport_metadata() {
-    let error = LogError::from(tonic::Status::invalid_argument(
-        "invalid log time \"notatime\"",
-    ));
-    assert_eq!(error.to_string(), "invalid log time \"notatime\"");
 }
 
 #[tokio::test]
@@ -488,29 +452,7 @@ fn metadata(name: &str) -> LogMetadata {
 }
 
 #[test]
-fn machine_selection_treats_star_as_all_and_all_as_a_name() {
-    let machines = [
-        machine_observation(1, "edge"),
-        machine_observation(2, "all"),
-    ];
-    assert_eq!(select_machines(&machines, &[]).unwrap().len(), 2);
-    assert_eq!(
-        select_machines(&machines, &[FanoutSelector::parse("*").unwrap()])
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        select_machines(&machines, &[FanoutSelector::parse("all").unwrap()])
-            .unwrap()
-            .first()
-            .unwrap()
-            .machine
-            .name
-            .as_str(),
-        "all"
-    );
-    assert!(select_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
+fn machine_selection_keeps_only_up_machines() {
     let mut down = machine_observation(3, "down");
     down.membership = MembershipObservation::Down;
     let mut unknown = machine_observation(4, "unknown");

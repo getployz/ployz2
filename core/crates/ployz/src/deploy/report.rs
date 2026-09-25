@@ -34,12 +34,6 @@ impl Ink {
     }
 
     #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn color() -> Self {
-        Self { color: true }
-    }
-
-    #[must_use]
     pub(crate) fn paint(self, role: Role, text: &str) -> String {
         if !self.color {
             return text.to_owned();
@@ -852,3 +846,7 @@ fn status_paint(state: &TaskState) -> (&'static str, &'static str, String, Role)
 fn elapsed(elapsed_ms: u64) -> String {
     format!("  {:.1}s", elapsed_ms as f64 / 1000.0)
 }
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;

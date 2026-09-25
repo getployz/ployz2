@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn hung_machine_list_returns_timed_out_at_the_barrier_deadline() {
+    async fn machine_list_returns_at_the_barrier_deadline_or_on_cancellation() {
         let pending = BTreeSet::from([container('a')]);
         let cancellation = CancellationToken::new();
         let deadline = Instant::now() + BARRIER_TIMEOUT;
@@ -282,12 +282,7 @@ mod tests {
                 panic!("observation barrier outlived its deadline");
             }
         }
-    }
 
-    #[tokio::test]
-    async fn cancelled_machine_list_returns_before_the_barrier_deadline() {
-        let pending = BTreeSet::from([container('a')]);
-        let cancellation = CancellationToken::new();
         cancellation.cancel();
         let error = within_deadline(
             Instant::now() + BARRIER_TIMEOUT,
@@ -302,84 +297,44 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_and_not_found_keep_a_capable_machine_and_the_pending_container() {
-        for code in [RpcErrorCode::Unavailable, RpcErrorCode::NotFound] {
-            let machine = machine('1');
-            let container = container('a');
-            let mut capable = vec![machine];
+    fn every_capable_machine_must_agree_and_unsupported_ones_are_dropped() {
+        let first = machine('1');
+        let second = machine('2');
+        let container = container('a');
+        let unavailable = || Err(error(RpcErrorCode::Unavailable));
+        let serving = || Ok(BTreeSet::from([container]));
+        for (capable, votes, still_capable, still_pending) in [
+            (vec![first], vec![(first, unavailable())], vec![first], true),
+            (
+                vec![first],
+                vec![(first, Err(error(RpcErrorCode::NotFound)))],
+                vec![first],
+                true,
+            ),
+            (
+                vec![first, second],
+                vec![(first, serving()), (second, unavailable())],
+                vec![first, second],
+                true,
+            ),
+            (
+                vec![first],
+                vec![(first, Err(error(RpcErrorCode::Unsupported)))],
+                vec![],
+                false,
+            ),
+        ] {
+            let mut capable = capable;
             let mut pending = BTreeSet::from([container]);
-
             apply_round(
                 &mut capable,
                 &mut pending,
                 ContainerObservationCondition::Serving,
-                vec![(machine, Err(error(code.clone())))],
+                votes,
             )
             .unwrap();
-
-            assert_eq!(capable, vec![machine], "{code:?}");
-            assert_eq!(pending, BTreeSet::from([container]), "{code:?}");
+            assert_eq!(capable, still_capable);
+            assert_eq!(!pending.is_empty(), still_pending, "{still_capable:?}");
         }
-    }
-
-    #[test]
-    fn serving_on_one_machine_does_not_clear_pending_while_another_is_unavailable() {
-        let first = machine('1');
-        let second = machine('2');
-        let container = container('a');
-        let mut capable = vec![first, second];
-        let mut pending = BTreeSet::from([container]);
-
-        apply_round(
-            &mut capable,
-            &mut pending,
-            ContainerObservationCondition::Serving,
-            vec![
-                (first, Ok(BTreeSet::from([container]))),
-                (second, Err(error(RpcErrorCode::Unavailable))),
-            ],
-        )
-        .unwrap();
-
-        assert_eq!(capable, vec![first, second]);
-        assert_eq!(pending, BTreeSet::from([container]));
-    }
-
-    #[test]
-    fn all_capable_serving_votes_clear_pending() {
-        let machine = machine('1');
-        let container = container('a');
-        let mut capable = vec![machine];
-        let mut pending = BTreeSet::from([container]);
-
-        apply_round(
-            &mut capable,
-            &mut pending,
-            ContainerObservationCondition::Serving,
-            vec![(machine, Ok(BTreeSet::from([container])))],
-        )
-        .unwrap();
-
-        assert_eq!(capable, vec![machine]);
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn unsupported_drops_the_machine_from_capable() {
-        let machine = machine('1');
-        let container = container('a');
-        let mut capable = vec![machine];
-        let mut pending = BTreeSet::from([container]);
-
-        apply_round(
-            &mut capable,
-            &mut pending,
-            ContainerObservationCondition::Serving,
-            vec![(machine, Err(error(RpcErrorCode::Unsupported)))],
-        )
-        .unwrap();
-
-        assert!(capable.is_empty());
-        assert!(pending.is_empty());
     }
 }

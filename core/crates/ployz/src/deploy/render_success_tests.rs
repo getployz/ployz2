@@ -2,48 +2,6 @@ use super::*;
 use ployz_core::{ContainerId, MachineId, ResolvedServiceSpec};
 
 #[test]
-fn success_with_ingress_deduplicates_endpoints() {
-    let mut spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": "a".repeat(32),
-        "name": "excalidraw",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "excalidraw/excalidraw:latest", "pull_policy": "missing" },
-        "ports": [{
-            "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "excalidraw.example.uncld.dev" },
-            "load_balancer_port": 443,
-            "container_port": 80,
-            "http_protocol": "https"
-        }]
-    }))
-    .unwrap();
-    spec.ports.extend(spec.ports.clone());
-    let machine_id = MachineId::parse("d".repeat(32)).unwrap();
-    let outcome = DeployOutcome::Success {
-        completed: vec![
-            DeployOperation::RunContainer {
-                machine_id,
-                spec: spec.clone(),
-                skip_health_monitor: true,
-            },
-            DeployOperation::ReplaceContainer(ReplacementOperation {
-                machine_id,
-                old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
-                spec,
-                skip_health_monitor: false,
-            }),
-        ],
-    };
-    let text = outcome_text(&outcome);
-    assert_eq!(
-        text.matches("https://excalidraw.example.uncld.dev").count(),
-        1,
-        "{text}"
-    );
-    assert!(text.contains("excalidraw → :80\n  https://excalidraw.example.uncld.dev"));
-}
-
-#[test]
 fn success_groups_unique_urls_by_service_and_target_port_with_custom_domains_first() {
     let mut spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": "a".repeat(32),

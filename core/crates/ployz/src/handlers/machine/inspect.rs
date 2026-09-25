@@ -251,59 +251,28 @@ mod tests {
     }
 
     #[test]
-    fn missing_rtt_is_omitted_and_sub_millisecond_samples_are_not_printed_as_0ns() {
-        assert_eq!(format_measured_rtt(0), "<1ms");
-
-        let source = machine_id('1');
-        let table = format_rtt_table(&PartialResult {
-            successes: vec![MachineSuccess {
-                machine_id: source,
-                value: vec![rtt_observation("peer-zero", 0, 0)],
-            }],
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        });
-        assert_eq!(
-            table,
-            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\tpeer-zero\t<1ms\t<1ms\n")
-        );
-        assert!(!table.contains("0ns"));
-    }
-
-    #[test]
-    fn measured_rtt_prints_human_units() {
-        assert_eq!(format_measured_rtt(1_500_000), "1.5ms");
-        let statistics = RttStatistics {
-            median_ns: 1_500_000,
-            population_stddev_ns: 200_000,
-        };
-
+    fn rtt_table_prints_human_units_and_sub_millisecond_zero() {
         let source = machine_id('1');
         let target = machine_id('2');
+        let mut live = rtt_observation("peer-live", 1_500_000, 200_000);
+        live.machine = Some(MachineIdentity {
+            id: target,
+            name: MachineName::parse("node-b").unwrap(),
+        });
         let table = format_rtt_table(&PartialResult {
             successes: vec![MachineSuccess {
                 machine_id: source,
-                value: vec![RttObservation {
-                    peer_id: "peer-live".into(),
-                    address: format!("[fdcc::2]:{CORROSION_GOSSIP_PORT}")
-                        .parse()
-                        .unwrap(),
-                    machine: Some(MachineIdentity {
-                        id: target,
-                        name: MachineName::parse("node-b").unwrap(),
-                    }),
-                    statistics,
-                }],
+                value: vec![rtt_observation("peer-zero", 0, 0), live],
             }],
             failures: Vec::new(),
             omissions: Vec::new(),
         });
         assert_eq!(
             table,
-            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\t{target}\t1.5ms\t200µs\n")
+            format!(
+                "SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\tpeer-zero\t<1ms\t<1ms\n{source}\t{target}\t1.5ms\t200µs\n"
+            )
         );
-        assert!(!table.contains("1500000"));
-        assert!(!table.contains("0ns"));
     }
 
     fn machine_id(digit: char) -> MachineId {

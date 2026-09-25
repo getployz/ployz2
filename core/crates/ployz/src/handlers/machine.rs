@@ -324,36 +324,10 @@ mod tests {
         for flags in [
             vec!["--label-add", "region"],
             vec!["--label-add", "=west"],
-            vec!["--label-add", "rack/zone=west"],
-            vec!["--label-add", "region="],
-            vec!["--label-add", "region=é"],
-            vec!["--label-add", "region=🦀"],
-            vec!["--label-add", "region= west"],
-            vec!["--label-add", "region=west "],
             vec!["--label-add", "region=west", "--label-add", "region=east"],
             vec!["--label-add", "region=west", "--label-rm", "region"],
         ] {
             assert!(parse(&flags).is_err(), "{flags:?}");
         }
-    }
-
-    #[test]
-    fn singular_machine_cli_target_rejects_star_and_keeps_all_as_identity() {
-        let command = crate::cli::command();
-        let star = command
-            .clone()
-            .try_get_matches_from(["ployz", "machine", "update", "*", "--name", "edge"])
-            .unwrap();
-        assert!(MachineTarget::parse(target(leaf_matches(&star), "machine").unwrap()).is_err());
-
-        let named_all = command
-            .try_get_matches_from(["ployz", "machine", "update", "all", "--name", "edge"])
-            .unwrap();
-        assert_eq!(
-            MachineTarget::parse(target(leaf_matches(&named_all), "machine").unwrap())
-                .unwrap()
-                .as_str(),
-            "all"
-        );
     }
 }

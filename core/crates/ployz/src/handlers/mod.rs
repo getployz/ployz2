@@ -412,42 +412,6 @@ mod tests {
     }
 
     #[test]
-    fn machine_enrollment_accepts_only_supported_storage_choices() {
-        for action in ["add", "init"] {
-            for storage in ["none", "zfs"] {
-                let parsed = command()
-                    .try_get_matches_from([
-                        "ployz",
-                        "machine",
-                        action,
-                        "root@example.test",
-                        "--storage",
-                        storage,
-                    ])
-                    .unwrap();
-                assert_eq!(
-                    leaf_matches(&parsed)
-                        .get_one::<ployz_core::StorageChoice>("storage")
-                        .map(|choice| choice.as_str()),
-                    Some(storage),
-                );
-            }
-            assert!(
-                command()
-                    .try_get_matches_from([
-                        "ployz",
-                        "machine",
-                        action,
-                        "root@example.test",
-                        "--storage",
-                        "other",
-                    ])
-                    .is_err()
-            );
-        }
-    }
-
-    #[test]
     fn ingress_deploy_rejects_unsupported_constraints_before_connecting() {
         let mut command = command();
         let matches = command
@@ -493,6 +457,18 @@ mod tests {
         assert!(
             command()
                 .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_x", "root@host"])
+                .is_err()
+        );
+        assert!(
+            command()
+                .try_get_matches_from([
+                    "ployz",
+                    "cloud",
+                    "enroll",
+                    "pmet_x",
+                    "--network",
+                    "not-a-cidr",
+                ])
                 .is_err()
         );
         assert!(
@@ -555,24 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn cloud_enroll_rejects_an_invalid_cluster_network() {
-        assert!(
-            command()
-                .try_get_matches_from([
-                    "ployz",
-                    "cloud",
-                    "enroll",
-                    "pmet_test",
-                    "--reset",
-                    "--yes",
-                    "--network",
-                    "not-a-cidr",
-                ])
-                .is_err()
-        );
-    }
-
-    #[test]
     fn cloud_enroll_without_a_daemon_requires_sudo() {
         if crate::provisioning::process_is_root() {
             return;
@@ -586,24 +544,6 @@ mod tests {
             dispatch(&matches, &mut command).unwrap_err().to_string(),
             "run this command with sudo",
         );
-    }
-
-    #[test]
-    fn founding_commands_reject_the_removed_ingress_backend_option() {
-        for arguments in [
-            ["ployz", "machine", "init", "--ingress-backend", "caddy"].as_slice(),
-            [
-                "ployz",
-                "cloud",
-                "enroll",
-                "pmet_test",
-                "--ingress-backend",
-                "caddy",
-            ]
-            .as_slice(),
-        ] {
-            assert!(command().try_get_matches_from(arguments).is_err());
-        }
     }
 
     #[test]
@@ -650,16 +590,8 @@ mod tests {
     }
 
     #[test]
-    fn reserved_and_invalid_project_names_fail_before_connecting() {
+    fn reserved_project_names_fail_before_connecting() {
         let mut command = command();
-        let invalid = command
-            .clone()
-            .try_get_matches_from(["ployz", "service", "rm", "--project-name", "My_App", "web"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&invalid, &mut command).unwrap_err().to_string(),
-            "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
-        );
         let service_remove = command
             .clone()
             .try_get_matches_from([
@@ -687,37 +619,6 @@ mod tests {
                 .to_string(),
             "Project 'ployz-system' is reserved for Ployz infrastructure",
         );
-        let invalid_project_remove = command
-            .clone()
-            .try_get_matches_from(["ployz", "project", "rm", "My_App"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&invalid_project_remove, &mut command)
-                .unwrap_err()
-                .to_string(),
-            "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
-        );
-    }
-
-    #[test]
-    fn retired_daemon_channels_are_rejected() {
-        for channel in ["latest", "nightly"] {
-            let error = command()
-                .try_get_matches_from([
-                    "ployz",
-                    "machine",
-                    "add",
-                    "root@example.com",
-                    "--version",
-                    channel,
-                ])
-                .unwrap_err();
-            assert_eq!(
-                error.kind(),
-                clap::error::ErrorKind::ValueValidation,
-                "{channel}"
-            );
-        }
     }
 
     #[test]

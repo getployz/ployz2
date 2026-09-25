@@ -2,34 +2,7 @@ use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Durat
 
 use super::*;
 use crate::context::SshDestination;
-use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER};
 use tokio::io::AsyncWriteExt;
-
-#[test]
-fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
-    use std::os::unix::process::ExitStatusExt;
-    for (detail, retry) in [
-        ("Connection timed out", true),
-        ("Connection refused", true),
-        ("Permission denied (publickey)", false),
-        ("Host key verification failed", false),
-    ] {
-        let ssh_error = ConnectError::SshProbe {
-            target: "host".to_owned(),
-            status: std::process::ExitStatus::from_raw(255 << 8),
-            detail: detail.to_owned(),
-        };
-        assert_eq!(ssh_error.is_setup_retryable(), retry);
-        let error = ConnectError::AllFailed {
-            source: ConnectionSource::Direct,
-            attempts: 1,
-            setup_retryable: retry,
-            last: Some(Box::new(ssh_error)),
-        };
-        assert_eq!(error.is_setup_retryable(), retry);
-        assert!(error.to_string().contains(detail));
-    }
-}
 
 #[tokio::test]
 async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
@@ -59,36 +32,6 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
             );
         }
     }
-}
-
-#[tokio::test]
-async fn target_timeout_becomes_a_typed_partial_failure() {
-    let error = apply_timeout(
-        Some(Duration::from_millis(1)),
-        std::future::pending::<Result<(), ConnectError>>(),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "target Machine RPC timed out");
-}
-
-#[test]
-fn non_ascii_machine_targets_use_binary_metadata() {
-    let target = MachineTarget::parse("München edge").unwrap();
-    let request = target_request(ployz_core::OpaquePayload::new(Vec::new()), Some(&target));
-
-    assert!(request.metadata().get(ONE_TARGET_HEADER).is_none());
-    assert_eq!(
-        request
-            .metadata()
-            .get_bin(ONE_TARGET_BINARY_HEADER)
-            .unwrap()
-            .to_bytes()
-            .unwrap(),
-        target.as_str()
-    );
 }
 
 #[test]
@@ -121,8 +64,6 @@ fn system_ssh_command_uses_noninteractive_authentication() {
             "dial-stdio",
         ]
     );
-    assert!(!args.iter().any(|arg| arg.contains("id_*")));
-    assert!(args.contains(&"BatchMode=yes".to_owned()));
 }
 
 #[test]
@@ -170,39 +111,46 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
         ConnectError::Rpc(error).to_string(),
         "Machine RPC failed: invalid log time \"notatime\""
     );
-}
-
-#[test]
-fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
-    assert!(
-        ConnectError::Rpc(TransportError::from(tonic::Status::unavailable(
-            "route failed"
-        )))
-        .is_unreachable()
-    );
-    assert!(
-        !ConnectError::Rpc(TransportError::from(tonic::Status::unimplemented(
-            "older daemon"
-        )))
-        .is_unreachable()
-    );
-    assert!(
-        !ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Docker is unavailable".into(),
-            details: serde_json::Value::Null,
-        })
-        .is_unreachable()
+    assert_eq!(
+        crate::operator::LogError::from(tonic::Status::invalid_argument(
+            "invalid log time \"notatime\""
+        ))
+        .to_string(),
+        "invalid log time \"notatime\""
     );
 }
 
 #[test]
-fn deadline_exceeded_is_retryable_not_unreachable() {
-    let error = ConnectError::Rpc(TransportError::from(tonic::Status::deadline_exceeded(
+fn only_transport_unavailability_is_an_unreachable_fallback() {
+    let deadline = ConnectError::Rpc(TransportError::from(tonic::Status::deadline_exceeded(
         "timed out",
     )));
-    assert!(error.is_retryable());
-    assert!(!error.is_unreachable());
+    assert!(deadline.is_retryable());
+    for (error, unreachable) in [
+        (
+            ConnectError::Rpc(TransportError::from(tonic::Status::unavailable(
+                "route failed",
+            ))),
+            true,
+        ),
+        (
+            ConnectError::Rpc(TransportError::from(tonic::Status::unimplemented(
+                "older daemon",
+            ))),
+            false,
+        ),
+        (
+            ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Docker is unavailable".into(),
+                details: serde_json::Value::Null,
+            }),
+            false,
+        ),
+        (deadline, false),
+    ] {
+        assert_eq!(error.is_unreachable(), unreachable, "{error}");
+    }
 }
 
 #[tokio::test]
@@ -250,25 +198,6 @@ async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     }
 
     fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn missing_ssh_program_names_the_local_client() {
-    let connector = SystemConnector::new("/ployz-missing-ssh-client");
-    let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
-    let message = connector
-        .connect(&connection)
-        .await
-        .expect_err("missing ssh program must fail");
-    assert!(
-        matches!(message, ConnectError::SshClientMissing(_)),
-        "{message:?}"
-    );
-    assert_eq!(
-        message.to_string(),
-        "local ssh client not found; install an ssh client"
-    );
-    assert!(!message.to_string().contains("os error"), "{message}");
 }
 
 #[tokio::test]

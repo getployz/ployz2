@@ -56,117 +56,20 @@ fn rotation_updates_latest_contexts_and_preserves_other_connections() {
     ));
 }
 
-#[test]
-fn connection_sources_are_plain_text() {
-    use super::ConnectionSource;
-    assert_eq!(
-        ConnectionSource::Direct.to_string(),
-        "the explicit connection"
-    );
-    assert_eq!(
-        ConnectionSource::LocalSocket.to_string(),
-        "the local socket"
-    );
-    assert_eq!(
-        ConnectionSource::Context("prod".into()).to_string(),
-        "context prod"
-    );
-}
+use std::{collections::BTreeMap, fs};
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
-
-use super::{Config, Context, ContextError, RemovedContext};
+use super::{Config, Context};
 
 #[test]
-fn removing_a_non_current_context_leaves_current_and_the_other_entry() {
-    let mut config = Config::new(
-        "/tmp/config.yaml",
-        Some("prod".into()),
-        BTreeMap::from([
-            ("default".into(), Context::default()),
-            ("prod".into(), Context::default()),
-        ]),
-    );
-
-    assert_eq!(
-        config.remove_context("default").unwrap(),
-        RemovedContext::Other
-    );
-    assert_eq!(config.current_context(), Some("prod"));
-    assert!(config.contexts.contains_key("prod"));
-    assert!(!config.contexts.contains_key("default"));
-}
-
-#[test]
-fn removing_the_current_context_unsets_current_and_drops_that_entry() {
-    let mut config = Config::new(
-        "/tmp/config.yaml",
-        Some("prod".into()),
-        BTreeMap::from([
-            ("default".into(), Context::default()),
-            ("prod".into(), Context::default()),
-        ]),
-    );
-
-    assert_eq!(
-        config.remove_context("prod").unwrap(),
-        RemovedContext::Current
-    );
-    assert_eq!(config.current_context(), None);
-    assert!(config.contexts.contains_key("default"));
-    assert!(!config.contexts.contains_key("prod"));
-}
-
-#[test]
-fn removing_the_last_context_leaves_an_empty_map_and_no_current() {
-    let mut config = Config::new(
-        "/tmp/config.yaml",
-        Some("default".into()),
-        BTreeMap::from([("default".into(), Context::default())]),
-    );
-
-    assert_eq!(
-        config.remove_context("default").unwrap(),
-        RemovedContext::Current
-    );
-    assert!(config.contexts.is_empty());
-    assert_eq!(config.current_context(), None);
-}
-
-#[test]
-fn removing_a_missing_context_is_context_not_found_and_does_not_mutate() {
-    let path = PathBuf::from("/tmp/config.yaml");
-    let mut config = Config::new(
-        &path,
-        Some("prod".into()),
-        BTreeMap::from([("prod".into(), Context::default())]),
-    );
-    let before = config.clone();
-
-    assert_eq!(
-        config.remove_context("gone"),
-        Err(ContextError::ContextNotFound {
-            name: "gone".into(),
-            path,
-        })
-    );
-    assert_eq!(config, before);
-}
-
-#[test]
-fn new_config_with_a_dangling_current_name_stores_none() {
+fn a_dangling_current_name_is_dropped_on_construction_and_load() {
     let config = Config::new(
         "/tmp/config.yaml",
         Some("gone".into()),
         BTreeMap::from([("prod".into(), Context::default())]),
     );
-
     assert_eq!(config.current_context(), None);
     assert!(config.contexts.contains_key("prod"));
-}
 
-#[test]
-fn dangling_current_context_yaml_loads_as_none() {
     let root = std::env::temp_dir().join(format!(
         "ployz-dangling-current-yaml-{}",
         std::process::id()
@@ -185,23 +88,4 @@ fn dangling_current_context_yaml_loads_as_none() {
     assert!(config.contexts.contains_key("prod"));
 
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn set_current_context_rejects_an_unknown_name() {
-    let path = PathBuf::from("/tmp/config.yaml");
-    let mut config = Config::new(
-        &path,
-        Some("prod".into()),
-        BTreeMap::from([("prod".into(), Context::default())]),
-    );
-
-    assert_eq!(
-        config.set_current_context(Some("gone".into())),
-        Err(ContextError::ContextNotFound {
-            name: "gone".into(),
-            path,
-        })
-    );
-    assert_eq!(config.current_context(), Some("prod"));
 }

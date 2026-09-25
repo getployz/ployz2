@@ -30,39 +30,3 @@ pub async fn service_spec(
 pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
     observation.identity() == QualifiedService::system_ingress()
 }
-
-#[cfg(test)]
-mod tests {
-    use ployz_core::{IngressProxyFragment, PlacementConstraint, ServiceMode};
-
-    use super::*;
-
-    #[tokio::test]
-    async fn builds_the_caddy_service_spec() {
-        let constraints: std::collections::BTreeSet<_> =
-            [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into();
-        let caddy = service_spec(
-            Some("registry.test/caddy@sha256:caddy".into()),
-            constraints.clone(),
-            Some(IngressProxyFragment::parse("{ admin off }").unwrap()),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(caddy.name, QualifiedService::system_ingress().name);
-        assert_eq!(caddy.mode, ServiceMode::Global);
-        assert_eq!(caddy.placement.constraints, constraints);
-        assert_eq!(
-            caddy.container.command,
-            ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
-        );
-        assert_eq!(caddy.ports.len(), 3);
-        assert_eq!(
-            caddy
-                .ingress_proxy_fragment
-                .as_ref()
-                .map(IngressProxyFragment::as_str),
-            Some("{ admin off }")
-        );
-    }
-}

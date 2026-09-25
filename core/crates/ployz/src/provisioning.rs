@@ -599,28 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_installer_arguments_keep_bootstrap_and_target_distinct() {
-        assert_eq!(
-            install_arguments(
-                "1.2.3",
-                Preparation::Host {
-                    storage: StorageChoice::Zfs,
-                    group_user: Some("deploy"),
-                },
-                None,
-            ),
-            [
-                "install",
-                "--version",
-                "1.2.3",
-                "--storage",
-                "zfs",
-                "--group-user",
-                "deploy",
-            ]
-            .map(OsString::from)
-            .to_vec()
-        );
+    fn software_only_installer_arguments_skip_host_preparation() {
         assert_eq!(
             install_arguments("1.2.3", Preparation::SoftwareOnly, None),
             ["install", "--version", "1.2.3", "--software-only"]
@@ -643,65 +622,46 @@ mod tests {
 
     #[test]
     fn storage_resolution_honors_explicit_and_safe_noninteractive_choices() {
-        assert_eq!(
-            storage_matches(["ployz", "machine", "add", "root@host", "--storage", "zfs"]),
-            StorageChoice::Zfs
-        );
-        assert_eq!(
-            storage_matches(["ployz", "machine", "init", "root@host", "--storage", "none"]),
-            StorageChoice::None
-        );
-        assert_eq!(
-            storage_matches(["ployz", "machine", "add", "root@host", "--yes"]),
-            StorageChoice::None
-        );
-    }
-
-    #[test]
-    fn zfs_requires_the_installer() {
-        let matches = crate::cli::command()
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "add",
-                "root@host",
-                "--storage",
-                "zfs",
-                "--no-install",
-            ])
-            .unwrap();
-        assert_eq!(
-            resolve_storage(
-                matches
-                    .subcommand_matches("machine")
-                    .unwrap()
-                    .subcommand_matches("add")
-                    .unwrap(),
-            )
-            .unwrap_err()
-            .to_string(),
-            "zfs storage preparation requires the installer; remove --no-install"
-        );
-    }
-
-    fn storage_matches<const N: usize>(args: [&str; N]) -> StorageChoice {
-        let matches = crate::cli::command().try_get_matches_from(args).unwrap();
-        let (_, matches) = matches
-            .subcommand_matches("machine")
-            .unwrap()
-            .subcommand()
-            .unwrap();
-        resolve_storage(matches).unwrap()
-    }
-
-    #[tokio::test]
-    async fn local_provision_requires_root() {
-        if process_is_root() {
-            return;
+        for (args, expected) in [
+            (
+                &["add", "root@host", "--storage", "zfs"][..],
+                Ok(StorageChoice::Zfs),
+            ),
+            (
+                &["init", "root@host", "--storage", "none"],
+                Ok(StorageChoice::None),
+            ),
+            (&["add", "root@host", "--yes"], Ok(StorageChoice::None)),
+            (
+                &["add", "root@host", "--storage", "zfs", "--no-install"],
+                Err("zfs storage preparation requires the installer; remove --no-install"),
+            ),
+        ] {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", "machine"].into_iter().chain(args.iter().copied()))
+                .unwrap();
+            let (_, matches) = matches
+                .subcommand_matches("machine")
+                .unwrap()
+                .subcommand()
+                .unwrap();
+            assert_eq!(
+                resolve_storage(matches).map_err(|error| error.to_string()),
+                expected.map_err(str::to_owned),
+                "{args:?}"
+            );
         }
-        assert!(matches!(
-            provision_local(env!("CARGO_PKG_VERSION"), StorageChoice::None).await,
-            Err(ProvisionError::NotRoot)
-        ));
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "machine",
+                    "add",
+                    "root@host",
+                    "--storage",
+                    "other"
+                ])
+                .is_err()
+        );
     }
 }

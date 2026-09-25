@@ -207,18 +207,12 @@ mod tests {
     use super::{machine_removal_refusal, replicated_services_on, service_warnings, services_on};
 
     #[test]
-    fn service_warnings_are_silent_when_nothing_is_at_stake() {
-        assert_eq!(
-            service_warnings(&MachineName::parse("ams1").unwrap(), &[]),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn service_warnings_name_services_on_the_machine() {
+    fn service_warnings_name_services_only_when_some_are_at_stake() {
+        let machine = MachineName::parse("ams1").unwrap();
+        assert_eq!(service_warnings(&machine, &[]), Vec::<String>::new());
         assert_eq!(
             service_warnings(
-                &MachineName::parse("ams1").unwrap(),
+                &machine,
                 &[
                     QualifiedService::parse("app/api").unwrap(),
                     QualifiedService::parse("app/web").unwrap(),
@@ -229,33 +223,34 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_removal_names_no_reset() {
-        let error = RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
-            details: Value::Null,
-        };
-        assert_eq!(
-            machine_removal_refusal(error).to_string(),
-            "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting"
-        );
+    fn machine_removal_refusal_names_no_reset_only_when_unreachable() {
+        for (code, message, expected) in [
+            (
+                RpcErrorCode::Unavailable,
+                "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond",
+                "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting",
+            ),
+            (
+                RpcErrorCode::NotFound,
+                "Machine \"gone\" was not found",
+                "Machine \"gone\" was not found",
+            ),
+        ] {
+            let error = RpcError {
+                code,
+                message: message.into(),
+                details: Value::Null,
+            };
+            assert_eq!(machine_removal_refusal(error).to_string(), expected);
+        }
     }
 
     #[test]
-    fn other_data_loss_errors_keep_their_message() {
-        let error = RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "Machine \"gone\" was not found".into(),
-            details: Value::Null,
-        };
-        assert_eq!(
-            machine_removal_refusal(error).to_string(),
-            "Machine \"gone\" was not found"
-        );
-    }
-
-    #[test]
-    fn services_on_names_services_with_a_service_container_on_that_machine() {
+    fn services_on_a_machine_count_service_containers_and_replicated_excludes_global() {
+        let mut global = observation('4', 'a', "caddy", ContainerKind::ServiceContainer, 'd');
+        global
+            .try_update(|parts| parts.resolved_spec.mode = ServiceMode::Global)
+            .unwrap();
         let live: LiveServices<RpcError> = derive_live_services(PartialResult {
             successes: vec![
                 MachineSuccess {
@@ -264,12 +259,13 @@ mod tests {
                         observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
                         observation('2', 'a', "api", ContainerKind::ServiceContainer, 'a'),
                         observation('3', 'a', "hooked", ContainerKind::PreDeployHook, 'b'),
+                        global,
                     ],
                 },
                 MachineSuccess {
                     machine_id: machine_id('b'),
                     value: vec![observation(
-                        '4',
+                        '5',
                         'b',
                         "web",
                         ContainerKind::ServiceContainer,
@@ -280,36 +276,12 @@ mod tests {
             failures: Vec::new(),
             omissions: Vec::new(),
         });
+        let api = QualifiedService::parse("app/api").unwrap();
         assert_eq!(
             services_on(&machine_id('a'), &live),
-            [QualifiedService::parse("app/api").unwrap()]
+            [api.clone(), QualifiedService::parse("app/caddy").unwrap()]
         );
-    }
-
-    #[test]
-    fn replicated_services_on_excludes_global_services() {
-        let live: LiveServices<RpcError> = derive_live_services(PartialResult {
-            successes: vec![MachineSuccess {
-                machine_id: machine_id('a'),
-                value: vec![
-                    observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
-                    {
-                        let mut global =
-                            observation('2', 'a', "caddy", ContainerKind::ServiceContainer, 'b');
-                        global
-                            .try_update(|parts| parts.resolved_spec.mode = ServiceMode::Global)
-                            .unwrap();
-                        global
-                    },
-                ],
-            }],
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        });
-        assert_eq!(
-            replicated_services_on(&machine_id('a'), &live),
-            [QualifiedService::parse("app/api").unwrap()]
-        );
+        assert_eq!(replicated_services_on(&machine_id('a'), &live), [api]);
     }
 
     fn observation(

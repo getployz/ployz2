@@ -150,41 +150,6 @@ fn scale_plan_accepts_only_service_containers() {
 }
 
 #[test]
-fn scale_does_not_select_a_service_owned_by_another_project() {
-    let service_id = ServiceId::random();
-    let replicated = ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    };
-    let mut system = observation(&service_id, replicated, "v1", '1');
-    system
-        .try_update(|parts| parts.project_name = ProjectName::system())
-        .unwrap();
-    let snapshot = DeploySnapshot {
-        machines: vec![machine()],
-        containers: vec![system],
-        ..Default::default()
-    };
-    assert_eq!(
-        choose_scale_spec(
-            &snapshot,
-            &ServiceSelector::parse("shop/api").unwrap(),
-            NonZeroU32::new(2).unwrap(),
-        )
-        .unwrap_err()
-        .to_string(),
-        "Service \"shop/api\" was not found"
-    );
-    let choice = choose_scale_spec(
-        &snapshot,
-        &ServiceSelector::parse("api").unwrap(),
-        NonZeroU32::new(2).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(choice.project_name.as_str(), "ployz-system");
-    assert!(choice.requested.is_some());
-}
-
-#[test]
 fn scale_uses_the_selected_qualified_service_project() {
     let replicas = |count: u32| NonZeroU32::new(count).unwrap();
     let replicated = ServiceMode::Replicated {
@@ -232,26 +197,28 @@ fn scale_uses_the_selected_qualified_service_project() {
         )
         .is_err()
     );
+    assert_eq!(
+        choose_scale_spec(
+            &snapshot,
+            &ServiceSelector::parse("shop/web").unwrap(),
+            replicas(2),
+        )
+        .unwrap_err()
+        .to_string(),
+        "Service \"shop/web\" was not found"
+    );
 }
 
 #[test]
-fn resolved_scale_input_changes_only_replicas() {
-    let requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
-        "name": "api",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "alpine", "pull_policy": "missing" }
-    }))
-    .unwrap();
-    let resolved = requested
-        .to_resolved(ServiceId::random(), Default::default())
-        .expect("volume graph is scoped");
-    let mut scaled = resolved.to_requested();
-    scaled.mode = ServiceMode::Replicated {
-        replicas: NonZeroU32::new(3).unwrap(),
-    };
-    let mut expected = resolved.to_requested();
-    expected.mode = scaled.mode.clone();
-    assert_eq!(scaled, expected);
+fn incomplete_empty_view_is_not_reported_as_missing() {
+    let mut preview = crate::deploy::DeployPreview::new(
+        Vec::new(),
+        Vec::new(),
+        ProjectName::parse("shop").unwrap(),
+    );
+    assert!(project_not_found(&preview));
+    preview.prune_refusal = Some(ployz_core::PruneRefusal::IncompleteSnapshot);
+    assert!(!project_not_found(&preview));
 }
 
 #[test]

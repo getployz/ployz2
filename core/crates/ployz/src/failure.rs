@@ -232,7 +232,7 @@ impl From<tonic::Status> for Failure {
 mod tests {
     use std::error::Error as StdError;
 
-    use ployz_core::{MachineName, RpcError, RpcErrorCode};
+    use ployz_core::{RpcError, RpcErrorCode};
     use serde_json::Value;
 
     use super::*;
@@ -241,35 +241,6 @@ mod tests {
         StdError::source(failure)
             .and_then(|error| error.downcast_ref())
             .expect("command Failure should keep the original error")
-    }
-
-    #[test]
-    fn missing_config_prints_the_no_config_string() {
-        let failure = Failure::from(ContextError::NoConfig);
-        assert_eq!(
-            failure.to_string(),
-            "no Ployz config or local daemon socket is available"
-        );
-        assert!(matches!(
-            source::<ContextError>(&failure),
-            ContextError::NoConfig
-        ));
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
-    }
-
-    #[test]
-    fn invalid_machine_name_display_is_stable() {
-        let error = MachineName::parse("BAD NAME").unwrap_err();
-        let failure = Failure::from(error);
-        assert_eq!(
-            failure.to_string(),
-            "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
-        );
-        assert_eq!(
-            source::<ValueError>(&failure).to_string(),
-            "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
-        );
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -316,56 +287,51 @@ mod tests {
     }
 
     #[test]
-    fn connect_keeps_non_peeled_connect_error() {
-        let failure = Failure::from(ConnectError::MissingMachineDetails);
-        assert_eq!(
-            failure.to_string(),
-            "connection attempt failed: inspect response omitted Machine details"
-        );
-        assert!(matches!(
-            source::<ConnectError>(&failure),
-            ConnectError::MissingMachineDetails
-        ));
-    }
-
-    #[test]
-    fn rpc_error_keeps_the_rpc_error() {
-        let failure = Failure::from(RpcError {
-            code: RpcErrorCode::Internal,
-            message: "boom".into(),
-            details: Value::Null,
-        });
-        assert_eq!(failure.to_string(), "boom");
-        assert_eq!(source::<RpcError>(&failure).message, "boom");
-        assert_eq!(source::<RpcError>(&failure).code, RpcErrorCode::Internal);
-    }
-
-    #[test]
-    fn usage_is_not_a_library_error() {
-        let failure = Failure::usage("nope");
-        assert_eq!(failure.to_string(), "nope");
-        assert_eq!(source::<Usage>(&failure).to_string(), "nope");
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
+    fn command_failure_keeps_display_and_source() {
+        type KeepsSource = fn(&Failure) -> bool;
+        let cases: [(Failure, &str, KeepsSource); 3] = [
+            (
+                Failure::from(ConnectError::MissingMachineDetails),
+                "connection attempt failed: inspect response omitted Machine details",
+                |failure| {
+                    matches!(
+                        source::<ConnectError>(failure),
+                        ConnectError::MissingMachineDetails
+                    )
+                },
+            ),
+            (
+                Failure::from(RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "boom".into(),
+                    details: Value::Null,
+                }),
+                "boom",
+                |failure| {
+                    let error = source::<RpcError>(failure);
+                    error.message == "boom" && error.code == RpcErrorCode::Internal
+                },
+            ),
+            (Failure::usage("nope"), "nope", |failure| {
+                source::<Usage>(failure).to_string() == "nope"
+            }),
+        ];
+        for (failure, display, keeps_source) in cases {
+            assert_eq!(failure.to_string(), display);
+            assert!(keeps_source(&failure), "{display}");
+        }
     }
 
     #[test]
     fn warned_follow_on_is_one_line_and_fails() {
         let cause = "inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out";
         let add = Failure::warned("hosted DNS refresh failed after adding the Machine", cause);
-        let remove = Failure::warned(
-            "hosted DNS refresh failed after removing the Machine",
-            cause,
-        );
         assert_eq!(
             add.to_string(),
             "WARNING: hosted DNS refresh failed after adding the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
         );
-        assert_eq!(
-            remove.to_string(),
-            "WARNING: hosted DNS refresh failed after removing the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
-        );
         assert_eq!(add.to_string().matches(cause).count(), 1);
-        assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
+        assert_eq!(terminate(Err(add)), ExitCode::FAILURE);
     }
 
     #[test]

@@ -10,26 +10,7 @@ use ployz_core::{
     PortPublication, ReplacementOperation, UpdateOrder,
 };
 
-#[cfg(test)]
-use ployz_core::{DeployEvent, DeployOutcome, ExecutionError};
-
 use super::report;
-#[cfg(test)]
-use super::report::Ink;
-
-#[must_use]
-#[cfg(test)]
-pub fn progress_text(event: &DeployEvent, title: &str) -> String {
-    match event {
-        DeployEvent::Progress {
-            completed,
-            total,
-            rows,
-        } => report::paint_live(title, *completed, *total, rows, &Ink::plain()),
-        DeployEvent::Outcome { outcome } => outcome_text(outcome),
-        DeployEvent::ImagesPruned { .. } => String::new(),
-    }
-}
 
 /// Tree plan plus footer. Empty operations with no listed drift are "No changes."
 #[must_use]
@@ -147,26 +128,6 @@ fn volumes_to_create_lines(preview: &DeployPreview) -> String {
 #[must_use]
 pub fn confirm_prompt(context: &str) -> String {
     format!("Proceed with deployment to {context}? [y/N] ")
-}
-
-/// Endpoints on success; synthesized live list plus footer when no printer ran.
-#[must_use]
-#[cfg(test)]
-pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
-    match outcome {
-        DeployOutcome::Success { completed } => endpoints_footer(completed, None),
-        DeployOutcome::Failed { .. } => report::paint_closing(outcome, &[], false, &Ink::plain()),
-    }
-}
-
-/// Footer using Machine Names already present on live rows.
-#[must_use]
-#[cfg(test)]
-pub fn outcome_text_after(
-    outcome: &DeployOutcome<ExecutionError>,
-    rows: &[OperationRow],
-) -> String {
-    report::paint_closing(outcome, rows, true, &Ink::plain())
 }
 
 fn service_trees(preview: &DeployPreview) -> String {

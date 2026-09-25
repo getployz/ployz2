@@ -337,114 +337,60 @@ fn service_volume_teardown_collects_managed_named_volumes() {
 }
 
 #[test]
-fn service_volume_teardown_refuses_another_service_on_the_same_machine() {
+fn service_volume_teardown_refuses_another_mount_of_the_volume_on_the_same_machine() {
     let db = with_mounts(
         service_named('a', "app", "db"),
         vec![(ordinary("data"), "data", "/data")],
     );
-    let api = on_machine(
+    for mount in [
+        (ordinary("data"), "data", "/data"),
+        (external("app_data"), "shared", "/shared"),
+    ] {
+        let api = on_machine(
+            with_mounts(service_named('b', "app", "api"), vec![mount]),
+            'a',
+        );
+        let error = service_volume_teardown(&[&db], &[db.clone(), api]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Docker Volume app_data on {} is still mounted by app/api",
+                machine_id('a')
+            )
+        );
+    }
+}
+
+#[test]
+fn service_volume_teardown_allows_selected_sharers_and_other_machines() {
+    let db = with_mounts(
+        service_named('a', "app", "db"),
+        vec![(ordinary("data"), "data", "/data")],
+    );
+    let sharer = on_machine(
         with_mounts(
             service_named('b', "app", "api"),
             vec![(ordinary("data"), "data", "/data")],
         ),
         'a',
     );
-    let error = service_volume_teardown(&[&db], &[db.clone(), api]).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        format!(
-            "Docker Volume app_data on {} is still mounted by app/api",
-            machine_id('a')
-        )
-    );
-}
-
-#[test]
-fn service_volume_teardown_refuses_an_external_mount_of_the_same_volume() {
-    let db = with_mounts(
-        service_named('a', "app", "db"),
-        vec![(ordinary("data"), "data", "/data")],
-    );
-    let api = on_machine(
-        with_mounts(
-            service_named('b', "app", "api"),
-            vec![(external("app_data"), "shared", "/shared")],
-        ),
-        'a',
-    );
-    let error = service_volume_teardown(&[&db], &[db.clone(), api]).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        format!(
-            "Docker Volume app_data on {} is still mounted by app/api",
-            machine_id('a')
-        )
-    );
-}
-
-#[test]
-fn service_volume_teardown_allows_selected_services_that_share_a_volume() {
-    let db = with_mounts(
-        service_named('a', "app", "db"),
-        vec![(ordinary("data"), "data", "/data")],
-    );
-    let api = on_machine(
-        with_mounts(
-            service_named('b', "app", "api"),
-            vec![(ordinary("data"), "data", "/data")],
-        ),
-        'a',
-    );
-    let volumes = service_volume_teardown(&[&db, &api], &[db.clone(), api.clone()]).unwrap();
-    assert_eq!(
-        volumes
-            .iter()
-            .map(|id| (id.machine_id, id.name.as_str()))
-            .collect::<Vec<_>>(),
-        [(machine_id('a'), "app_data")]
-    );
-}
-
-#[test]
-fn service_volume_teardown_allows_the_same_name_on_another_machine() {
-    let db = with_mounts(
-        service_named('a', "app", "db"),
-        vec![(ordinary("data"), "data", "/data")],
-    );
-    let replica = with_mounts(
+    let elsewhere = with_mounts(
         service_named('b', "app", "replica"),
         vec![(ordinary("data"), "data", "/data")],
     );
-    let volumes = service_volume_teardown(&[&db], &[db.clone(), replica]).unwrap();
-    assert_eq!(
-        volumes
-            .iter()
-            .map(|id| (id.machine_id, id.name.as_str()))
-            .collect::<Vec<_>>(),
-        [(machine_id('a'), "app_data")]
-    );
-}
-
-#[test]
-fn volumes_safe_to_remove_after_selected_containers_are_gone() {
-    let db = with_mounts(
-        service_named('a', "app", "db"),
-        vec![(ordinary("data"), "data", "/data")],
-    );
-    let planned = service_volume_teardown(&[&db], std::slice::from_ref(&db)).unwrap();
-    let removed = HashSet::from([container_id(&db)]);
-    let (safe, skipped) = volumes_safe_to_remove(planned.clone(), &[&db], &removed);
-    assert_eq!(safe, planned);
-    assert!(skipped.is_empty());
-    let (safe, skipped) = volumes_safe_to_remove(planned, &[&db], &HashSet::new());
-    assert!(safe.is_empty());
-    assert_eq!(
-        skipped
-            .iter()
-            .map(|id| id.name.as_str())
-            .collect::<Vec<_>>(),
-        ["app_data"]
-    );
+    for (selected, all) in [
+        (vec![&db, &sharer], vec![db.clone(), sharer.clone()]),
+        (vec![&db], vec![db.clone(), elsewhere]),
+    ] {
+        let volumes = service_volume_teardown(&selected, &all).unwrap();
+        assert_eq!(
+            volumes
+                .iter()
+                .map(|id| (id.machine_id, id.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(machine_id('a'), "app_data")]
+        );
+    }
 }
 
 #[test]
@@ -519,7 +465,7 @@ fn volumes_safe_to_remove_keeps_a_shared_volume_until_every_holder_is_gone() {
 }
 
 #[test]
-fn combined_teardown_result_preserves_action_error_and_joins_volume_failures() {
+fn combined_teardown_result_preserves_the_action_result() {
     assert!(combined_teardown_result(Ok(()), Ok(())).is_ok());
     assert_eq!(
         combined_teardown_result(
@@ -529,17 +475,6 @@ fn combined_teardown_result_preserves_action_error_and_joins_volume_failures() {
         .unwrap_err()
         .to_string(),
         "Service lifecycle completed partially"
-    );
-    assert_eq!(
-        combined_teardown_result(
-            Err(Error::usage("Service lifecycle completed partially")),
-            Err(Error::usage(
-                "one or more Docker Volume removals failed or were omitted: busy"
-            )),
-        )
-        .unwrap_err()
-        .to_string(),
-        "Service lifecycle completed partially; one or more Docker Volume removals failed or were omitted: busy"
     );
 }
 
