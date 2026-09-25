@@ -2,6 +2,8 @@
 # Readies the runner (Docker, ployz), then checks in with Ployz Cloud. Runs before checkout.
 set -euo pipefail
 
+# shellcheck source=oidc.sh
+source "$(dirname "$0")/oidc.sh"
 work="$RUNNER_TEMP/ployz-build"
 fail() {
     echo "::error::$1"
@@ -38,10 +40,7 @@ PLOYZ_VERSION="$PLOYZ_VERSION" INSTALL_BIN_DIR="$work/bin" sh "$work/install.sh"
 echo "$work/bin" >>"$GITHUB_PATH"
 
 # GitHub's OIDC token proves this run to Cloud; its audience is the Cloud origin.
-audience=$(jq -rn --arg value "$cloud" '$value | @uri')
-token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -r '.value')
-echo "::add-mask::$token"
+oidc_token "$cloud"
 
 curl -fsS --retry 3 -X POST -H "Authorization: Bearer $token" \
     -o "$work/check-in.json" "$cloud/api/builds/$PLOYZ_BUILD_ID/check-in" ||

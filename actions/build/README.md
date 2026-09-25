@@ -4,30 +4,7 @@ Builds one Ployz Image Build on a GitHub Actions runner and pushes the image int
 
 ## Set up
 
-Commit this file to the default branch as `.github/workflows/ployz-build.yml`. Ployz Cloud's **Add workflow** button opens GitHub's new-file page with it filled in. Keep it exactly as is: Cloud dispatches these inputs.
-
-```yaml
-name: Ployz build
-on:
-  workflow_dispatch:
-    inputs:
-      build: { required: true, type: string }
-      cloud: { required: true, type: string }
-      ployz_version: { required: true, type: string }
-      runner: { required: false, type: string, default: ubuntu-latest }
-permissions:
-  contents: read
-  id-token: write
-jobs:
-  build:
-    runs-on: ${{ inputs.runner }}
-    steps:
-      - uses: getployz/build@v1
-        with:
-          build: ${{ inputs.build }}
-          cloud: ${{ inputs.cloud }}
-          ployz_version: ${{ inputs.ployz_version }}
-```
+Commit [`ployz-build.yml`](ployz-build.yml) to the default branch as `.github/workflows/ployz-build.yml`. Ployz Cloud's **Add workflow** button opens GitHub's new-file page with it filled in. Keep it exactly as is: Cloud dispatches its inputs.
 
 The GitHub App needs **Actions: write** and **Contents: read**, plus the **Push** and **Workflow run** events.
 
@@ -54,7 +31,7 @@ Inputs are visible in GitHub, so none of them is secret.
    The token, the grant, and every `resolvedEnv` value are masked (`::add-mask::`, per line) before anything else runs.
 5. Checks out `commit` without persisting credentials.
 6. Runs `PLOYZ_BUILD_GRANT=… ployz build --deployment <file> --commit <commit> --fingerprint <fingerprint> --events <file>`. The deployment file lives in `$RUNNER_TEMP` and is deleted when the job ends, pass or fail.
-7. Reports the Build Steps, pass or fail, with a fresh OIDC token: `POST {cloud}/api/builds/{build}/steps` with `{"events": [<ployz build --events lines>], "platforms": [...]}`. Empty `platforms` means the build failed. Cloud accepts one report.
+7. Reports the Build Steps while it builds, every few seconds, each time with a fresh OIDC token: `POST {cloud}/api/builds/{build}/steps` with `{"from": <line>, "events": [<new ployz build --events lines>]}`, where `from` is the 0-based line the batch starts at. Cloud files only lines it hasn't taken, so a retried batch is harmless. When the build ends, pass or fail, the last batch adds `"platforms": [...]`; empty means the build failed, and Cloud takes no more.
 
 Output `digest` is the manifest digest the Machine received. Cloud does not trust it: it reads the pushed digest from the Machine when it ends the grant.
 
@@ -64,7 +41,7 @@ Linux, Docker with Buildx, rootful Docker on the runner's network (the push goes
 
 ## Develop
 
-`./test.sh` runs both scripts against stubbed `curl`, `docker`, and `ployz`. `shellcheck *.sh` must pass.
+`./test.sh` runs both scripts against stubbed `curl`, `docker`, and `ployz`. `shellcheck *.sh` must pass. `oidc.sh` holds the OIDC token helper both scripts source.
 
 ## Publish
 
