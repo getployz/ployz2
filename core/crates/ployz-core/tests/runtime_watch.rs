@@ -252,12 +252,14 @@ fn expected_frame() -> RuntimeWatchFrame {
                 status: CertificateAvailability::Available,
                 last_error: None,
                 backoff: None,
+                via_proxy: false,
             },
             CertificateObservation {
                 hostname: CertificateHost::parse("new.example.com").unwrap(),
                 status: CertificateAvailability::Pending,
                 last_error: None,
                 backoff: None,
+                via_proxy: false,
             },
             CertificateObservation {
                 hostname: CertificateHost::parse("app.example.com").unwrap(),
@@ -271,12 +273,14 @@ fn expected_frame() -> RuntimeWatchFrame {
                     next_attempt_at: "2024-01-01T01:00:00Z".into(),
                     failures: 2,
                 }),
+                via_proxy: false,
             },
             CertificateObservation {
                 hostname: CertificateHost::parse("maybe.example.com").unwrap(),
                 status: CertificateAvailability::Unknown,
                 last_error: None,
                 backoff: None,
+                via_proxy: false,
             },
         ],
         incomplete_ids: RuntimeWatchIncompleteIds {

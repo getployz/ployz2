@@ -8,7 +8,7 @@ import { Tabs } from "#/components/ui/tabs";
 import { asTestDouble } from "#/lib/test-double";
 import { RuntimeProvider } from "#/providers/runtime-provider";
 import { runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
-import { runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { runtimeWatchCertificateFixture, runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { orgStoreSeed } from "#/test/org-store-tables";
 import {
   createEmptyServiceSource,
@@ -42,9 +42,10 @@ afterEach(() => {
 async function show(
   source: ServiceSource,
   buildMethod: "dockerfile" | "railpack" = "dockerfile",
-  { clusterDomain = null, managedHostnames = [] }: {
+  { clusterDomain = null, managedHostnames = [], routes = [] }: {
     clusterDomain?: string | null;
     managedHostnames?: ServiceDrawerState["service"]["managedHostnames"];
+    routes?: ServiceDrawerState["service"]["routes"];
   } = {},
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -61,7 +62,7 @@ async function show(
     service: {
       id: "service", environmentId: "environment", name: "api", privateDns: "api",
       source, build, policy: { autoDeploy: true, waitForCi: false, watchPaths: ["src/**"], imageUpdate: { type: "off" } },
-      routes: [], managedHostnames, replicas: 1,
+      routes, managedHostnames, replicas: 1,
       preDeployCommand: null, startCommand: null, healthcheck: { type: "none" },
       restartPolicy: "on-failure", maxRetries: 10,
       registryCredentialUsername: null,
@@ -173,7 +174,7 @@ it("saves the Preferred builder as Service policy at once, from GitHub Actions a
 it("shows a managed hostname's certificate status from the published wildcard that covers it", async () => {
   // The Engine keeps no certificate row for a hostname a published wildcard covers.
   frame = runtimeWatchFrameFixture({
-    certificates: [{ hostname: "*.acme.ployz.app", status: "available", last_error: null, backoff: null }],
+    certificates: [{ hostname: "*.acme.ployz.app", status: "available", last_error: null, backoff: null, via_proxy: false }],
   });
   await show(createEmptyServiceSource(), "dockerfile", {
     clusterDomain: "acme.ployz.app",
@@ -181,4 +182,27 @@ it("shows a managed hostname's certificate status from the published wildcard th
   });
   expect(screen.getByText("api.acme.ployz.app")).toBeTruthy();
   expect(await screen.findByText("Observed certificate status: available.")).toBeTruthy();
+});
+
+it("shows a custom domain's fix in one line and marks domains served through a proxy", async () => {
+  frame = runtimeWatchFrameFixture({
+    certificates: [
+      runtimeWatchCertificateFixture("shop.example.com", {
+        status: "failure",
+        last_error: "shop.example.com redirects HTTP to HTTPS before reaching this Cluster.",
+        backoff: { failure_kind: "redirects_to_https", next_attempt_at: "2026-09-25T00:00:00Z", failures: 1 },
+      }),
+      runtimeWatchCertificateFixture("proxied.example.com", { status: "available", via_proxy: true }),
+    ],
+  });
+  await show(createEmptyServiceSource(), "dockerfile", {
+    routes: [
+      { id: "shop", hostname: "shop.example.com", targetPort: null },
+      { id: "proxied", hostname: "proxied.example.com", targetPort: null },
+    ],
+  });
+  expect(
+    await screen.findByText("Your proxy redirects to HTTPS. Exempt /.well-known/acme-challenge/* from HTTPS redirects."),
+  ).toBeTruthy();
+  expect(screen.getByText("via proxy")).toBeTruthy();
 });

@@ -55,6 +55,7 @@ function observedSnapshot(): RuntimeSnapshot {
         status: "pending",
         lastError: null,
         backoff: null,
+        viaProxy: false,
       },
     ],
     incompleteIds: {

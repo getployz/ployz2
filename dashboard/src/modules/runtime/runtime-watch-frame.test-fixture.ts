@@ -116,6 +116,7 @@ export function runtimeWatchCertificateFixture(
     status: "unknown",
     last_error: null,
     backoff: null,
+    via_proxy: false,
     ...extra,
   };
 }

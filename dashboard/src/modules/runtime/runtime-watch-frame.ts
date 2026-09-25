@@ -45,6 +45,7 @@ const runtimeWatchCertificateSchema = Schema.Struct({
       failures: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     }),
   ),
+  via_proxy: Schema.Boolean,
 });
 
 const runtimeWatchServiceSchema = Schema.Struct({
@@ -129,6 +130,7 @@ export function runtimeWatchFrameForTransport(
             failures: certificate.backoff.failures,
           }
         : null,
+      via_proxy: certificate.via_proxy,
     })),
     incomplete_ids: {
       machines: [...frame.incomplete_ids.machines],
@@ -199,6 +201,7 @@ export function runtimeSnapshotFromWatchFrame(
             failures: certificate.backoff.failures,
           }
         : null,
+      viaProxy: certificate.via_proxy,
     })),
     incompleteIds: {
       machines: [...frame.incomplete_ids.machines],
