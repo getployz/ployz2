@@ -4,7 +4,10 @@ import {
   collectionOptions, liveQueryCollectionOptions,
   eq,
   toArray,
+  useLiveSuspenseQuery,
 } from "@tanstack/react-db";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { attemptTarget, deploymentView, type AttemptTargetNode, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentSavedStateRevisionsCollection,
@@ -73,6 +76,7 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
           environmentDeploymentSummarySchema,
           {
             id: deployment.id,
+            environmentId: deployment.environmentId,
             status: deployment.status,
             message: deployment.message,
             failureMessage: deployment.failureMessage,
@@ -137,4 +141,32 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
     reconcileCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
     reconcileCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
   ]);
+}
+
+export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView };
+
+/** One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt. */
+export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null): DeploymentAttempt | null {
+  const scope = useCollectionScope();
+  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
+  const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
+  const snapshots = getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
+  const { data: attempts } = useLiveSuspenseQuery({
+    queryKey: ["deployment-attempt", summaries.id, deploymentId],
+    query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.id, deploymentId ?? "")),
+  });
+  const { data: history } = useLiveSuspenseQuery({
+    queryKey: ["deployment-attempt-history", deployments.id, environmentId],
+    query: (q) => q.from({ deployment: deployments }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
+      .select(({ deployment }) => ({ id: deployment.id, status: deployment.status, createdAt: deployment.createdAt })),
+  });
+  const { data: snapshotRows } = useLiveSuspenseQuery({
+    queryKey: ["deployment-attempt-snapshots", snapshots.id, environmentId],
+    query: (q) => q.from({ snapshot: snapshots }).where(({ snapshot }) => eq(snapshot.environmentId, environmentId))
+      .select(({ snapshot }) => ({ environmentDeploymentId: snapshot.environmentDeploymentId, nodeType: snapshot.nodeType, nodeId: snapshot.nodeId, config: snapshot.config })),
+  });
+  const deployment = attempts[0];
+  if (!deployment || deployment.environmentId !== environmentId) return null;
+  const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history, snapshots: snapshotRows });
+  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes }) };
 }

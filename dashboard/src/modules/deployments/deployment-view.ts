@@ -1,4 +1,5 @@
 import type { DeployEvent, DeployOperation, OperationRow } from "@ployz/sdk";
+import { parseServiceConfig } from "@ployz/sdk/config";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import type { EnvironmentDeploymentStatus } from "./tables";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
@@ -178,6 +179,42 @@ export function deploymentView({ deployment, progress, nodes }: DeploymentViewIn
     changed: changed.length,
     nodes: views,
   };
+}
+
+type AttemptRow = { id: string; status: EnvironmentDeploymentStatus; createdAt: Date };
+type SnapshotRow = { environmentDeploymentId: string; nodeType: "service" | "volume"; nodeId: string; config: unknown };
+/** An Attempt Target node with the configuration it was deployed (or last deployed, when removed) with. */
+export type AttemptTargetNode = AttemptNode & { nodeType: "service" | "volume"; config: unknown };
+
+/**
+ * The Attempt Target's full node set, read from deployment snapshots: every node the attempt froze,
+ * plus the nodes the last applied attempt before it had and this one dropped (Removed).
+ * Once the Engine reports rows, a service is changed only if it has operations; before that,
+ * a node is changed when it is built or its snapshot differs from that applied attempt's.
+ * Rows for removed services carry no serviceId from the record side, so they are resolved here by name.
+ */
+export function attemptTarget({ attempt, progress, history, snapshots }: {
+  attempt: AttemptRow; progress: DeploymentProgress | null;
+  history: readonly AttemptRow[]; snapshots: readonly SnapshotRow[];
+}) {
+  // ponytail: diffs against the last fully applied attempt; a failed attempt in between that deployed some nodes is ignored until rows arrive.
+  const base = history.filter((row) => row.status === "applied" && row.createdAt < attempt.createdAt)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  const own = snapshots.filter((row) => row.environmentDeploymentId === attempt.id);
+  const prior = base ? snapshots.filter((row) => row.environmentDeploymentId === base.id) : [];
+  const removed = prior.filter((row) => !own.some((node) => node.nodeType === row.nodeType && node.nodeId === row.nodeId));
+  const services = [...own, ...removed].flatMap((row) => row.nodeType === "service" ? [{ nodeId: row.nodeId, config: parseServiceConfig(row.config) }] : []);
+  const resolved = progress && { ...progress, rows: progress.rows.map((row) => row.serviceId ? row
+    : { ...row, serviceId: services.find((s) => s.config.privateDns === row.serviceName)?.nodeId ?? null }) };
+  const rows = resolved?.rows ?? [];
+  const nodes = own.map((row): AttemptTargetNode => {
+    const built = services.find((s) => s.nodeId === row.nodeId)?.config.source.type === "git";
+    const before = prior.find((node) => node.nodeType === row.nodeType && node.nodeId === row.nodeId);
+    const changed = row.nodeType === "service" && rows.length > 0 ? rows.some((r) => r.serviceId === row.nodeId)
+      : built || !before || canonicalJson(before.config) !== canonicalJson(row.config);
+    return { nodeId: row.nodeId, nodeType: row.nodeType, config: row.config, changed, built };
+  });
+  return { nodes: [...nodes, ...removed.map((row) => ({ nodeId: row.nodeId, nodeType: row.nodeType, config: row.config, changed: true, removed: true }))], progress: resolved };
 }
 
 /** User-facing whole-deployment status: "Deployed" or "Failed · 2 of 4 deployed". Never "Partial". */

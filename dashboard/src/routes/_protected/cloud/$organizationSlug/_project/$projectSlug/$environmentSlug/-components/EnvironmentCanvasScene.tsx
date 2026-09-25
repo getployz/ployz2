@@ -32,6 +32,8 @@ import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { CanvasFlow } from "./canvas/CanvasFlow";
+import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
+import { BackToLive, DeploymentModeProvider, useDeploymentMode } from "./deployment-mode";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
@@ -199,26 +201,45 @@ function CanvasWithData() {
 }
 
 export function EnvironmentCanvasScene() {
+  return (
+    <DeploymentModeProvider>
+      <CanvasScene />
+    </DeploymentModeProvider>
+  );
+}
+
+function CanvasScene() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({
     from: ENVIRONMENT_ROUTE_FROM,
   });
+  const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
   const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
+  const attempt = useDeploymentMode();
+  // ponytail: Deployment Mode opens no panel until its read-only panel lands (#1052); the live panel edits.
+  const inspectedNodeId = attempt ? null : selectedNodeId;
 
   return (
     <CanvasInspectorOverlay
-      selection={selectedNodeId ? {
-        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
-        nodeId: selectedNodeId,
+      selection={inspectedNodeId ? {
+        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${inspectedNodeId}`,
+        nodeId: inspectedNodeId,
       } : null}
-      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }} />}
+      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }}>
+        {attempt ? <>
+          <span className="ml-auto font-mono text-muted-foreground">{attempt.deployment.id.slice(0, 8)}</span>
+          <BackToLive />
+        </> : null}
+      </DashboardPageHeader>}
       canvas={
         <Suspense fallback={<PendingCanvas />}>
-          <CanvasWithData key={canvasKey} />
+          {attempt
+            ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
+            : <CanvasWithData key={canvasKey} />}
         </Suspense>
       }
     >
-      {selectedNodeId ? <Outlet /> : null}
+      {inspectedNodeId ? <Outlet /> : null}
     </CanvasInspectorOverlay>
   );
 }
