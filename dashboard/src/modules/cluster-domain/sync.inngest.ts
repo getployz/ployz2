@@ -44,9 +44,10 @@ export async function executeSyncClusterDomain(
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
   await step.run("record-check", () => runEffect(recordClusterDomainCheck(organizationId, probe)));
   const reachable = probe.kind === "probed" ? probe.reachable : [];
-  const recordsPut = reachable.length > 0
-    && await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, reachable)));
-  if (!recordsPut) await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
+  // Hosted DNS refuses an empty set, and the last good set is better than none.
+  const recordsPut = reachable.length > 0;
+  if (recordsPut) await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, reachable)));
+  else await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
   // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
   const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
   const certificatePublished = await step.run("publish-certificate", () => runEffect(publishClusterDomainCertificate(organizationId)));

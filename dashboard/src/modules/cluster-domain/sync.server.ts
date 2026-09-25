@@ -12,7 +12,11 @@ import {
   renewHostedDomainLease,
   requestHostedDomainCertificate,
 } from "#/modules/cluster-domain/hosted-dns.server";
-import { type IngressServerAddress, organizationClusterDomain } from "#/modules/cluster-domain/tables";
+import {
+  type ClusterDomainTraffic,
+  type IngressServerAddress,
+  organizationClusterDomain,
+} from "#/modules/cluster-domain/tables";
 import { createWildcardCsr } from "#/modules/cluster-domain/wildcard-csr.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
@@ -40,14 +44,13 @@ export class ClusterDomainUnusable extends Data.TaggedError("ClusterDomainUnusab
 }
 
 /**
- * What the sync found about the ingress Servers. `unknown`: a paired Cluster could not be reached or
- * its frame could not be read. The other kinds match `ClusterDomainTraffic`.
+ * What the sync found about the ingress Servers: the stored `ClusterDomainTraffic`, plus `unknown`
+ * (a paired Cluster could not be reached or its frame could not be read) and the reachable Servers.
  */
 export type IngressProbe =
-  | { readonly kind: "unknown" }
-  | { readonly kind: "no_servers" }
-  | { readonly kind: "no_public_ip" }
-  | { readonly kind: "probed"; readonly reachable: IngressServerAddress[]; readonly unreachable: IngressServerAddress[] };
+  | { kind: "unknown" }
+  | Exclude<ClusterDomainTraffic, { kind: "probed" }>
+  | { kind: "probed"; reachable: IngressServerAddress[]; unreachable: IngressServerAddress[] };
 
 /** Publishes Certificate Material to the Organization's Cluster. False when no Cluster is connected. */
 const publishToCluster = Effect.fn("ClusterDomain.publishToCluster")(function* (
@@ -107,6 +110,19 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
   Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error)
     .pipe(Effect.as({ kind: "unknown" } as const))));
 
+/** What a probe leaves on the row. */
+function storedTraffic(probe: IngressProbe): ClusterDomainTraffic | null {
+  switch (probe.kind) {
+    case "unknown":
+      return null;
+    case "probed":
+      return { kind: "probed", unreachable: probe.unreachable };
+    case "no_servers":
+    case "no_public_ip":
+      return probe;
+  }
+}
+
 /** Records what the probe found and when. An unknown probe clears the finding: an offline Cluster reads as ready. */
 export const recordClusterDomainCheck = Effect.fn("ClusterDomain.recordCheck")(function* (
   organizationId: string,
@@ -115,22 +131,17 @@ export const recordClusterDomainCheck = Effect.fn("ClusterDomain.recordCheck")(f
   const { drizzle } = yield* Database;
   const now = new Date();
   yield* drizzle.update(organizationClusterDomain).set({
-    traffic: probe.kind === "unknown" ? null : probe.kind === "probed" ? { kind: "probed", unreachable: probe.unreachable } : { kind: probe.kind },
+    traffic: storedTraffic(probe),
     checkedAt: now,
     updatedAt: now,
   }).where(eq(organizationClusterDomain.organizationId, organizationId));
 });
 
-/**
- * Points the apex at the reachable ingress Servers: a full-set PUT, which also renews the lease. An
- * empty set writes no records: Hosted DNS refuses it, and the last good set is better than none.
- * True when the records were PUT.
- */
+/** Points the apex at the reachable ingress Servers: a full-set PUT, which also renews the lease. */
 export const publishClusterDomainRecords = Effect.fn("ClusterDomain.publishRecords")(function* (
   organizationId: string,
   reachable: IngressServerAddress[],
 ) {
-  if (reachable.length === 0) return false;
   const addresses = reachable.map((server) => server.address);
   yield* withClusterDomain(organizationId, (target) => putHostedDomainRecords({
     ...target,
@@ -142,10 +153,8 @@ export const publishClusterDomainRecords = Effect.fn("ClusterDomain.publishRecor
   yield* drizzle.update(organizationClusterDomain).set({
     recordsSyncedAt: now,
     leaseRenewedAt: now,
-    recordAddresses: reachable,
     updatedAt: now,
   }).where(eq(organizationClusterDomain.organizationId, organizationId));
-  return true;
 });
 
 /** Renews the lease when no records were PUT, so an Organization with no reachable Cluster keeps its name. */

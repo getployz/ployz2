@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "df735333-f8fd-4b9a-bca7-ff7cd6a4a51f",
+  "id": "9f4f9765-79be-49b7-9c87-9d75ba4a7cd7",
   "prevIds": [
     "ef32bd1c-f331-44a7-a522-5191ceca212f"
   ],
@@ -5793,19 +5793,6 @@
     {
       "type": "jsonb",
       "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'[]'",
-      "generated": null,
-      "identity": null,
-      "name": "record_addresses",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_cluster_domain"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,
@@ -10461,13 +10448,6 @@
       "entityType": "checks",
       "schema": "public",
       "table": "organization_billing_state"
-    },
-    {
-      "value": "jsonb_typeof(\"record_addresses\") = 'array'",
-      "name": "organization_cluster_domain_record_addresses_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "organization_cluster_domain"
     },
     {
       "value": "\"traffic\" is null or \"traffic\"->>'kind' in ('no_servers', 'no_public_ip', 'probed')",

@@ -36,8 +36,6 @@ export const organizationClusterDomain = pgTable(
     leaseRenewedAt: timestamptz("lease_renewed_at").notNull(),
     /** Null until the first successful records PUT. */
     recordsSyncedAt: timestamptz("records_synced_at"),
-    /** The ingress Servers the last records PUT pointed the apex at. */
-    recordAddresses: jsonb("record_addresses").notNull().default([]).$type<IngressServerAddress[]>(),
     /**
      * What the last sync found about the ingress Servers. Null when never checked, or when the last
      * check could not read a paired Cluster's frame: an offline Cluster reads as ready.
@@ -53,7 +51,6 @@ export const organizationClusterDomain = pgTable(
     updatedAt,
   },
   (table) => [
-    check("organization_cluster_domain_record_addresses_check", sql`jsonb_typeof(${table.recordAddresses}) = 'array'`),
     check(
       "organization_cluster_domain_traffic_check",
       sql`${table.traffic} is null or ${table.traffic}->>'kind' in ('no_servers', 'no_public_ip', 'probed')`,

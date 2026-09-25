@@ -82,13 +82,12 @@ describe("sync-cluster-domain", () => {
   }).execute();
   const reserve = (id = organizationId) => runEffect(reserveClusterDomain(id));
   const row = async () => (await harness.pool.query(
-    `select name, records_synced_at, lease_renewed_at, record_addresses, traffic, checked_at,
+    `select name, records_synced_at, lease_renewed_at, traffic, checked_at,
             encrypted_certificate_private_key, certificate_chain, certificate_not_after from organization_cluster_domain`,
   )).rows[0] as {
     name: string;
     records_synced_at: Date | null;
     lease_renewed_at: Date;
-    record_addresses: unknown;
     traffic: unknown;
     checked_at: Date | null;
     encrypted_certificate_private_key: Parameters<typeof encryption.decrypt>[0] | null;
@@ -179,7 +178,6 @@ describe("sync-cluster-domain", () => {
     expect(hostedDns.requests[0]).toMatchObject({ authorization: "Bearer token-1", body: { a: ["203.0.113.1"], aaaa: ["2001:db8::1"] } });
     expect(await row()).toMatchObject({
       records_synced_at: expect.any(Date),
-      record_addresses: [{ machineId: idOf("a"), address: "203.0.113.1" }, { machineId: idOf("b"), address: "2001:db8::1" }],
       traffic: { kind: "probed", unreachable: [{ machineId: idOf("c"), address: "198.51.100.7" }] },
       checked_at: expect.any(Date),
     });
@@ -225,7 +223,6 @@ describe("sync-cluster-domain", () => {
     ]);
     expect(await row()).toMatchObject({
       records_synced_at: null,
-      record_addresses: [],
       traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }] },
     });
   });

@@ -7,8 +7,7 @@ import { CopyButton } from "#/components/copy-button";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { FieldDescription, FieldLegend, FieldSet } from "#/components/ui/field";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { cn } from "#/lib/utils";
@@ -17,10 +16,10 @@ import { type ClusterDomainRow, clusterDomainStatus, type ClusterDomainStatus } 
 /** A check that never lands (a lost event, a failed sync) stops spinning after this. */
 const CHECK_TIMEOUT_MS = 60_000;
 
-type Attention = Extract<ClusterDomainStatus, { kind: "attention" }>;
-
-/** What the user reads for each problem, and the one thing they can do about it. */
-function attentionCopy(status: Attention) {
+/** What the user reads for each status, and the one thing they can do about it. */
+function statusCopy(status: ClusterDomainStatus) {
+  if (status.kind === "ready") return { message: null, action: null } as const;
+  if (status.kind === "setting_up") return { message: "This usually takes a few minutes.", action: null } as const;
   switch (status.reason) {
     case "no_servers":
       return { message: "Add a server to start receiving traffic.", action: "servers" } as const;
@@ -57,18 +56,17 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
   }
 
   const status = domain === null ? null : clusterDomainStatus(domain, new Date());
-  const attention = status?.kind === "attention" ? attentionCopy(status) : null;
-  const description = domain === null
-    ? "You’ll get one on your first deploy."
-    : attention?.message ?? (status?.kind === "setting_up" ? "This usually takes a few minutes." : null);
+  const copy = status === null ? { message: "You’ll get one on your first deploy.", action: null } as const : statusCopy(status);
 
   return (
     <section aria-labelledby="cluster-domain-heading">
-      <FieldSet>
-        <FieldLegend>
-          <h2 id="cluster-domain-heading">Domain</h2>
-        </FieldLegend>
-        <FieldDescription>Your services get free addresses under this domain.</FieldDescription>
+      <ItemGroup>
+        <ItemContent>
+          <ItemTitle>
+            <h2 id="cluster-domain-heading">Domain</h2>
+          </ItemTitle>
+          <ItemDescription>Your services get free addresses under this domain.</ItemDescription>
+        </ItemContent>
         <Item variant="outline">
           <ItemContent>
             {domain === null ? null : (
@@ -77,17 +75,17 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
                 <CopyButton value={domain.name} label="Copy domain" size="icon-xs" />
               </ItemTitle>
             )}
-            {description === null ? null : <ItemDescription>{description}</ItemDescription>}
+            {copy.message === null ? null : <ItemDescription>{copy.message}</ItemDescription>}
           </ItemContent>
           {status === null ? null : (
             <ItemActions>
               <StatusBadge status={status} />
-              {attention?.action === "check" ? (
+              {copy.action === "check" ? (
                 <Button type="button" variant="outline" size="sm" disabled={checking} onClick={handleCheck}>
                   {checking ? <Spinner data-icon="inline-start" /> : null}
                   Check again
                 </Button>
-              ) : attention?.action === "servers" ? (
+              ) : copy.action === "servers" ? (
                 <Link
                   to="/cloud/$organizationSlug/~/servers"
                   params={{ organizationSlug }}
@@ -99,7 +97,7 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
             </ItemActions>
           )}
         </Item>
-      </FieldSet>
+      </ItemGroup>
     </section>
   );
 }
