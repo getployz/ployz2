@@ -82,7 +82,7 @@ const loadRawConfig = Effect.all(rawFields, { mode: "result" }).pipe(
       issues.push(
         Schema.isSchemaError(cause)
           ? cause.issue
-          : new SchemaIssue.Forbidden({ message: cause.message }),
+          : new SchemaIssue.InvalidValue({ message: cause.message }),
       );
     }
     const [head, ...tail] = issues;
