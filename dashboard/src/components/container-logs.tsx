@@ -55,7 +55,7 @@ function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLog
       {!virtual.isAtEnd() ? <Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button> : null}
     </div>
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
-    <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="h-80 grow basis-80 overflow-auto font-mono text-xs"
+    <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="h-80 grow overflow-auto font-mono text-xs"
       onPointerDown={() => { dragging.current = true; }}
       onPointerUp={() => { dragging.current = false; }}
       onPointerLeave={() => { dragging.current = false; }}
