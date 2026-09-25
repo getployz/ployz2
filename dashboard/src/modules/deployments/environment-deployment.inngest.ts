@@ -143,7 +143,7 @@ export type EnvironmentDeploymentStepTools = Pick<
 >;
 
 /**
- * One Image Build walks its Builders in turn. Each but the last has "start within" to start it,
+ * One Image Build walks its Builders in turn: its Service's Preferred Builder, then the Build Order. Each but the last has "start within" to start it,
  * else the next gets it; the last waits. A Builder that can't take it is skipped at once. A build
  * that started never moves. Every skip lands on the Image Build's trail.
  *
@@ -162,7 +162,7 @@ async function runImageBuild(
     const key = `${build.serviceId}-${index}`;
     const attempt: ImageBuildAttempt = candidate.builder === "github"
       ? await buildOnGithub(build, key, last, step, runEffect)
-      : await step.run(`build-image-${key}`, () => runEffect(executeImageBuild(build, last ? undefined : START_WITHIN_MS)));
+      : await step.run(`build-image-${key}`, () => runEffect(executeImageBuild(build, last ? undefined : START_WITHIN_MS, candidate.machineId)));
     if (attempt.kind === "settled") return attempt.result;
     reason = attempt.reason;
   }

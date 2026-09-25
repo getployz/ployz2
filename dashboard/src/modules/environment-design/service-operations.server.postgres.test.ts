@@ -151,6 +151,14 @@ it.live(
         yield* editServiceMetadata(actor, { organizationSlug: "acme", environmentId: environmentRecord.id, serviceId: created.data.service.id,
           edit: { kind: "policy", policy: { autoDeploy: false, watchPaths: ["src/**"] } } });
         assert.deepStrictEqual(yield* loadEnvironmentDocument(environmentRecord.id), beforePolicy);
+        // The Preferred Builder is policy too: set and cleared back to Auto without touching the document.
+        const preferred = yield* editServiceMetadata(actor, { organizationSlug: "acme", environmentId: environmentRecord.id, serviceId: created.data.service.id,
+          edit: { kind: "policy", policy: { preferredBuilder: "a".repeat(32) } } });
+        assert.deepStrictEqual(preferred.data.policy, { autoDeploy: false, waitForCi: false, watchPaths: ["src/**"], imageUpdate: { type: "off" }, preferredBuilder: "a".repeat(32) });
+        const auto = yield* editServiceMetadata(actor, { organizationSlug: "acme", environmentId: environmentRecord.id, serviceId: created.data.service.id,
+          edit: { kind: "policy", policy: { preferredBuilder: null } } });
+        assert.deepStrictEqual(auto.data.policy, { autoDeploy: false, waitForCi: false, watchPaths: ["src/**"], imageUpdate: { type: "off" } });
+        assert.deepStrictEqual(yield* loadEnvironmentDocument(environmentRecord.id), beforePolicy);
         assert.deepStrictEqual((yield* loadCurrentEnvironmentState(environmentRecord.id)).intent.services[0]?.config.managedHostnames, [{ prefix: "public-api", targetPort: 4000 }]);
 
         yield* updateServiceCanvasPosition(actor, {

@@ -71,6 +71,7 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
             .collect(),
         build_receipts: BTreeMap::new(),
         build_index: 0,
+        preferred_machine: None,
     }
 }
 
@@ -927,6 +928,22 @@ async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can(
 }
 
 #[tokio::test]
+async fn a_preferred_server_is_the_clusters_first_choice() {
+    let (root, service) = two_builders();
+    let (session, server) = session(service).await;
+    let mut input = input(&root, vec![git("one", "dockerfile")]);
+    // Index 0 alone would spread to "builder".
+    input.preferred_machine = Some(machine('c', "spare").machine.id);
+    assert_eq!(
+        selected_by_build(&session, input).await,
+        ("spare".into(), json!({"kind": "preferred"}))
+    );
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn an_attempts_builds_spread_across_servers_that_accept_builds() {
     let (root, service) = two_builders();
     let (session, server) = session(service).await;
@@ -985,6 +1002,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
         source_commits: BTreeMap::from([(name.clone(), commit)]),
         build_receipts: receipts,
         build_index: 0,
+        preferred_machine: None,
     };
     let first = session
         .prepare(input(deployment.clone(), BTreeMap::new(), "a".repeat(40)))

@@ -16,8 +16,8 @@ export type BuildOrderRow = { id: string; buildOrder: BuildOrder };
 
 export const DEFAULT_BUILD_ORDER: BuildOrder = "servers-only";
 
-/** One Builder an Image Build may try. */
-export type BuildCandidate = { builder: "servers" } | { builder: "github" };
+/** One Builder an Image Build may try. `machineId` is a Preferred Server: the Cluster's first choice. */
+export type BuildCandidate = { builder: "servers"; machineId?: string } | { builder: "github" };
 
 /** The Builders a Build Order tries, in turn. */
 export const buildOrderCandidates = (order: BuildOrder): BuildCandidate[] => ({
@@ -26,6 +26,17 @@ export const buildOrderCandidates = (order: BuildOrder): BuildCandidate[] => ({
   "servers-then-github": [{ builder: "servers" }, { builder: "github" }],
   "github-only": [{ builder: "github" }],
 } satisfies Record<BuildOrder, BuildCandidate[]>)[order];
+
+/**
+ * The Builders one Image Build walks: the Service's Preferred Builder, then the Build Order without
+ * that Builder. A Preferred Server stands in for "your servers", with it first.
+ */
+export const imageBuildWalk = (order: BuildOrder, preferred: string | undefined): BuildCandidate[] => {
+  const candidates = buildOrderCandidates(order);
+  if (preferred === undefined) return candidates;
+  const first: BuildCandidate = preferred === "github" ? { builder: "github" } : { builder: "servers", machineId: preferred };
+  return [first, ...candidates.filter((candidate) => candidate.builder !== first.builder)];
+};
 
 export const buildOrderEditSchema = Schema.Struct({
   organizationSlug: OrganizationSlug,

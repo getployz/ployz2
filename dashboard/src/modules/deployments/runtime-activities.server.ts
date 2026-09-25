@@ -342,7 +342,7 @@ export const REUSED_KEY = "stage:Reused";
  * time is withdrawn (nothing was uploaded) and skipped, so the next Builder gets it. Otherwise it
  * never fails: every exit settles the row. It stops when its attempt ends or is cancelled.
  */
-export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(function* (build: ImageBuildTarget, startWithinMs?: number) {
+export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(function* (build: ImageBuildTarget, startWithinMs?: number, preferredMachine?: string) {
   const cancellation = new AbortController();
   const collector = preparationProgressCollector();
   const reporting = deploymentReporting();
@@ -365,6 +365,8 @@ export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(func
       // The SDK builds exactly one Git Service; ordering between Services is deploy's concern.
       deployment: { ...intent, snapshots: intent.snapshots.filter((candidate) => candidate.serviceId === build.serviceId), dependencies: {} },
       sources, source_commits, build_receipts: hint ? { [build.image]: hint } : {}, build_index: build.buildIndex,
+      // SAFETY: a Preferred Server matched the MachineId pattern when the Service's policy was saved.
+      preferred_machine: preferredMachine as MachineId | undefined,
     }, async (event) => {
       if (event !== "Transfer" && "Selected" in event) {
         const { machine, reason } = event.Selected;

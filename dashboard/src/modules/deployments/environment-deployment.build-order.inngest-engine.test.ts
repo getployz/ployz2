@@ -30,6 +30,7 @@ const fake = {
   /** Each server go: what it returns, and the start limit it was given. */
   servers: [] as ImageBuildAttempt[],
   serverLimits: [] as (number | undefined)[],
+  serverPreferred: [] as (string | undefined)[],
   githubStart: null as githubImageBuilds.GithubBuildStart | null,
   /** The Workflow run webhook: the run's completion, or nothing before the wait's timeout. */
   runCompletes: [] as boolean[],
@@ -63,8 +64,9 @@ vi.spyOn(runtimeActivities, "executeLatestEnvironmentDeployment").mockImplementa
 }));
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.succeed([target]));
 vi.spyOn(buildOrder, "imageBuildCandidates").mockImplementation(() => Effect.sync(() => fake.candidates));
-vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((_build, startWithinMs) => Effect.sync(() => {
+vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((_build, startWithinMs, preferredMachine) => Effect.sync(() => {
   fake.serverLimits.push(startWithinMs);
+  fake.serverPreferred.push(preferredMachine);
   return fake.servers.shift() ?? settled("built");
 }));
 vi.spyOn(githubImageBuilds, "startGithubImageBuild").mockImplementation(() => Effect.sync(() => fake.githubStart ?? { kind: "dispatched", runId: RUN_ID }));
@@ -108,7 +110,7 @@ describe("walking the Build Order", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.assign(fake, {
-      candidates: [], servers: [], serverLimits: [], githubStart: null, runCompletes: [], waits: [], answered: new Map(),
+      candidates: [], servers: [], serverLimits: [], serverPreferred: [], githubStart: null, runCompletes: [], waits: [], answered: new Map(),
       withdraw: null, finish: [], finishTimedOut: [], failed: [], deployed: 0,
     });
   });
@@ -170,6 +172,17 @@ describe("walking the Build Order", () => {
     fake.servers = [settled("failed")];
     expect(await outcome()).toMatchObject({ deployed: false });
     expect(githubImageBuilds.startGithubImageBuild).not.toHaveBeenCalled();
+  });
+
+  it("asks the Cluster for a Preferred Server first, then walks the Build Order without your servers", async () => {
+    const preferred = "a".repeat(32);
+    fake.candidates = [{ builder: "servers", machineId: preferred }, { builder: "github" }];
+    fake.servers = [skipped("Your servers: none started it in 3 min")];
+    fake.runCompletes = [true];
+    expect(await outcome()).toMatchObject({ deployed: true });
+    expect(fake.serverLimits[0]).toBe(imageBuilds.START_WITHIN_MS);
+    expect(new Set(fake.serverPreferred)).toEqual(new Set([preferred]));
+    expect(fake.waits).toEqual(["2h"]);
   });
 
   it("fails the build with the last skip's reason when every Builder was skipped", async () => {

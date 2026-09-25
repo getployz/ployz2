@@ -287,6 +287,8 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   platforms: text("platforms").array(),
   /** Why each Builder tried before this one didn't take the build, in order: the skip trail. */
   skips: text("skips").array().notNull().default(sql`'{}'::text[]`),
+  /** The walk started with the Service's Preferred Builder. */
+  preferred: boolean("preferred").notNull().default(false),
   createdAt,
   updatedAt,
 }, (table) => [

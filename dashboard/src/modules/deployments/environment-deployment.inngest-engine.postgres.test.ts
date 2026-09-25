@@ -309,7 +309,7 @@ describe("deployment Inngest durable smoke", () => {
       // Build Steps appear per Image Build before the attempt deploys.
       const log = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: targetDeploymentId, after: 0, limit: 50 }));
       expect(log.steps.map((step) => `${step.image}:${step.name}`)).toEqual(expect.arrayContaining(["api:api", "web:web"]));
-      expect(log.serverChoices).toEqual(expect.arrayContaining([{ image: "api", serverChoice, githubRunUrl: null, skips: [] }, { image: "web", serverChoice, githubRunUrl: null, skips: [] }]));
+      expect(log.serverChoices).toEqual(expect.arrayContaining([{ image: "api", serverChoice, githubRunUrl: null, skips: [], preferred: false }, { image: "web", serverChoice, githubRunUrl: null, skips: [], preferred: false }]));
     });
 
     it("lets the others finish when one Image Build fails, and a retry rebuilds only the failed one", async () => {
