@@ -55,6 +55,7 @@ export function runtimeWatchMachineFixture(
       architecture: "x86_64",
       os_pretty_name: "Debian",
       kernel_version: "6.1.0",
+      running_builds: 0,
     },
     ...extra,
   };

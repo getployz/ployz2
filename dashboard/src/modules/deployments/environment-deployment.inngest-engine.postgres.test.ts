@@ -202,7 +202,7 @@ describe("deployment Inngest durable smoke", () => {
 
     /** The Ployz SDK faked at its Context boundary: what each Image Build and the deploy step asked of it. */
     type Fake = {
-      builds: { image: string; snapshots: number; hint: boolean }[];
+      builds: { image: string; snapshots: number; hint: boolean; index: number | undefined }[];
       failImage: string | null;
       /** Holds each build until its signal aborts. */
       hold: boolean;
@@ -213,7 +213,7 @@ describe("deployment Inngest durable smoke", () => {
         build: (input: PreparationInput, options?: BuildOptions) => {
           const image = Object.keys(input.sources)[0] ?? "";
           const hint = input.build_receipts?.[image];
-          fake.builds.push({ image, snapshots: input.deployment.snapshots.length, hint: hint !== undefined });
+          fake.builds.push({ image, snapshots: input.deployment.snapshots.length, hint: hint !== undefined, index: input.build_index });
           const aborted = new Promise<never>((_resolve, reject) => options?.signal?.addEventListener("abort",
             () => reject({ code: "cancelled", details: { preparation: { kind: "cancelled" } } }), { once: true }));
           void aborted.catch(() => undefined);
@@ -223,7 +223,7 @@ describe("deployment Inngest durable smoke", () => {
           void finished.catch(() => undefined);
           return { abort: () => undefined, finished, async *[Symbol.asyncIterator]() {
             if (hint) return;
-            yield { Selected: { machine, rejections: [] } };
+            yield { Selected: { machine, reason: { kind: "spread" as const }, rejections: [] } };
             yield { Build: { Stage: "Building" } };
             yield { Build: { Target: { name: image, outcome: null } } };
             await finished;
@@ -297,16 +297,19 @@ describe("deployment Inngest durable smoke", () => {
       expect(planning.result).toEqual({ state: "blocked" });
       expect((await attempt(targetDeploymentId))?.status).toBe("queued");
       // The test engine resumes once per parallel branch and may replay steps; Inngest itself runs each once.
-      expect(new Set(fake.builds.map(({ image, snapshots }) => `${image}:${snapshots}`))).toEqual(new Set(["api:1", "web:1"]));
+      // Each build carries its position in the attempt, so the Engine spreads them across Servers.
+      expect(new Set(fake.builds.map(({ image, snapshots, index }) => `${image}:${snapshots}:${index}`))).toEqual(new Set(["api:1:0", "web:1:1"]));
       const rows = await imageBuildRows(targetDeploymentId);
-      expect(rows.map(({ image, status, machineId, inngestRunId }) => ({ image, status, machineId, inngestRunId }))).toEqual([
-        { image: "api", status: "built", machineId: machine.id, inngestRunId: targetRunId },
-        { image: "web", status: "built", machineId: machine.id, inngestRunId: targetRunId },
+      const serverChoice = { machineName: machine.name, reason: { kind: "spread" } };
+      expect(rows.map(({ image, status, machineId, serverChoice, inngestRunId }) => ({ image, status, machineId, serverChoice, inngestRunId }))).toEqual([
+        { image: "api", status: "built", machineId: machine.id, serverChoice, inngestRunId: targetRunId },
+        { image: "web", status: "built", machineId: machine.id, serverChoice, inngestRunId: targetRunId },
       ]);
       expect(JSON.parse(encryption.decrypt(rows[0]?.encryptedReceipt ?? encryption.encrypt("null")))).toEqual(receiptFor("api"));
       // Build Steps appear per Image Build before the attempt deploys.
       const log = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId: targetDeploymentId, after: 0, limit: 50 }));
       expect(log.steps.map((step) => `${step.image}:${step.name}`)).toEqual(expect.arrayContaining(["api:api", "web:web"]));
+      expect(log.serverChoices).toEqual(expect.arrayContaining([{ image: "api", serverChoice }, { image: "web", serverChoice }]));
     });
 
     it("lets the others finish when one Image Build fails, and a retry rebuilds only the failed one", async () => {

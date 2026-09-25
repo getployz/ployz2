@@ -53,6 +53,8 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   /** Explicit build concurrency; null means automatic. */
   buildConcurrency: Schema.NullOr(Schema.Number),
   memoryTotalBytes: Schema.NullOr(Schema.Number),
+  /** Builds the Server reports running now; display only. */
+  runningBuilds: NonnegativeInt,
   membership: Schema.String,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,

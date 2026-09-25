@@ -103,14 +103,22 @@ export type PreparationInput = {
   sources: Record<string, string>;
   source_commits?: Record<string, string>;
   build_receipts?: BuildReceipts;
+  /** This build's position among its attempt's builds; builds without a warm Server spread across Servers by it. */
+  build_index?: number;
 };
+
+/** Why a Server was chosen to build. */
+export type BuilderReason =
+  | { kind: "had_cache" }
+  | { kind: "spread" }
+  | { kind: "cache_holder_unavailable"; holder: string };
 
 /** One BuildKit step; `id` is stable across repeated reports, timestamps are RFC 3339. */
 export type BuildStep = { id: string; name: string; started: string | null; completed: string | null; cached: boolean; error: string | null };
 
 export type PreparationEvent =
   | { Platforms: string[] }
-  | { Selected: { machine: import("./generated/payloads").Machine; rejections: string[] } }
+  | { Selected: { machine: import("./generated/payloads").Machine; reason: BuilderReason; rejections: string[] } }
   | { Build: { Stage: string } | { Output: number[] } | { Step: BuildStep } | { StepOutput: { step: string; stderr: boolean; text: string } } | { Timing: unknown } | { Target: { name: string; outcome: unknown } } }
   | "Transfer"
   | { Delivered: { image: string; machine_id: MachineId } };

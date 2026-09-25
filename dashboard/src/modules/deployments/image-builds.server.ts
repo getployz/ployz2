@@ -8,7 +8,7 @@ import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "./runtime-contract";
 import type { DeploymentContext } from "./runtime-repository.contract";
-import { environmentDeployment, environmentDeploymentImageBuild } from "./tables";
+import { environmentDeployment, environmentDeploymentImageBuild, type ServerChoice } from "./tables";
 
 const buildReceiptSchema = Schema.Struct({
   fingerprint: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
@@ -22,8 +22,11 @@ const buildReceiptSchema = Schema.Struct({
   }),
 });
 
-/** What one Image Build builds: a Git Service of the attempt, named by its image. */
-export type ImageBuildTarget = { id: string; deploymentId: string; serviceId: string; image: string };
+/**
+ * What one Image Build builds: a Git Service of the attempt, named by its image. `buildIndex` is its
+ * position among the attempt's builds, so the Engine spreads them across Servers.
+ */
+export type ImageBuildTarget = { id: string; deploymentId: string; serviceId: string; image: string; buildIndex: number };
 
 export type ImageBuildOutcome =
   | { status: "built"; receipt: BuildReceipt }
@@ -48,11 +51,19 @@ export const startImageBuilds = Effect.fn("Deployments.startImageBuilds")(functi
     organizationId: organizationIdForDeployment(deploymentId), deploymentId, inngestRunId: runId,
     serviceId: snapshot.serviceId, image: snapshot.config.privateDns,
   }))).onConflictDoNothing();
-  const rows: ImageBuildTarget[] = yield* drizzle.select({
+  const rows = yield* drizzle.select({
     id: environmentDeploymentImageBuild.id, deploymentId: environmentDeploymentImageBuild.deploymentId,
     serviceId: environmentDeploymentImageBuild.serviceId, image: environmentDeploymentImageBuild.image,
-  }).from(environmentDeploymentImageBuild).where(eq(environmentDeploymentImageBuild.deploymentId, deploymentId));
-  return rows;
+  }).from(environmentDeploymentImageBuild).where(eq(environmentDeploymentImageBuild.deploymentId, deploymentId))
+    .orderBy(environmentDeploymentImageBuild.serviceId);
+  return rows.map((row, buildIndex): ImageBuildTarget => ({ ...row, buildIndex }));
+});
+
+/** Records the Server the Engine chose while the row still builds, so the choice shows during the build. */
+export const recordServerChoice = Effect.fn("Deployments.recordServerChoice")(function* (imageBuildId: string, machineId: string, serverChoice: ServerChoice) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(environmentDeploymentImageBuild).set({ machineId, serverChoice, updatedAt: new Date() })
+    .where(and(eq(environmentDeploymentImageBuild.id, imageBuildId), eq(environmentDeploymentImageBuild.status, "building")));
 });
 
 /** Settles a building row once. Receipts are private evidence and stored encrypted. */

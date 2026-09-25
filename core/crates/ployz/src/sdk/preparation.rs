@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::prepare::BuildPreference;
 use crate::build::{BuildSpec, BuiltService, CapturedBuild, Recipe};
 use ployz_core::{
     DeployIntent, RpcError, RpcErrorCode, ServiceName,
@@ -25,6 +26,10 @@ pub struct PreparationInput {
     /// Previous completed images are hints; preparation verifies their availability.
     #[serde(default)]
     pub build_receipts: BTreeMap<ServiceName, BuildReceipt>,
+    /// This build's position among its attempt's builds. Builds whose cache
+    /// holder cannot build spread across Servers by it.
+    #[serde(default)]
+    pub build_index: usize,
 }
 
 /// Private build evidence, independent of deployment success or current image availability.
@@ -41,6 +46,7 @@ pub(crate) struct CapturedPreparation {
     pub build: CapturedBuild,
     pub fingerprints: BTreeMap<ServiceName, String>,
     pub reusable: Vec<BuiltService>,
+    pub preference: BuildPreference,
 }
 
 pub(super) fn receipts(
@@ -162,6 +168,19 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
     )
     .map_err(invalid)?;
     let build = crate::build::capture(&intent, builds).map_err(invalid)?;
+    // The latest receipt names the warm Server even when its image is stale.
+    // ponytail: one preference per call; a multi-Service prepare builds on one
+    // Server, so it follows its first target's cache holder.
+    let preference = BuildPreference {
+        cache_holder: build.targets().find_map(|target| {
+            input
+                .build_receipts
+                .iter()
+                .find(|(name, _)| name.as_str() == target.name)
+                .map(|(_, receipt)| receipt.machine_id)
+        }),
+        spread: input.build_index,
+    };
     let fingerprints: BTreeMap<_, _> = intent
         .target
         .iter()
@@ -197,6 +216,7 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         build,
         fingerprints,
         reusable,
+        preference,
     })
 }
 
@@ -241,6 +261,7 @@ mod tests {
             sources: BTreeMap::new(),
             source_commits: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
+            build_index: 0,
         })
         .unwrap();
         assert!(captured.build.targets().next().is_none());

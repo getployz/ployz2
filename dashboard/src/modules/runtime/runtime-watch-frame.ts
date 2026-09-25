@@ -25,7 +25,7 @@ const runtimeWatchMachineSchema = Schema.Struct({
     accepts_builds: Schema.Boolean,
     accepts_services: Schema.Boolean,
     build_concurrency: Schema.NullOr(Schema.Number),
-    runtime: Schema.Struct({ memory_total_bytes: Schema.NullOr(Schema.Number) }),
+    runtime: Schema.Struct({ memory_total_bytes: Schema.NullOr(Schema.Number), running_builds: Schema.Number }),
   }),
   membership: Schema.String,
 });
@@ -114,6 +114,7 @@ export function runtimeWatchFrameForTransport(
         build_concurrency: machine.machine.build_concurrency,
         runtime: {
           memory_total_bytes: machine.machine.runtime.memory_total_bytes ?? null,
+          running_builds: machine.machine.runtime.running_builds,
         },
       },
       membership: machine.membership,
@@ -177,6 +178,7 @@ export function runtimeSnapshotFromWatchFrame(
       acceptsServices: machine.machine.accepts_services,
       buildConcurrency: machine.machine.build_concurrency,
       memoryTotalBytes: machine.machine.runtime.memory_total_bytes,
+      runningBuilds: machine.machine.runtime.running_builds,
       membership: machine.membership,
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,
       observedAt,

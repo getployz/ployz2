@@ -182,6 +182,11 @@ function RuntimeMachineRow({
         <CardDescription className="min-w-0 max-w-full break-words">{description || machine.id}</CardDescription>
         <CardAction>
           <div className="flex items-center gap-3">
+            {machine.runningBuilds > 0 ? (
+              <Badge variant="info">
+                {machine.runningBuilds === 1 ? "Building now" : `Building ${machine.runningBuilds} now`}
+              </Badge>
+            ) : null}
             <Badge variant="outline">
               Membership: {machine.membership.replaceAll("_", " ")}
             </Badge>

@@ -227,6 +227,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                     os_pretty_name: "Debian".into(),
                     kernel_version: "6.1.0".into(),
                     memory_total_bytes: None,
+                    running_builds: 0,
                 },
                 build_concurrency: None,
                 },

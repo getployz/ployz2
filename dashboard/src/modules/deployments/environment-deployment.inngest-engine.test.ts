@@ -28,7 +28,7 @@ const activity = {
   build: vi.fn(),
 };
 
-const build = (image: string): ImageBuildTarget => ({ id: `build-${image}`, deploymentId: "deployment-1", serviceId: `service-${image}`, image });
+const build = (image: string, buildIndex = 0): ImageBuildTarget => ({ id: `build-${image}`, deploymentId: "deployment-1", serviceId: `service-${image}`, image, buildIndex });
 
 vi.spyOn(imageBuilds, "startImageBuilds").mockImplementation(() => Effect.promise(() => activity.startBuilds()));
 vi.spyOn(runtimeActivities, "executeImageBuild").mockImplementation((target) => Effect.promise(() => activity.build(target)));
