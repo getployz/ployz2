@@ -8,7 +8,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-progress";
-import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
+import { builtOn, builtOnLine, imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
@@ -122,10 +122,12 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
   const now = useNow(build.data?.finished === false);
   const steps = imageBuildSteps(build.data?.steps ?? [], image);
   const ids = new Set(steps.map((step) => step.id));
-  const run = build.data?.runs.find((candidate) => candidate.image === image);
+  const server = builtOn(build.data, image);
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
-    {run?.url ? <p className="mb-2 text-muted-foreground">Built on GitHub Actions · <a className="underline" href={run.url} target="_blank" rel="noreferrer">View run ↗</a></p> : null}
+    {server ? <p className="mb-2 font-mono text-xs text-muted-foreground">
+      {builtOnLine(server)}{server.runUrl ? <> · <a className="underline" href={server.runUrl} target="_blank" rel="noreferrer">View run ↗</a></> : null}
+    </p> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
       {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} now={now} />}
     </BuildLogViewer>

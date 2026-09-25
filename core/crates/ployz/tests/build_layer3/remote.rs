@@ -514,6 +514,7 @@ async fn railpack_preparation_derives_machine_platforms() {
             sources: BTreeMap::from([(name, root.to_owned())]),
             source_commits: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
+            build_index: 0,
         })
         .unwrap();
     let mut platforms = None;

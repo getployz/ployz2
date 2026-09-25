@@ -70,6 +70,7 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
             .map(|name| (name, "a".repeat(40)))
             .collect(),
         build_receipts: BTreeMap::new(),
+        build_index: 0,
     }
 }
 
@@ -753,6 +754,7 @@ async fn builder_selection_filters_observations_without_using_service_policy_or_
             &mut client,
             &build_targets(&["linux/amd64"]),
             &visible,
+            Default::default(),
             &Default::default()
         )
         .await
@@ -781,6 +783,7 @@ async fn builder_selection_reports_missing_capability() {
         &mut client,
         &build_targets(&["linux/amd64"]),
         &visible,
+        Default::default(),
         &Default::default(),
     )
     .await
@@ -815,6 +818,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
         &mut client,
         &build_targets(&["linux/arm64"]),
         &visible,
+        Default::default(),
         &Default::default(),
     )
     .await
@@ -825,6 +829,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
         &mut client,
         &targets,
         &visible,
+        Default::default(),
         &Default::default(),
     )
     .await
@@ -834,6 +839,108 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
     assert!(error.contains("cannot build linux/arm64"), "{error}");
     assert!(error.contains("cannot build linux/amd64"), "{error}");
     assert!(builds.definitions.lock().unwrap().is_empty());
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Build one Service through the SDK and return the Selected event's Server and reason.
+async fn selected_by_build(
+    session: &crate::sdk::Session,
+    input: crate::sdk::PreparationInput,
+) -> (String, Value) {
+    let running = session.build(input, None).unwrap();
+    let mut selected = None;
+    while let Some(event) = running.next().await {
+        if let Some(builder) = event.get("Selected") {
+            selected = Some((
+                builder
+                    .pointer("/machine/name")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_owned(),
+                builder.get("reason").unwrap().clone(),
+            ));
+        }
+    }
+    running.finished().await.unwrap();
+    selected.expect("every build selects a Server")
+}
+
+fn two_builders() -> (PathBuf, DeployService) {
+    let (root, service, _) = fixture();
+    let mut spare = machine('c', "spare");
+    spare.machine.accepts_services = false;
+    let service = service.with_machines(vec![
+        machine('a', "builder"),
+        {
+            let mut application = machine('b', "application");
+            application.machine.accepts_builds = false;
+            application
+        },
+        spare,
+    ]);
+    (root, service)
+}
+
+#[tokio::test]
+async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can() {
+    let (root, service) = two_builders();
+    let (sdk, server) = session(service.clone()).await;
+    // A stale receipt still names the Server whose build cache is warm.
+    let receipt: crate::sdk::preparation::BuildReceipt = serde_json::from_value(json!({
+        "fingerprint": "0".repeat(64), "machine_id": "c".repeat(32),
+        "image": {"reference": format!("sha256:{}", "f".repeat(64)), "tags": [],
+            "platforms": ["linux/amd64"], "location": "unused"}
+    }))
+    .unwrap();
+    let hinted = |index| {
+        let mut input = input(&root, vec![git("one", "dockerfile")]);
+        input
+            .build_receipts
+            .insert(ServiceName::parse("one").unwrap(), receipt.clone());
+        input.build_index = index;
+        input
+    };
+    for index in 0..2 {
+        assert_eq!(
+            selected_by_build(&sdk, hinted(index)).await,
+            ("spare".into(), json!({"kind": "had_cache"}))
+        );
+    }
+    sdk.close().await;
+    server.abort();
+
+    // Once the holder stops accepting Builds, the build spreads and says why.
+    let mut holder = machine('c', "spare");
+    holder.machine.accepts_builds = false;
+    let (sdk, server) = session(service.with_machines(vec![machine('a', "builder"), holder])).await;
+    assert_eq!(
+        selected_by_build(&sdk, hinted(1)).await,
+        (
+            "builder".into(),
+            json!({"kind": "cache_holder_unavailable", "holder": "spare"})
+        )
+    );
+    sdk.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn an_attempts_builds_spread_across_servers_that_accept_builds() {
+    let (root, service) = two_builders();
+    let (session, server) = session(service).await;
+    let mut chosen = Vec::new();
+    for index in 0..4 {
+        let mut input = input(&root, vec![git("one", "dockerfile")]);
+        input.build_index = index;
+        let (name, reason) = selected_by_build(&session, input).await;
+        assert_eq!(reason, json!({"kind": "spread"}));
+        chosen.push(name);
+    }
+    // The Server without the Builds role is never chosen.
+    assert_eq!(chosen, ["builder", "spare", "builder", "spare"]);
+    session.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
@@ -877,6 +984,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
         sources: BTreeMap::from([(name.clone(), root.clone())]),
         source_commits: BTreeMap::from([(name.clone(), commit)]),
         build_receipts: receipts,
+        build_index: 0,
     };
     let first = session
         .prepare(input(deployment.clone(), BTreeMap::new(), "a".repeat(40)))

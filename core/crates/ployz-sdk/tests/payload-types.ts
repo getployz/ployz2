@@ -227,6 +227,7 @@ const identity: RegisterRequest = {
     architecture: "arm64",
     os_pretty_name: "macOS",
     kernel_version: "1",
+    running_builds: 0,
   },
 };
 applyAll("app" as ProjectName, [web]) satisfies DeployIntent;

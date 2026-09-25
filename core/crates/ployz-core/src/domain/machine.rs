@@ -133,6 +133,8 @@ pub struct MachineRuntime {
     /// Host memory, absent when the daemon could not observe it.
     #[ts(optional = nullable)]
     pub memory_total_bytes: Option<u64>,
+    /// Builds this Machine's daemon is running now; live, never persisted.
+    pub running_builds: u32,
 }
 
 /// How many Builds one Machine runs at once.

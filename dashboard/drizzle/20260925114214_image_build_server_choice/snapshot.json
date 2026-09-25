@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "37459fdd-1405-4ab4-bcda-0a695feef9b9",
+  "id": "0971cf2a-145c-4d49-9d08-f4f51e85e256",
   "prevIds": [
     "c7321253-081e-46f9-ae32-1e52b91ece89"
   ],
@@ -159,12 +159,6 @@
     {
       "isRlsEnabled": false,
       "name": "environment_saved_state_snapshot",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "organization_build_order",
       "entityType": "tables",
       "schema": "public"
     },
@@ -2885,6 +2879,19 @@
       "default": null,
       "generated": null,
       "identity": null,
+      "name": "server_choice",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_image_build"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
       "name": "encrypted_receipt",
       "entityType": "columns",
       "schema": "public",
@@ -2925,110 +2932,6 @@
       "generated": null,
       "identity": null,
       "name": "finished_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'server'",
-      "generated": null,
-      "identity": null,
-      "name": "builder",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "bigint",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "github_run_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "github_run_url",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "github_workflow_ref",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "checked_in_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "grant_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "fingerprint",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 1,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "platforms",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment_image_build"
@@ -3201,58 +3104,6 @@
       "entityType": "columns",
       "schema": "public",
       "table": "environment_saved_state_snapshot"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "organization_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_build_order"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "build_order",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_build_order"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_build_order"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "updated_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_build_order"
     },
     {
       "type": "uuid",
@@ -8950,23 +8801,6 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "organization_build_order_organization_id_organization_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "organization_build_order"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "organization_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "organization",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
       "name": "core_operation_event_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -9887,16 +9721,6 @@
     },
     {
       "columns": [
-        "organization_id"
-      ],
-      "nameExplicit": false,
-      "name": "organization_build_order_pkey",
-      "schema": "public",
-      "table": "organization_build_order",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -10449,20 +10273,6 @@
       "entityType": "checks",
       "schema": "public",
       "table": "environment_deployment_image_build"
-    },
-    {
-      "value": "\"builder\" in ('server', 'github')",
-      "name": "environment_deployment_image_build_builder_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "environment_deployment_image_build"
-    },
-    {
-      "value": "\"build_order\" in ('servers-only', 'github-then-servers', 'github-only')",
-      "name": "organization_build_order_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "organization_build_order"
     },
     {
       "value": "\"expected_kind\" in ('deploy','cert','machine_add','machine_update','machine_lifecycle','core_replace','credential_grant','network_repair','service_restart','managed_dns_reconcile','ingress_configure','ingress_refresh','namespace_remove','volume_create','volume_remove')",

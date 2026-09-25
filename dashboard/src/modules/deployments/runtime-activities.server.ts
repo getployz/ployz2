@@ -27,7 +27,7 @@ import { deploymentProgressForEvent } from "./deployment-view";
 import { PloyzPreparationError, type PloyzPreparedDeploy } from "#/modules/runtime/ployz.server";
 import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
-import { imageBuildWanted, loadBuildReceipts, settleImageBuild, type ImageBuildOutcome, type ImageBuildTarget } from "./image-builds.server";
+import { imageBuildWanted, loadBuildReceipts, recordServerChoice, settleImageBuild, type ImageBuildOutcome, type ImageBuildTarget } from "./image-builds.server";
 import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector, type PreparationWrites } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
@@ -361,9 +361,13 @@ export const executeImageBuild = Effect.fn("Deployments.executeImageBuild")(func
     const result = yield* sdk.build({
       // The SDK builds exactly one Git Service; ordering between Services is deploy's concern.
       deployment: { ...intent, snapshots: intent.snapshots.filter((candidate) => candidate.serviceId === build.serviceId), dependencies: {} },
-      sources, source_commits, build_receipts: hint ? { [build.image]: hint } : {},
+      sources, source_commits, build_receipts: hint ? { [build.image]: hint } : {}, build_index: build.buildIndex,
     }, async (event) => {
-      if (event !== "Transfer" && "Selected" in event) machineId = event.Selected.machine.id;
+      if (event !== "Transfer" && "Selected" in event) {
+        const { machine, reason } = event.Selected;
+        machineId = machine.id;
+        await Effect.runPromiseWith(progressContext)(recordServerChoice(build.id, machine.id, { machineName: machine.name, reason }));
+      }
       await Effect.runPromiseWith(progressContext)(log(collector.event(event)));
     }, { signal: cancellation.signal });
     if (result.kind === "queued") return { status: "failed", message: "No Server started the build.", machineId } satisfies ImageBuildOutcome;

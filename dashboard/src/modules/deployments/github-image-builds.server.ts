@@ -167,9 +167,8 @@ const MAX_STEPS_REPORT_BYTES = 16 * 1024 * 1024;
  * The runner's Build Steps, filed under the Image Build like a server build's, so they show in the
  * same log. Accepted once, after check-in. An empty `platforms` means the build failed.
  */
-export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSteps")(function* (request: Request, imageBuildId: string) {
+export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSteps")(function* (request: Request, imageBuildId: string, text: string) {
   const { row } = yield* authorizeRunner(request, imageBuildId);
-  const text = yield* Effect.tryPromise({ try: () => request.text(), catch: () => new Validation({ message: "The report could not be read." }) });
   if (text.length > MAX_STEPS_REPORT_BYTES) return yield* new Validation({ message: "The report is too large." });
   const report = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(stepsReportSchema))(text)
     .pipe(Effect.mapError(() => new Validation({ message: "The report is not Build Steps." })));

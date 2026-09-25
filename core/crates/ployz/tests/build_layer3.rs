@@ -180,6 +180,7 @@ async fn prepare(
             sources: BTreeMap::from([(name.clone(), root.to_owned())]),
             source_commits: BTreeMap::from([(name, "a".repeat(40))]),
             build_receipts: BTreeMap::new(),
+            build_index: 0,
         })
         .unwrap()
         .finished()

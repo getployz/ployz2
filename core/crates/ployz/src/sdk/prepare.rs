@@ -1,26 +1,97 @@
 //! Cloud preparation: builder eligibility, Builds, planning, and image delivery.
 use crate::connect::ConnectError;
-use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, RpcErrorCode, op};
+use ployz_core::{
+    DescribeContractRequest, MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode,
+    op,
+};
 use std::time::Duration;
 
-/// Selected builder and rejected observations, for caller-owned presentation.
+/// Selected builder, why it was chosen, and rejected observations, for caller-owned presentation.
 #[derive(serde::Serialize)]
 pub struct SelectedBuilder {
     pub machine: ployz_core::Machine,
+    pub reason: BuilderReason,
     pub rejections: Vec<String>,
 }
 
-/// Select the first capable observed Machine, in random order.
+/// Why a Server was chosen to build: evidence, never a prediction.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuilderReason {
+    /// It is the Server named in the Service's latest Build Receipt.
+    HadCache,
+    /// No Server held the Service's build cache; builds spread across Servers.
+    Spread,
+    /// The cache holder is offline or no longer builds; builds spread across Servers.
+    CacheHolderUnavailable { holder: String },
+}
+
+/// Where a build should go, from what the caller already knows.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuildPreference {
+    /// The Server named in the Service's latest Build Receipt.
+    pub cache_holder: Option<MachineId>,
+    /// This build's position among its attempt's builds.
+    pub spread: usize,
+}
+
+fn may_build(observed: &MachineObservation) -> bool {
+    observed.membership.invites_rpc() && observed.machine.accepts_builds
+}
+
+/// Rank the cache holder first, then Servers that accept Builds, rotated by
+/// `spread` so an attempt's builds start on different Servers. The rest follow
+/// only so their rejections are reported. Load from other attempts is not
+/// considered; it waits in each Server's queue.
+fn rank(visible: &[MachineObservation], preference: BuildPreference) -> Vec<&MachineObservation> {
+    let mut ranked = visible.iter().collect::<Vec<_>>();
+    ranked.sort_by_key(|observed| (!may_build(observed), observed.machine.id));
+    let eligible = ranked.iter().filter(|observed| may_build(observed)).count();
+    if let Some(eligible) = ranked.get_mut(..eligible).filter(|slice| !slice.is_empty()) {
+        let spread = preference.spread % eligible.len();
+        eligible.rotate_left(spread);
+    }
+    if let Some(at) = ranked
+        .iter()
+        .position(|observed| Some(observed.machine.id) == preference.cache_holder)
+    {
+        let holder = ranked.remove(at);
+        ranked.insert(0, holder);
+    }
+    ranked
+}
+
+fn builder_reason(
+    visible: &[MachineObservation],
+    preference: BuildPreference,
+    selected: MachineId,
+) -> BuilderReason {
+    match preference.cache_holder {
+        None => BuilderReason::Spread,
+        Some(holder) if holder == selected => BuilderReason::HadCache,
+        Some(holder) => BuilderReason::CacheHolderUnavailable {
+            holder: visible
+                .iter()
+                .find(|observed| observed.machine.id == holder)
+                .map_or_else(
+                    || holder.to_string(),
+                    |observed| observed.machine.name.to_string(),
+                ),
+        },
+    }
+}
+
+/// Select the first capable observed Machine in [`rank`] order.
 /// # Errors
 /// Returns exhausted eligibility evidence.
 pub async fn select_build_machine(
     client: &mut crate::connect::Client,
     targets: &[ployz_build::Target],
-    visible: &[ployz_core::MachineObservation],
+    visible: &[MachineObservation],
+    preference: BuildPreference,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<SelectedBuilder, ConnectError> {
-    let mut candidates = visible.iter().collect::<Vec<_>>();
-    candidates.sort_by_cached_key(|_| uuid::Uuid::new_v4());
+    let candidates = rank(visible, preference);
     let mut reasons = Vec::new();
     let mut rejected = std::collections::BTreeMap::<&str, usize>::new();
     for observed in candidates {
@@ -63,6 +134,7 @@ pub async fn select_build_machine(
                     Ok(()) => {
                         return Ok(SelectedBuilder {
                             machine: machine.clone(),
+                            reason: builder_reason(visible, preference, machine.id),
                             rejections: reasons,
                         });
                     }
@@ -175,10 +247,20 @@ pub async fn prepare(
     mut intent: DeployIntent,
     build: CapturedBuild,
     reusable: &[BuiltService],
+    preference: BuildPreference,
     cancellation: &CancellationToken,
     progress: impl Fn(Progress),
 ) -> Result<Prepared, PreparationError> {
-    let builds = build_images(client, &intent, build, reusable, cancellation, &progress).await?;
+    let builds = build_images(
+        client,
+        &intent,
+        build,
+        reusable,
+        preference,
+        cancellation,
+        &progress,
+    )
+    .await?;
     crate::build::bind(&mut intent, &builds)?;
     let machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
     let plan = read(cancellation, async {
@@ -215,7 +297,7 @@ pub async fn prepare(
 }
 
 /// Reuse still-available images, then build the remaining targets on one
-/// selected Build Machine. `prepare` and the one-Service `Session::build` share this.
+/// Build Machine ranked by `preference`. `prepare` and the one-Service `Session::build` share this.
 /// # Errors
 /// Returns typed Build evidence across every target, eligibility, or cancellation.
 pub(super) async fn build_images(
@@ -223,6 +305,7 @@ pub(super) async fn build_images(
     intent: &DeployIntent,
     mut build: CapturedBuild,
     reusable: &[BuiltService],
+    preference: BuildPreference,
     cancellation: &CancellationToken,
     progress: &impl Fn(Progress),
 ) -> Result<Vec<BuiltService>, PreparationError> {
@@ -254,7 +337,7 @@ pub(super) async fn build_images(
         return Ok(builds);
     }
     let selected = read(cancellation, async {
-        select_build_machine(client, &targets, &machines, cancellation)
+        select_build_machine(client, &targets, &machines, preference, cancellation)
             .await
             .map_err(PreparationError::Selection)
     })

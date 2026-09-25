@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, gt, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { organizationIdForDeployment } from "#/db/scope-values.server";
 import { Database } from "#/server/database.server";
@@ -36,12 +36,11 @@ export const loadDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function
   const output = yield* drizzle.select().from(environmentDeploymentBuildOutput)
     .where(and(eq(environmentDeploymentBuildOutput.deploymentId, input.deploymentId), gt(environmentDeploymentBuildOutput.id, input.after)))
     .orderBy(asc(environmentDeploymentBuildOutput.id)).limit(input.limit);
+  // Which Server (or GitHub run) each image builds on, and why; never the private receipt.
+  const serverChoices = yield* drizzle.select({ image: environmentDeploymentImageBuild.image, serverChoice: environmentDeploymentImageBuild.serverChoice, githubRunUrl: environmentDeploymentImageBuild.githubRunUrl })
+    .from(environmentDeploymentImageBuild).where(eq(environmentDeploymentImageBuild.deploymentId, input.deploymentId));
   const last = output.at(-1);
-  // Image Builds that ran on GitHub link their run beside their steps.
-  const runs = yield* drizzle.select({ image: environmentDeploymentImageBuild.image, url: environmentDeploymentImageBuild.githubRunUrl })
-    .from(environmentDeploymentImageBuild)
-    .where(and(eq(environmentDeploymentImageBuild.deploymentId, input.deploymentId), isNotNull(environmentDeploymentImageBuild.githubRunUrl)));
-  return { steps, output, runs, finished: deployment.finishedAt !== null, nextSequence: output.length === input.limit && last ? String(last.id) : null };
+  return { steps, output, serverChoices, finished: deployment.finishedAt !== null, nextSequence: output.length === input.limit && last ? String(last.id) : null };
 });
 
 /**

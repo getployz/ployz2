@@ -3,7 +3,7 @@ import { parseServiceConfig, type ServiceConfig } from "@ployz/sdk/config";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
-import type { EnvironmentDeploymentStatus } from "./tables";
+import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 import { isActiveDeployment } from "./runtime-contract";
@@ -25,7 +25,11 @@ export type DeploymentNodeView = {
   deploy: Stage;
   failure: { message: string; containerId: string | null } | null;
   tail: string[];
+  /** The Server the Engine chose for this image and why, once it chose. */
+  builtOn: BuiltOn | null;
 };
+/** `runUrl` links a build that ran on GitHub Actions. */
+export type BuiltOn = { server: string; reason: string; runUrl?: string };
 export type DeploymentViewStatus = "queued" | "building" | "deploying" | "deployed" | "failed" | "cancelled";
 export type DeploymentView = {
   status: DeploymentViewStatus;
@@ -37,7 +41,27 @@ type BuildStep = { id: number; image: string; build: number; key: string; name: 
 export type BuildLog = {
   steps: readonly BuildStep[];
   output: readonly { stepId: number; text: string }[];
+  serverChoices?: readonly { image: string; serverChoice: ServerChoice | null; githubRunUrl?: string | null }[];
 };
+
+/** Why the Engine chose a Server: recorded evidence, never a prediction. */
+function builderReason(reason: ServerChoice["reason"]): string {
+  switch (reason.kind) {
+    case "had_cache": return "had this Service's build cache";
+    case "spread": return "spread across Servers";
+    case "cache_holder_unavailable": return `${reason.holder} has the cache but is offline or no longer builds`;
+  }
+}
+
+/** Where an image builds and why, from its Image Build's recorded Server choice or GitHub run. */
+export function builtOn(log: Pick<BuildLog, "serverChoices"> | null | undefined, image: string | null): BuiltOn | null {
+  const row = image ? log?.serverChoices?.find((candidate) => candidate.image === image) : undefined;
+  if (row?.githubRunUrl) return { server: "GitHub Actions", reason: "first in the build order", runUrl: row.githubRunUrl };
+  return row?.serverChoice ? { server: row.serverChoice.machineName, reason: builderReason(row.serverChoice.reason) } : null;
+}
+
+/** "Built on <Server> · <why>", as the canvas and build log say it. */
+export const builtOnLine = ({ server, reason }: BuiltOn) => `Built on ${server} · ${reason}`;
 export type DeploymentViewInput = {
   deployment: {
     status: EnvironmentDeploymentStatus;
@@ -313,6 +337,7 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
     return {
       nodeId: node.nodeId, outcome: nodeOutcome(facts, failure, buildStage, deploy, attempt),
       build: buildStage, deploy, failure, tail: nodeTail(facts, failure, buildStage).slice(-TAIL_LINES),
+      builtOn: builtOn(buildLog, node.image),
     };
   });
 

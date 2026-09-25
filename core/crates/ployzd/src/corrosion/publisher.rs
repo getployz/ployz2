@@ -79,7 +79,7 @@ pub async fn run_machine_publisher(
             let publication = replicated.machine_publication().await;
             let machine = publication.publishable_machine(&local.record());
             if let Some(machine) = machine
-                && let Err(error) = publication.publish(&machine).await
+                && let Err(error) = publication.publish_own(&machine).await
             {
                 eprintln!("failed to publish local Machine: {error}");
             }

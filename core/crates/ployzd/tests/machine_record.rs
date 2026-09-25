@@ -349,6 +349,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         os_pretty_name: "stale".into(),
         kernel_version: "stale".into(),
         memory_total_bytes: None,
+        running_builds: 0,
     })
     .unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();

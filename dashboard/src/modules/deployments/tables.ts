@@ -1,4 +1,4 @@
-import type { PruneRefusal } from "@ployz/sdk";
+import type { BuilderReason, PruneRefusal } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type JsonValue, updatedAt } from "#/db/tables";
 
 import { type DeploymentTriggerOrigin } from "#/modules/deployments/deployment";
@@ -248,6 +248,9 @@ export const environmentDeploymentBuildOutput = pgTable("environment_deployment_
 
 export type ImageBuildStatus = "building" | "built" | "failed" | "cancelled";
 
+/** The Server the Engine chose for an Image Build, named as it was then, and why. */
+export type ServerChoice = { machineName: string; reason: BuilderReason };
+
 /**
  * One Image Build of a Cloud Deployment Attempt: one Git Service's image, started at admission.
  * Only a built row holds a Build Receipt; no row stays building once its attempt ends.
@@ -262,6 +265,8 @@ export const environmentDeploymentImageBuild = pgTable("environment_deployment_i
   status: text("status").notNull().default("building").$type<ImageBuildStatus>(),
   /** The Server that built, or already held, the image. */
   machineId: text("machine_id"),
+  /** Which Server the Engine chose to build on and why, recorded when it chose. */
+  serverChoice: jsonb("server_choice").$type<ServerChoice>(),
   /** Private: fingerprints include effective secret build variables. */
   encryptedReceipt: jsonb("encrypted_receipt").$type<EncryptedSecretValue>(),
   failureMessage: text("failure_message"),

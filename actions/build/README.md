@@ -53,7 +53,8 @@ Inputs are visible in GitHub, so none of them is secret.
    ```
    The token, the grant, and every `resolvedEnv` value are masked (`::add-mask::`, per line) before anything else runs.
 5. Checks out `commit` without persisting credentials.
-6. Runs `PLOYZ_BUILD_GRANT=… ployz build --deployment <file> --commit <commit> --fingerprint <fingerprint>`. The deployment file lives in `$RUNNER_TEMP` and is deleted when the job ends, pass or fail.
+6. Runs `PLOYZ_BUILD_GRANT=… ployz build --deployment <file> --commit <commit> --fingerprint <fingerprint> --events <file>`. The deployment file lives in `$RUNNER_TEMP` and is deleted when the job ends, pass or fail.
+7. Reports the Build Steps, pass or fail, with a fresh OIDC token: `POST {cloud}/api/builds/{build}/steps` with `{"events": [<ployz build --events lines>], "platforms": [...]}`. Empty `platforms` means the build failed. Cloud accepts one report.
 
 Output `digest` is the manifest digest the Machine received. Cloud does not trust it: it reads the pushed digest from the Machine when it ends the grant.
 

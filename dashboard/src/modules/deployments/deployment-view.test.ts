@@ -97,6 +97,30 @@ describe("deployment view projection", () => {
     expect(deploymentStatusLabel(view)).toBe("Failed · 0 of 4 deployed");
   });
 
+  it("says which Server each image builds on and why, only once the Engine chose", () => {
+    const view = deploymentView({
+      deployment: deployment("queued"), progress: null,
+      nodes: ["api", "web", "docs", "worker", "site"].map((image) => node({ nodeId: image, changed: true, image })),
+      buildLog: {
+        steps: [], output: [],
+        serverChoices: [
+          { image: "site", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/1" },
+          { image: "api", serverChoice: { machineName: "nuc", reason: { kind: "had_cache" } } },
+          { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } } },
+          { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "nuc" } } },
+          { image: "worker", serverChoice: null },
+        ],
+      },
+    });
+    expect(view.nodes.map((n) => n.builtOn)).toEqual([
+      { server: "nuc", reason: "had this Service's build cache" },
+      { server: "hel-1", reason: "spread across Servers" },
+      { server: "hel-1", reason: "nuc has the cache but is offline or no longer builds" },
+      null,
+      { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1" },
+    ]);
+  });
+
   it("tails the image building now while the next image waits its turn", () => {
     const view = deploymentView({
       deployment: deployment("planning"),

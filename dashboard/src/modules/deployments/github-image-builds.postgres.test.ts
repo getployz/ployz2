@@ -54,8 +54,8 @@ function oidcToken(claims: Partial<RunnerClaims> = {}, key: crypto.KeyObject = s
   return `${body}.${crypto.sign("RSA-SHA256", Buffer.from(body), key).toString("base64url")}`;
 }
 type StepsReport = { platforms: string[]; events: { at: number; event: PreparationEvent }[] };
-const runnerRequest = (token: string, body?: StepsReport) => new Request("http://localhost:3000/api/builds/x", {
-  method: "POST", headers: { authorization: `Bearer ${token}` }, body: body === undefined ? null : JSON.stringify(body),
+const runnerRequest = (token: string) => new Request("http://localhost:3000/api/builds/x", {
+  method: "POST", headers: { authorization: `Bearer ${token}` },
 });
 
 /** GitHub and the entry Machine, faked at their Context boundaries. */
@@ -179,14 +179,14 @@ describe("Image Builds on GitHub Actions", () => {
   const row = async () => (await harness.db.select().from(schema.environmentDeploymentImageBuild))[0];
   const checkIn = async (token: string) => run(checkInGithubBuild(runnerRequest(token), await imageBuildId()));
   const rejection = async (token: string) => run(Effect.flip(checkInGithubBuild(runnerRequest(token), await imageBuildId())));
-  const report = async (platforms: string[]) => run(recordGithubBuildSteps(runnerRequest(oidcToken(), {
+  const report = async (platforms: string[]) => run(recordGithubBuildSteps(runnerRequest(oidcToken()), await imageBuildId(), JSON.stringify({
     platforms,
     events: [
       { at: 1_000, event: { Build: { Stage: "Building" } } },
       { at: 2_000, event: { Build: { Step: { id: "s1", name: "RUN make", started: null, completed: null, cached: false, error: null } } } },
       { at: 3_000, event: { Build: { StepOutput: { step: "s1", stderr: false, text: "ok\n" } } } },
     ],
-  }), await imageBuildId()));
+  } satisfies StepsReport)));
   type MockedSteps = NonNullable<ConstructorParameters<typeof InngestTestEngine>[0]["steps"]>;
   const engine = (steps: MockedSteps = []) => new InngestTestEngine({
     function: createProcessEnvironmentDeployment(new Inngest({ id: "github-builds" }), runner),
@@ -254,9 +254,10 @@ describe("Image Builds on GitHub Actions", () => {
     const log = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId, after: 0, limit: 50 }));
     expect(log.steps.filter((step) => step.image === "api").map((step) => step.name)).toEqual(["Building", "RUN make"]);
     expect(log.output.map((line) => line.text)).toEqual(["ok\n"]);
-    expect(log.runs).toEqual([{ image: "api", url: "https://github.com/owner/repo/actions/runs/9001" }]);
+    // A GitHub build has no Server choice; the log links its run instead.
+    expect(log.serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001" }]);
     // A second report would duplicate output, so it is refused.
-    expect(await run(Effect.flip(recordGithubBuildSteps(runnerRequest(oidcToken(), { platforms: [], events: [] }), built?.id ?? ""))))
+    expect(await run(Effect.flip(recordGithubBuildSteps(runnerRequest(oidcToken()), built?.id ?? "", JSON.stringify({ platforms: [], events: [] })))))
       .toMatchObject({ _tag: "Conflict" });
   }, 30_000);
 

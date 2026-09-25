@@ -9,7 +9,7 @@ export const Route = createFileRoute("/api/builds/$build/steps")({
   server: {
     handlers: {
       POST: async ({ request, params }) =>
-        runAppEffect(recordGithubBuildSteps(request, params.build).pipe(Effect.map((body) => Response.json(body))), {
+        runAppEffect(recordGithubBuildSteps(request, params.build, await request.text()).pipe(Effect.map((body) => Response.json(body))), {
           signal: request.signal,
         }).catch(publicErrorResponse),
     },

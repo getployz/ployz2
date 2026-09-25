@@ -413,7 +413,11 @@ export type MachineRuntime = { daemon_version: string, docker_version: string, h
 /**
  * Host memory, absent when the daemon could not observe it.
  */
-memory_total_bytes?: number | null, };
+memory_total_bytes?: number | null,
+/**
+ * Builds this Machine's daemon is running now; live, never persisted.
+ */
+running_builds: number, };
 
 export type MachineStorageBudget = {
 /**

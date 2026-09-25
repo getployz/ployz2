@@ -54,6 +54,7 @@ pub(super) async fn run(
         &captured.intent,
         captured.build,
         &captured.reusable,
+        captured.preference,
         &withdraw,
         &progress,
     );
