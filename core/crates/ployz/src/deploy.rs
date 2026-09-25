@@ -26,8 +26,7 @@ pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, remove_projec
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
-    DeployPlan, IngressContext, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal,
-    preview_deploy,
+    DeployPlan, IngressContext, VolumeFate, plan_deploy, plan_project_removal, preview_deploy,
 };
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
@@ -278,7 +277,7 @@ pub struct DeploySnapshot {
 impl DeploySnapshot {
     /// Observer-derived Services owned by `project`. Other Projects are excluded.
     #[must_use]
-    pub fn services_in(&self, project: &ProjectName) -> Vec<ServiceObservation> {
+    pub(crate) fn services_in(&self, project: &ProjectName) -> Vec<ServiceObservation> {
         derive_services(
             self.containers
                 .iter()
@@ -292,7 +291,7 @@ impl DeploySnapshot {
     /// Required targets are Machines whose Membership Observation invites RPC.
     /// A partition may hide a Machine entirely; that absence is not detected here.
     #[must_use]
-    pub fn is_observer_complete(&self) -> bool {
+    pub(crate) fn is_observer_complete(&self) -> bool {
         let required = self
             .machines
             .iter()

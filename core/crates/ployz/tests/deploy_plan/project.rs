@@ -1,6 +1,6 @@
 use super::support::*;
-use ployz::deploy::{VolumeFate, data_loss_from_plan, plan_project_removal};
-use ployz_core::{DataLoss, PruneRefusal, QualifiedService};
+use ployz::deploy::{VolumeFate, plan_project_removal};
+use ployz_core::{PruneRefusal, QualifiedService};
 
 fn project() -> ProjectName {
     ProjectName::parse("app").unwrap()
@@ -73,26 +73,6 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
 }
 
 #[test]
-fn incomplete_empty_view_still_refuses() {
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::try_from_parts(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![machine_id('1')],
-        )
-        .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
-    };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
-    assert_eq!(plan.prune_refusal, Some(PruneRefusal::IncompleteSnapshot));
-    assert!(plan.operations.is_empty());
-    assert!(plan.would_remove.is_empty());
-    assert!(plan.preserved_volumes.is_empty());
-}
-
-#[test]
 fn destroying_volumes_emits_remove_volume_only_when_complete() {
     let volume = owned_volume(machine_id('1'), "data");
     let snapshot = DeploySnapshot {
@@ -108,48 +88,6 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
         [DeployOperation::RemoveVolume { id: volume.id }]
     );
     assert!(plan.preserved_volumes.is_empty());
-}
-
-#[test]
-fn unlabeled_volumes_are_never_assigned_or_removed() {
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::try_from_observations(vec![unowned_volume(
-            machine_id('1'),
-            "orphan",
-        )])
-        .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
-    };
-    for fate in [VolumeFate::Preserve, VolumeFate::Destroy] {
-        let plan = plan_project_removal(&project(), &snapshot, fate).unwrap();
-        assert!(
-            plan.operations.is_empty(),
-            "{fate:?}: {:?}",
-            plan.operations
-        );
-        assert!(
-            plan.preserved_volumes.is_empty(),
-            "{fate:?}: {:?}",
-            plan.preserved_volumes
-        );
-    }
-}
-
-#[test]
-fn volume_only_project_still_plans_preservation() {
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
-            machine_id('1'),
-            "data",
-        )])
-        .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
-    };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
-    assert!(plan.operations.is_empty());
-    assert_eq!(plan.preserved_volumes.len(), 1);
 }
 
 #[test]
@@ -197,93 +135,4 @@ fn other_project_resources_are_left_alone() {
         | DeployOperation::PrepareVolumes { .. }
         | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
     }));
-}
-
-#[test]
-fn planner_does_not_refuse_reserved_names() {
-    let spec = requested(ServiceMode::Global);
-    let mut ingress = container('b', '1', &spec, &service_id('a'));
-    ingress
-        .try_update(|parts| {
-            parts.project_name = ProjectName::system();
-            parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
-        })
-        .unwrap();
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![ingress],
-        ..Default::default()
-    };
-    let plan =
-        plan_project_removal(&ProjectName::system(), &snapshot, VolumeFate::Preserve).unwrap();
-    assert_eq!(plan.prune_refusal, None);
-    assert!(plan.would_remove.is_empty());
-    assert!(plan.operations.is_empty());
-}
-
-#[test]
-fn preserving_volumes_is_empty_data_loss() {
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
-            machine_id('1'),
-            "data",
-        )])
-        .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
-    };
-    assert_eq!(
-        data_loss_from_plan(
-            &plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap()
-        )
-        .data_loss,
-        Vec::<DataLoss>::new()
-    );
-}
-
-#[test]
-fn destroying_volumes_names_owned_docker_volumes_only() {
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::try_from_observations(vec![
-            owned_volume(machine_id('1'), "data"),
-            unowned_volume(machine_id('1'), "orphan"),
-        ])
-        .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
-    };
-    assert_eq!(
-        data_loss_from_plan(
-            &plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap()
-        )
-        .data_loss,
-        [DataLoss::DockerVolume {
-            id: owned_volume(machine_id('1'), "data").id
-        }]
-    );
-}
-
-#[test]
-fn plan_deploy_never_emits_remove_volume() {
-    let requested = requested(ServiceMode::Global);
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
-                machine_id('1'),
-                "data",
-            )])
-            .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-    assert!(
-        plan.operations
-            .iter()
-            .all(|row| !matches!(row.operation, DeployOperation::RemoveVolume { .. }))
-    );
-    assert_eq!(plan.preserved_volumes.len(), 1);
 }

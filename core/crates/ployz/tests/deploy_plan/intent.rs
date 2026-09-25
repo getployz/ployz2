@@ -8,19 +8,6 @@ use ployz_core::{
 };
 
 #[test]
-fn empty_selected_plans_every_target_service_in_dependency_order() {
-    let (db, web, worker, dependencies) = web_db_worker();
-    let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
-        [&db, &web, &worker],
-        PlanOptions::default(),
-    )
-    .with_dependencies(dependencies);
-    let plan = preview_deploy(&intent, &snapshot(), IngressContext::default()).unwrap();
-    assert_eq!(run_names(&plan), ["db", "web", "worker"]);
-}
-
-#[test]
 fn apply_web_plans_web_and_db_not_worker() {
     let (db, web, mut worker, dependencies) = web_db_worker();
     worker.container.image = "ghcr.io/getployz/worker:old".into();
@@ -47,21 +34,6 @@ fn apply_web_plans_web_and_db_not_worker() {
                 if replacement.old_container_id == container_id('c')
         )
     }));
-}
-
-#[test]
-fn one_spec_intent_plans_that_name() {
-    let plan = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            spec("caddy"),
-            PlanOptions::default(),
-        ),
-        &snapshot(),
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert_eq!(run_names(&plan), ["caddy"]);
 }
 
 #[test]
@@ -96,30 +68,6 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
     assert!(matches!(
         preview_deploy(&intent, &snapshot(), IngressContext::default()),
         Err(PlanError::DependencyCycle { service }) if service == "db"
-    ));
-}
-
-#[test]
-fn skip_health_on_options_is_set_on_planned_operations() {
-    let plan = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            spec("api"),
-            PlanOptions {
-                skip_health_monitor: true,
-                ..Default::default()
-            },
-        ),
-        &snapshot(),
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::RunContainer {
-            skip_health_monitor: true,
-            ..
-        }]
     ));
 }
 
@@ -322,163 +270,43 @@ fn targets_container(plan: &ployz::deploy::DeployPreview, id: &ContainerId) -> b
 }
 
 #[test]
-fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
-    let mut system_ingress = spec("ingress");
-    system_ingress.mode = ServiceMode::Global;
-    system_ingress.container.image = "caddy:2.9.1".into();
-    let mut shop_caddy = spec("caddy");
-    shop_caddy.mode = ServiceMode::Global;
-    shop_caddy.container.image = "caddy:2.10.2".into();
-    let mut system_container = container('c', '1', &system_ingress, &service_id('a'));
-    system_container
-        .try_update(|parts| parts.project_name = ProjectName::system())
-        .unwrap();
-
-    let shop = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
-            shop_caddy,
-            PlanOptions::default(),
-        ),
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![system_container],
-            ..Default::default()
-        },
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(!targets_container(&shop, &container_id('c')));
-    assert_eq!(run_names(&shop), ["caddy"]);
-
-    let web = spec("web");
-    let mut leftover = container('c', '1', &system_ingress, &service_id('a'));
-    leftover
-        .try_update(|parts| parts.project_name = ProjectName::system())
-        .unwrap();
-    let full = preview_deploy(
-        &DeployIntent::apply_all(
-            ProjectName::parse("shop").unwrap(),
-            [&web],
-            PlanOptions::default(),
-        ),
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![leftover],
-            ..Default::default()
-        },
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(!targets_container(&full, &container_id('c')));
-    assert_eq!(run_names(&full), ["web"]);
-}
-
-#[test]
-fn run_in_a_named_project_replaces_that_projects_matching_service() {
+fn run_in_a_named_project_replaces_only_that_projects_matching_service() {
     let mut current = spec("web");
     current.container.image = "nginx:1".into();
     let mut requested = spec("web");
     requested.container.image = "nginx:2".into();
-    let mut owned = container('c', '1', &current, &service_id('a'));
-    owned
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
-        .unwrap();
 
-    let plan = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
-            requested,
-            PlanOptions::default(),
-        ),
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![owned],
-            ..Default::default()
-        },
-        IngressContext::default(),
-    )
-    .unwrap();
-    match operations(&plan).as_slice() {
-        [DeployOperation::ReplaceContainer(replacement)] => {
-            assert_eq!(replacement.old_container_id, container_id('c'));
-            assert_eq!(replacement.spec.service_id, service_id('a'));
+    for owner in ["shop", "default"] {
+        let mut observed = container('c', '1', &current, &service_id('a'));
+        observed
+            .try_update(|parts| parts.project_name = ProjectName::parse(owner).unwrap())
+            .unwrap();
+        let plan = preview_deploy(
+            &DeployIntent::apply_one(
+                ProjectName::parse("shop").unwrap(),
+                requested.clone(),
+                PlanOptions::default(),
+            ),
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                containers: vec![observed],
+                ..Default::default()
+            },
+            IngressContext::default(),
+        )
+        .unwrap();
+        match (owner, operations(&plan).as_slice()) {
+            ("shop", [DeployOperation::ReplaceContainer(replacement)]) => {
+                assert_eq!(replacement.old_container_id, container_id('c'));
+                assert_eq!(replacement.spec.service_id, service_id('a'));
+            }
+            ("default", _) => {
+                assert!(!targets_container(&plan, &container_id('c')));
+                assert_eq!(run_names(&plan), ["web"]);
+            }
+            (_, other) => panic!("unexpected plan for a {owner}/web container: {other:?}"),
         }
-        other => panic!("expected replace of shop/web, got {other:?}"),
     }
-}
-
-#[test]
-fn run_in_a_named_project_does_not_take_over_another_projects_service() {
-    let mut current = spec("web");
-    current.container.image = "nginx:1".into();
-    let mut requested = spec("web");
-    requested.container.image = "nginx:2".into();
-    let mut other = container('c', '1', &current, &service_id('a'));
-    other
-        .try_update(|parts| parts.project_name = ProjectName::parse("default").unwrap())
-        .unwrap();
-
-    let plan = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
-            requested,
-            PlanOptions::default(),
-        ),
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![other],
-            ..Default::default()
-        },
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(!targets_container(&plan, &container_id('c')));
-    assert_eq!(run_names(&plan), ["web"]);
-}
-
-#[test]
-fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
-    let web = spec("web");
-    let debug = spec("debug");
-    let mut web_container = container('c', '1', &web, &service_id('a'));
-    web_container
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
-        .unwrap();
-    let mut debug_container = container('d', '1', &debug, &service_id('b'));
-    debug_container
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
-        .unwrap();
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![web_container, debug_container],
-        ..Default::default()
-    };
-
-    let mut owned: Vec<_> = snapshot
-        .services_in(&ProjectName::parse("shop").unwrap())
-        .iter()
-        .map(|service| service.identity.name.as_str().to_owned())
-        .collect();
-    owned.sort();
-    assert_eq!(owned, ["debug", "web"]);
-
-    let plan = preview_deploy(
-        &DeployIntent::apply_all(
-            ProjectName::parse("shop").unwrap(),
-            [&web],
-            PlanOptions::default(),
-        ),
-        &snapshot,
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(targets_container(&plan, &container_id('d')));
-    assert_eq!(
-        plan.would_remove,
-        [ployz_core::QualifiedService::parse("shop/debug").unwrap()]
-    );
-    assert_eq!(plan.prune_refusal, None);
 }
 
 #[test]

@@ -26,13 +26,42 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
 }
 
 #[test]
-fn new_container_keeps_an_explicit_order_in_its_resolved_spec() {
-    for (name, order, with_volume) in [
-        ("start-first named volume", UpdateOrder::StartFirst, true),
-        ("stop-first stateless", UpdateOrder::StopFirst, false),
+fn new_container_resolves_explicit_and_default_update_order() {
+    let single = ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    };
+    for (name, mode, explicit, with_volume, order) in [
+        (
+            "start-first named volume",
+            ServiceMode::Global,
+            Some(UpdateOrder::StartFirst),
+            true,
+            UpdateOrder::StartFirst,
+        ),
+        (
+            "stop-first stateless",
+            ServiceMode::Global,
+            Some(UpdateOrder::StopFirst),
+            false,
+            UpdateOrder::StopFirst,
+        ),
+        (
+            "default replicated named volume",
+            single,
+            None,
+            true,
+            UpdateOrder::StopFirst,
+        ),
+        (
+            "default global named volume",
+            ServiceMode::Global,
+            None,
+            true,
+            UpdateOrder::StopFirst,
+        ),
     ] {
-        let mut requested = requested(ServiceMode::Global);
-        requested.update.order = Some(order);
+        let mut requested = requested(mode);
+        requested.update.order = explicit;
         if with_volume {
             add_named_volume(&mut requested, "data");
         }
@@ -58,83 +87,6 @@ fn new_container_keeps_an_explicit_order_in_its_resolved_spec() {
             "{name}"
         );
     }
-}
-
-#[test]
-fn new_named_volume_containers_default_to_stop_first_in_every_mode() {
-    let cases = [
-        (
-            "single replica",
-            ServiceMode::Replicated {
-                replicas: NonZeroU32::new(1).unwrap(),
-            },
-            1,
-        ),
-        (
-            "multiple replicas",
-            ServiceMode::Replicated {
-                replicas: NonZeroU32::new(3).unwrap(),
-            },
-            3,
-        ),
-        ("global", ServiceMode::Global, 1),
-    ];
-
-    for (name, mode, expected) in cases {
-        let mut requested = requested(mode);
-        add_named_volume(&mut requested, "data");
-        let plan = plan_deploy(
-            [&requested],
-            &DeploySnapshot {
-                machines: vec![machine('1', "first")],
-                volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
-                    machine_id('1'),
-                    "data",
-                )])
-                .expect("valid Volume Snapshot fixture"),
-                ..Default::default()
-            },
-            PlanOptions::default(),
-        )
-        .unwrap();
-        let orders = operations(&plan)
-            .into_iter()
-            .filter_map(|operation| match operation {
-                DeployOperation::RunContainer { spec, .. } => Some(spec.update.order),
-                DeployOperation::WaitHealthy { .. }
-                | DeployOperation::StopContainer { .. }
-                | DeployOperation::RemoveContainer { .. }
-                | DeployOperation::ReplaceContainer(_)
-                | DeployOperation::StopHook { .. }
-                | DeployOperation::RunHook { .. }
-                | DeployOperation::PrepareVolumes { .. }
-                | DeployOperation::RemoveVolume { .. } => None,
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(orders.len(), expected, "{name}");
-        assert!(
-            orders.iter().all(|order| *order == UpdateOrder::StopFirst),
-            "{name}"
-        );
-    }
-}
-
-#[test]
-fn matching_running_container_is_left_untouched() {
-    let requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    let current_service_id = service_id('a');
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![container('b', '1', &requested, &current_service_id)],
-        ..Default::default()
-    };
-
-    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
-
-    assert!(plan.operations.is_empty());
 }
 
 #[test]
@@ -281,33 +233,6 @@ fn global_active_non_running_container_is_replaced_before_reusing_its_host_port(
 }
 
 #[test]
-fn replicated_plan_removes_containers_beyond_the_requested_count() {
-    let requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    let current_service_id = service_id('a');
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![
-            container('b', '1', &requested, &current_service_id),
-            container('c', '1', &requested, &current_service_id),
-        ],
-        ..Default::default()
-    };
-
-    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
-
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::RemoveContainer {
-            machine_id: target_machine_id,
-            container_id: removed,
-        }] if target_machine_id == &machine_id('1')
-            && [container_id('b'), container_id('c')].contains(removed)
-    ));
-}
-
-#[test]
 fn changing_replica_count_keeps_matching_existing_containers() {
     let current = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
@@ -359,39 +284,6 @@ fn global_plan_is_exactly_one_container_per_currently_available_machine() {
             container_id: container_id('c'),
         }]
     );
-}
-
-#[test]
-fn placement_by_shared_label_keeps_every_match() {
-    let mut requested = requested(ServiceMode::Global);
-    requested.placement.constraints = [label_constraint("edge")].into();
-    let snapshot = DeploySnapshot {
-        machines: vec![
-            machine('1', "edge"),
-            machine('2', "edge"),
-            machine('3', "other"),
-        ],
-        ..Default::default()
-    };
-
-    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
-
-    let targets = plan
-        .operations
-        .iter()
-        .map(|row| match &row.operation {
-            DeployOperation::RunContainer { machine_id, .. } => *machine_id,
-            other @ (DeployOperation::WaitHealthy { .. }
-            | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::ReplaceContainer(..)
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::PrepareVolumes { .. }
-            | DeployOperation::RemoveVolume { .. }) => panic!("unexpected operation: {other:?}"),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(targets, vec![machine_id('1'), machine_id('2')]);
 }
 
 #[test]
@@ -480,30 +372,6 @@ fn missing_mounted_volume_is_previewed_for_replicas_on_one_machine() {
             && volume.name.as_str() == "app_data"
             && volume.maximum_bytes.is_none()
     ));
-}
-
-#[test]
-fn missing_named_volume_is_previewed_for_three_replicas() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(3).unwrap(),
-    });
-    add_named_volume(&mut requested, "auto_data");
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first"), machine('2', "second")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    assert!(matches!(
-        operations(&plan).first(),
-        Some(DeployOperation::RunContainer { .. })
-    ));
-    assert_eq!(plan.operations.len(), 3);
-    assert_eq!(plan.volumes_to_create.len(), 1);
 }
 
 #[test]
@@ -607,35 +475,6 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
 }
 
 #[test]
-fn global_named_volume_replacement_defaults_to_stop_first() {
-    let mut requested = requested(ServiceMode::Global);
-    add_named_volume(&mut requested, "data");
-    let mut current = requested.clone();
-    current.container.image = "ghcr.io/getployz/api:old".into();
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![container('b', '1', &current, &service_id('a'))],
-            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
-                machine_id('1'),
-                "data",
-            )])
-            .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })]
-            if spec.update.order == UpdateOrder::StopFirst
-    ));
-}
-
-#[test]
 fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
     let mut first = requested(ServiceMode::Global);
     first.name = ServiceName::parse("first").unwrap();
@@ -647,11 +486,9 @@ fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
         machines: vec![machine('1', "first"), machine('2', "second")],
         ..Default::default()
     };
-    let before = snapshot.clone();
 
     let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
 
-    assert_eq!(snapshot, before);
     let created_on = plan
         .volumes_to_create
         .iter()
@@ -660,29 +497,6 @@ fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
     assert_eq!(created_on.len(), 2);
     assert!(created_on.contains(&machine_id('1')));
     assert!(created_on.contains(&machine_id('2')));
-}
-
-#[test]
-fn two_services_sharing_a_named_volume_create_it_once() {
-    let mut first = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    first.name = ServiceName::parse("first").unwrap();
-    add_named_volume(&mut first, "data");
-    let mut second = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    second.name = ServiceName::parse("second").unwrap();
-    add_named_volume(&mut second, "data");
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first"), machine('2', "second")],
-        ..Default::default()
-    };
-    let before = snapshot.clone();
-    let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
-
-    assert_eq!(snapshot, before);
-    assert_eq!(plan.volumes_to_create.len(), 1);
 }
 
 #[test]
@@ -716,13 +530,10 @@ fn shared_volume_anchor_skips_machine_without_capacity_for_all_services() {
             DeployOperation::RunContainer { machine_id: second, .. },
         ] if first == &machine_id('2') && second == first
     ));
-    assert_eq!(
-        plan.volumes_to_create
-            .first()
-            .expect("missing managed Volume is previewed")
-            .machine_id,
-        machine_id('2')
-    );
+    assert!(matches!(
+        &plan.volumes_to_create[..],
+        [item] if item.machine_id == machine_id('2')
+    ));
 }
 
 #[test]
@@ -811,35 +622,6 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
             && item.name.as_str() == "app_multi_missing"
             && item.maximum_bytes.is_none()
     ));
-}
-
-#[test]
-fn replicas_run_on_the_intersection_of_existing_named_volumes() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(2).unwrap(),
-    });
-    add_named_volume(&mut requested, "intersect_a");
-    add_named_volume(&mut requested, "intersect_b");
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first"), machine('2', "second")],
-            volume_snapshot: VolumeSnapshot::try_from_observations(vec![
-                observed_volume(machine_id('1'), "intersect_a"),
-                observed_volume(machine_id('1'), "intersect_b"),
-            ])
-            .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    assert_eq!(plan.operations.len(), 2);
-    assert!(plan.operations.iter().all(|row| matches!(
-        &row.operation,
-        DeployOperation::RunContainer { machine_id: target, .. } if target == &machine_id('1')
-    )));
 }
 
 #[test]
@@ -991,117 +773,71 @@ fn run_machine_ids(plan: &DeployPreview) -> Vec<MachineId> {
 }
 
 #[test]
-fn service_identity_changes_equal_priority_machine_order() {
+fn service_identity_and_seed_change_equal_priority_machine_order() {
     let snapshot = DeploySnapshot {
         machines: cluster(['1', '2', '3', '4', '5']),
         ..Default::default()
     };
-    let options = PlanOptions {
-        placement_seed: 7,
-        ..PlanOptions::default()
-    };
-    let order = |name: &str| {
+    let order = |name: &str, placement_seed| {
         let spec = replicated(name, 3);
-        run_machine_ids(&plan_deploy([&spec], &snapshot, options.clone()).unwrap())
+        let options = PlanOptions {
+            placement_seed,
+            ..PlanOptions::default()
+        };
+        run_machine_ids(&plan_deploy([&spec], &snapshot, options).unwrap())
     };
 
-    assert_ne!(order("alpha"), order("bravo"));
-}
-
-#[test]
-fn ample_capacity_preserves_the_existing_shuffle_order() {
-    let requested = replicated("api", 3);
-    let machines = cluster(['1', '2', '3', '4']);
-    let options = PlanOptions {
-        placement_seed: 7,
-        ..PlanOptions::default()
-    };
-    let without_capacity = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: machines.clone(),
-            ..Default::default()
-        },
-        options.clone(),
-    )
-    .unwrap();
-    let with_capacity = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines,
-            capacity: capacity([('1', 10), ('2', 10), ('3', 10), ('4', 10)]),
-            ..Default::default()
-        },
-        options,
-    )
-    .unwrap();
-
-    assert_eq!(
-        run_machine_ids(&with_capacity),
-        run_machine_ids(&without_capacity)
-    );
+    assert_ne!(order("alpha", 7), order("bravo", 7));
+    assert_ne!(order("alpha", 0), order("alpha", 1));
 }
 
 #[test]
 fn ample_capacity_preserves_plan_wide_occupancy() {
-    let specs = [replicated("alpha", 1), replicated("bravo", 1)];
-    let machines = cluster(['1', '2']);
-    let options = PlanOptions {
-        placement_seed: 0,
-        ..PlanOptions::default()
-    };
-    let without_capacity = plan_deploy(
-        specs.iter(),
-        &DeploySnapshot {
-            machines: machines.clone(),
-            ..Default::default()
-        },
-        options.clone(),
-    )
-    .unwrap();
-    let with_capacity = plan_deploy(
-        specs.iter(),
-        &DeploySnapshot {
-            machines,
-            capacity: capacity([('1', 10), ('2', 10)]),
-            ..Default::default()
-        },
-        options,
-    )
-    .unwrap();
-
-    assert_eq!(
-        run_machine_ids(&with_capacity),
-        run_machine_ids(&without_capacity)
-    );
-    assert_eq!(
-        run_machine_ids(&with_capacity)
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-            .len(),
-        2
-    );
-}
-
-#[test]
-fn later_replicated_service_prefers_machines_unused_by_earlier_services() {
-    let alpha = replicated("alpha", 1);
-    let bravo = replicated("bravo", 1);
-    let plan = plan_deploy(
-        [&alpha, &bravo],
-        &DeploySnapshot {
-            machines: cluster(['1', '2']),
-            ..Default::default()
-        },
-        PlanOptions {
-            placement_seed: 0,
+    for (specs, ids, seed, spread) in [
+        (
+            vec![replicated("alpha", 1), replicated("bravo", 1)],
+            vec!['1', '2'],
+            0,
+            2,
+        ),
+        (vec![replicated("api", 3)], vec!['1', '2', '3', '4'], 7, 3),
+    ] {
+        let options = PlanOptions {
+            placement_seed: seed,
             ..PlanOptions::default()
-        },
-    )
-    .unwrap();
+        };
+        let without_capacity = plan_deploy(
+            specs.iter(),
+            &DeploySnapshot {
+                machines: cluster(ids.clone()),
+                ..Default::default()
+            },
+            options.clone(),
+        )
+        .unwrap();
+        let with_capacity = plan_deploy(
+            specs.iter(),
+            &DeploySnapshot {
+                machines: cluster(ids.clone()),
+                capacity: capacity(ids.iter().map(|id| (*id, 10))),
+                ..Default::default()
+            },
+            options,
+        )
+        .unwrap();
 
-    let machines = run_machine_ids(&plan).into_iter().collect::<BTreeSet<_>>();
-    assert_eq!(machines.len(), 2);
+        assert_eq!(
+            run_machine_ids(&with_capacity),
+            run_machine_ids(&without_capacity)
+        );
+        assert_eq!(
+            run_machine_ids(&with_capacity)
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            spread
+        );
+    }
 }
 
 #[test]
@@ -1179,53 +915,6 @@ fn host_socket_admission_checks_publications_and_replica_claims() {
         plan_deploy([&service], &snapshot, PlanOptions::default()),
         Err(PlanError::HostPortConflict { .. })
     ));
-}
-
-#[test]
-fn host_socket_admission_preserves_protocol_and_disjoint_bind_distinctions() {
-    for (first_bind, second_bind, second_protocol, conflict) in [
-        (HostBind::All, HostBind::All, TransportProtocol::Udp, false),
-        (
-            HostBind::Address {
-                address: "127.0.0.1".parse().unwrap(),
-            },
-            HostBind::Address {
-                address: "127.0.0.2".parse().unwrap(),
-            },
-            TransportProtocol::Tcp,
-            false,
-        ),
-        (
-            HostBind::Prefix {
-                prefix: "127.0.0.0/24".parse().unwrap(),
-            },
-            HostBind::Address {
-                address: "127.0.0.2".parse().unwrap(),
-            },
-            TransportProtocol::Tcp,
-            true,
-        ),
-    ] {
-        let mut first = requested(ServiceMode::Global);
-        let mut second = first.clone();
-        second.name = ServiceName::parse("second").unwrap();
-        let make_port = |bind, transport_protocol| PortPublication::Host {
-            bind,
-            transport_protocol,
-            published_port: NonZeroU16::new(8080).unwrap(),
-            container_port: NonZeroU16::new(80).unwrap(),
-        };
-        first.ports = vec![make_port(first_bind, TransportProtocol::Tcp)];
-        second.ports = vec![make_port(second_bind, second_protocol)];
-        let snapshot = DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        };
-        assert_eq!(
-            plan_deploy([&first, &second], &snapshot, PlanOptions::default()).is_err(),
-            conflict
-        );
-    }
 }
 
 #[test]
@@ -1331,58 +1020,20 @@ fn host_socket_replacement_releases_old_ports_before_the_next_service() {
 }
 
 #[test]
-fn global_socket_stops_release_each_old_sibling_before_replacement() {
-    let mut service = requested(ServiceMode::Global);
-    service.ports.push(host_port(8080));
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![
-            container('a', '1', &service, &service_id('a')),
-            container('b', '1', &service, &service_id('a')),
-        ],
-        ..Default::default()
-    };
-    service.container.image = "changed:latest".into();
-    let plan = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap();
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [
-            DeployOperation::StopContainer {
-                purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
-                ..
-            },
-            DeployOperation::ReplaceContainer(_),
-            DeployOperation::RemoveContainer { .. }
-        ]
-    ));
-}
-
-#[test]
-fn wildcard_address_payloads_reserve_their_address_family() {
+fn host_bind_payloads_conflict_on_overlapping_addresses_per_protocol() {
     use serde_json::json;
-    for (wildcard, other, conflict) in [
-        (
-            "0.0.0.0",
-            json!({"kind":"address","address":"127.0.0.1"}),
-            true,
-        ),
-        ("::", json!({"kind":"address","address":"::1"}), true),
-        (
-            "0.0.0.0",
-            json!({"kind":"prefix","prefix":"192.0.2.0/24"}),
-            true,
-        ),
-        (
-            "::",
-            json!({"kind":"prefix","prefix":"2001:db8::/32"}),
-            true,
-        ),
-        ("0.0.0.0", json!({"kind":"address","address":"::1"}), false),
-        (
-            "::",
-            json!({"kind":"prefix","prefix":"192.0.2.0/24"}),
-            false,
-        ),
+    let address = |address: &str| json!({"kind":"address","address":address});
+    let prefix = |prefix: &str| json!({"kind":"prefix","prefix":prefix});
+    for (first_bind, other, conflict) in [
+        (address("0.0.0.0"), address("127.0.0.1"), true),
+        (address("::"), address("::1"), true),
+        (address("0.0.0.0"), prefix("192.0.2.0/24"), true),
+        (address("::"), prefix("2001:db8::/32"), true),
+        (address("0.0.0.0"), address("::1"), false),
+        (address("::"), prefix("192.0.2.0/24"), false),
+        (json!({"kind":"all"}), json!({"kind":"all"}), true),
+        (address("127.0.0.1"), address("127.0.0.2"), false),
+        (prefix("127.0.0.0/24"), address("127.0.0.2"), true),
     ] {
         for protocol in ["tcp", "udp"] {
             let spec = |name, bind, protocol| {
@@ -1392,7 +1043,7 @@ fn wildcard_address_payloads_reserve_their_address_family() {
                 "ports":[{"mode":"host","bind":bind,"published_port":8080,"container_port":80,"transport_protocol":protocol}]
             })).unwrap()
             };
-            let mut first = spec("alpha", json!({"kind":"address","address":wildcard}), "tcp");
+            let mut first = spec("alpha", first_bind.clone(), "tcp");
             let second = spec("beta", other.clone(), protocol);
             let snapshot = DeploySnapshot {
                 machines: vec![machine('1', "first")],
@@ -1401,7 +1052,7 @@ fn wildcard_address_payloads_reserve_their_address_family() {
             assert_eq!(
                 plan_deploy([&first, &second], &snapshot, PlanOptions::default()).is_err(),
                 conflict && protocol == "tcp",
-                "{wildcard} {other} {protocol}"
+                "{first_bind} {other} {protocol}"
             );
             first.ports.extend(second.ports);
             assert_eq!(

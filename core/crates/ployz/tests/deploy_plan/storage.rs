@@ -168,9 +168,16 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
         for service in &mut services {
             service.placement.constraints = [label_constraint("empty")].into();
         }
+        // Must not create empty data on a different Machine.
+        let error = preview_deploy(&intent(&services), &snapshot, IngressContext::default())
+            .unwrap_err()
+            .to_string();
         assert!(
-            preview_deploy(&intent(&services), &snapshot, IngressContext::default()).is_err(),
-            "must not create empty data on a different Machine"
+            error.contains(
+                "no machines available that satisfy all constraints: Docker Volume 'app_data' \
+                 is already on Machine 'owner', which conflicts with placement constraints"
+            ),
+            "{error}"
         );
     }
 }
@@ -211,7 +218,15 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
         for service in &mut targeted.target {
             service.placement.constraints = [label_constraint("empty")].into();
         }
-        assert!(preview_deploy(&targeted, &snapshot, IngressContext::default()).is_err());
+        assert_eq!(
+            preview_deploy(&targeted, &snapshot, IngressContext::default())
+                .unwrap_err()
+                .into_rpc_error()
+                .details
+                .get("code")
+                .unwrap(),
+            "storage_capacity_unknown"
+        );
     }
     // A known local dataset may still be reused despite an unrelated inspection failure.
     let known_id = snapshot.machines.last().unwrap().machine.id;

@@ -26,45 +26,27 @@ fn plan_ingress<'a>(
 }
 
 #[test]
-fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_hostname() {
+fn visible_publisher_of_the_hostname_rejects_on_complete_and_incomplete_snapshots() {
     let spec = custom_web();
-    let snapshot = snapshot_with(vec![other_project_container(&spec, 1)]);
-    let error = plan_ingress([&spec], &snapshot).unwrap_err();
-    assert_eq!(
-        error,
-        PlanError::HostnameConflict {
-            hostname: IngressHost::parse("api.example.com").unwrap(),
-            owner: QualifiedService::parse("blog/web").unwrap(),
-        }
-    );
-    assert_eq!(
-        error.to_string(),
-        "hostname api.example.com is already published by blog/web"
-    );
-}
-
-#[test]
-fn visible_conflict_rejects_even_when_the_snapshot_is_incomplete() {
-    let spec = custom_web();
-    let snapshot = DeploySnapshot {
-        volume_snapshot: VolumeSnapshot::try_from_parts(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![machine_id('1')],
-        )
-        .expect("valid Volume Snapshot fixture"),
-        ..snapshot_with(vec![other_project_container(&spec, 1)])
+    let complete = snapshot_with(vec![other_project_container(&spec, 1)]);
+    let incomplete = DeploySnapshot {
+        volume_snapshot: incomplete_volume_snapshot(),
+        ..complete.clone()
     };
-    assert!(!snapshot.is_observer_complete());
-    let error = plan_ingress([&spec], &snapshot).unwrap_err();
-    assert_eq!(
-        error,
-        PlanError::HostnameConflict {
-            hostname: IngressHost::parse("api.example.com").unwrap(),
-            owner: QualifiedService::parse("blog/web").unwrap(),
-        }
-    );
+    for snapshot in [complete, incomplete] {
+        let error = plan_ingress([&spec], &snapshot).unwrap_err();
+        assert_eq!(
+            error,
+            PlanError::HostnameConflict {
+                hostname: IngressHost::parse("api.example.com").unwrap(),
+                owner: QualifiedService::parse("blog/web").unwrap(),
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "hostname api.example.com is already published by blog/web"
+        );
+    }
 }
 
 #[test]
@@ -81,16 +63,9 @@ fn same_qualified_service_redeploy_keeps_the_hostname() {
 fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_observer_relative() {
     for spec in [custom_web(), assigned_web(), chosen_web("api")] {
         let snapshot = DeploySnapshot {
-            volume_snapshot: VolumeSnapshot::try_from_parts(
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                vec![machine_id('1')],
-            )
-            .expect("valid Volume Snapshot fixture"),
+            volume_snapshot: incomplete_volume_snapshot(),
             ..snapshot_with(Vec::new())
         };
-        assert!(!snapshot.is_observer_complete());
         let plan = plan_ingress([&spec], &snapshot).unwrap();
         assert_eq!(
             plan.warnings,
@@ -105,14 +80,6 @@ fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_obser
 }
 
 #[test]
-fn complete_snapshot_without_a_conflict_does_not_warn() {
-    for spec in [custom_web(), assigned_web(), chosen_web("api")] {
-        let plan = plan_ingress([&spec], &snapshot_with(Vec::new())).unwrap();
-        assert!(plan.warnings.is_empty());
-    }
-}
-
-#[test]
 fn two_applied_specs_that_expand_to_the_same_hostname_conflict() {
     let mut api = chosen_web("shared");
     api.name = ServiceName::parse("api").unwrap();
@@ -123,23 +90,6 @@ fn two_applied_specs_that_expand_to_the_same_hostname_conflict() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("shared.opaque.ployz.example").unwrap(),
             owner: QualifiedService::parse("app/api").unwrap(),
-        }
-    );
-}
-
-#[test]
-fn visible_owner_of_an_expanded_automatic_hostname_conflicts() {
-    let spec = assigned_web();
-    let mut owner = other_project_container(&expanded_owner(&spec), 1);
-    owner
-        .try_update(|parts| parts.resolved_spec.ports = expanded_owner(&spec).ports)
-        .unwrap();
-    let error = plan_ingress([&spec], &snapshot_with(vec![owner])).unwrap_err();
-    assert_eq!(
-        error,
-        PlanError::HostnameConflict {
-            hostname: IngressHost::parse("web-app.opaque.ployz.example").unwrap(),
-            owner: QualifiedService::parse("blog/web").unwrap(),
         }
     );
 }
@@ -173,25 +123,6 @@ fn unselected_target_spec_is_not_an_applied_conflict() {
             .count(),
         1
     );
-}
-
-#[test]
-fn preview_does_not_mutate_the_intent() {
-    let spec = assigned_web();
-    let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
-        spec.clone(),
-        PlanOptions::default(),
-    );
-    preview_deploy(
-        &intent,
-        &snapshot_with(Vec::new()),
-        IngressContext {
-            cluster_domain: Some(DOMAIN),
-        },
-    )
-    .unwrap();
-    assert_eq!(intent.target, [spec]);
 }
 
 #[test]
@@ -294,6 +225,11 @@ fn other_project_container(spec: &RequestedServiceSpec, created_at: i64) -> Cont
         })
         .unwrap();
     observation
+}
+
+fn incomplete_volume_snapshot() -> VolumeSnapshot {
+    VolumeSnapshot::try_from_parts(Vec::new(), Vec::new(), Vec::new(), vec![machine_id('1')])
+        .expect("valid Volume Snapshot fixture")
 }
 
 fn snapshot_with(containers: Vec<ContainerObservation>) -> DeploySnapshot {

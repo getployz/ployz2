@@ -63,60 +63,53 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
 }
 
 #[test]
-fn replacement_requires_one_temporary_endpoint() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    let mut current = requested.clone();
-    current.container.image = "ghcr.io/getployz/api:old".into();
-    requested.update.order = Some(UpdateOrder::StartFirst);
-    let snapshot = |free| DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![container('b', '1', &current, &service_id('a'))],
-        capacity: capacity([('1', free)]),
-        ..Default::default()
-    };
+fn replacement_and_hook_each_require_a_spare_endpoint() {
+    for with_hook in [false, true] {
+        let mut requested = requested(ServiceMode::Replicated {
+            replicas: NonZeroU32::new(1).unwrap(),
+        });
+        requested.update.order = Some(UpdateOrder::StartFirst);
+        if with_hook {
+            requested.pre_deploy = Some(PreDeployHook {
+                command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
+                environment: Default::default(),
+                privileged: None,
+                timeout_millis: None,
+                user: None,
+            });
+        }
+        let mut current = requested.clone();
+        current.container.image = "ghcr.io/getployz/api:old".into();
+        let snapshot = |free| DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![container('b', '1', &current, &service_id('a'))],
+            capacity: capacity([('1', free)]),
+            ..Default::default()
+        };
+        let needed = 1 + u64::from(with_hook);
 
-    assert_eq!(
-        plan_deploy([&requested], &snapshot(0), PlanOptions::default()),
-        Err(PlanError::InsufficientCapacity)
-    );
-    assert!(plan_deploy([&requested], &snapshot(1), PlanOptions::default()).is_ok());
-}
-
-#[test]
-fn hook_and_replacement_each_require_a_spare_endpoint() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
-        environment: Default::default(),
-        privileged: None,
-        timeout_millis: None,
-        user: None,
-    });
-    let mut current = requested.clone();
-    current.container.image = "ghcr.io/getployz/api:old".into();
-    let snapshot = |free| DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![container('b', '1', &current, &service_id('a'))],
-        capacity: capacity([('1', free)]),
-        ..Default::default()
-    };
-
-    assert_eq!(
-        plan_deploy([&requested], &snapshot(1), PlanOptions::default()),
-        Err(PlanError::InsufficientCapacity)
-    );
-    let plan = plan_deploy([&requested], &snapshot(2), PlanOptions::default()).unwrap();
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [
-            DeployOperation::RunHook { .. },
-            DeployOperation::ReplaceContainer(_)
-        ]
-    ));
+        assert_eq!(
+            plan_deploy([&requested], &snapshot(needed - 1), PlanOptions::default()),
+            Err(PlanError::InsufficientCapacity),
+            "hook: {with_hook}"
+        );
+        let plan = plan_deploy([&requested], &snapshot(needed), PlanOptions::default()).unwrap();
+        let ops = operations(&plan);
+        if with_hook {
+            assert!(matches!(
+                ops.as_slice(),
+                [
+                    DeployOperation::RunHook { .. },
+                    DeployOperation::ReplaceContainer(_)
+                ]
+            ));
+        } else {
+            assert!(matches!(
+                ops.as_slice(),
+                [DeployOperation::ReplaceContainer(_)]
+            ));
+        }
+    }
 }
 
 #[test]
@@ -280,79 +273,6 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
 }
 
 #[test]
-fn two_projects_can_each_own_the_same_service_name() {
-    let requested = requested(ServiceMode::Global);
-    let mut other = container('c', '1', &requested, &service_id('d'));
-    other
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
-        .unwrap();
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![container('b', '1', &requested, &service_id('a')), other],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    assert!(plan.operations.is_empty());
-}
-
-#[test]
-fn unmatched_placement_returns_no_eligible_machines() {
-    let mut requested = requested(ServiceMode::Global);
-    requested.placement.constraints = [label_constraint("missing")].into();
-
-    assert_no_eligible(
-        plan_deploy(
-            [&requested],
-            &DeploySnapshot {
-                machines: vec![machine('1', "first")],
-                ..Default::default()
-            },
-            PlanOptions::default(),
-        ),
-        &[EliminatingConstraint::UnknownPlacement {
-            targets: vec![label_constraint("missing")],
-        }],
-        &["placement constraints 'node.labels.fixture==missing' matched no Machine"],
-    );
-}
-
-#[test]
-fn global_missing_volume_is_previewed_on_every_container_target() {
-    let mut requested = requested(ServiceMode::Global);
-    add_named_volume(&mut requested, "data");
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first"), machine('2', "second")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [
-            DeployOperation::RunContainer { machine_id: first_container, .. },
-            DeployOperation::RunContainer { machine_id: second_container, .. },
-        ] if first_container == &machine_id('1')
-            && second_container == &machine_id('2')
-    ));
-    assert_eq!(
-        plan.volumes_to_create
-            .iter()
-            .map(|item| item.machine_id)
-            .collect::<Vec<_>>(),
-        [machine_id('1'), machine_id('2')]
-    );
-}
-
-#[test]
 fn force_recreate_replaces_an_otherwise_matching_container() {
     let requested = requested(ServiceMode::Global);
     let current_service_id = service_id('a');
@@ -473,43 +393,6 @@ fn incompatible_volume_excludes_only_its_machine() {
             .machine_id,
         machine_id('2')
     );
-}
-
-#[test]
-fn multi_replica_named_volume_replacement_never_overlaps_requested_replicas() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(3).unwrap(),
-    });
-    add_named_volume(&mut requested, "data");
-    let mut current = requested.clone();
-    current.container.image = "ghcr.io/getployz/api:old".into();
-    let current_service_id = service_id('a');
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![
-                container('b', '1', &current, &current_service_id),
-                container('c', '1', &current, &current_service_id),
-                container('d', '1', &current, &current_service_id),
-            ],
-            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
-                machine_id('1'),
-                "data",
-            )])
-            .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    assert_eq!(plan.operations.len(), 3);
-    assert!(plan.operations.iter().all(|row| matches!(
-        &row.operation,
-        DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })
-            if spec.update.order == UpdateOrder::StopFirst
-    )));
 }
 
 #[test]

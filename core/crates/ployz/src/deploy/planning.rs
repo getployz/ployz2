@@ -183,7 +183,7 @@ pub(super) fn prepare_project_removal(
 /// Preserve previews are empty. Destroy names each `RemoveVolume`. Completeness
 /// is the caller's check; this listing is not a Cluster view.
 #[must_use]
-pub fn data_loss_from_plan(preview: &DeployPreview) -> ObservedDataLoss {
+pub(super) fn data_loss_from_plan(preview: &DeployPreview) -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: preview
             .operations

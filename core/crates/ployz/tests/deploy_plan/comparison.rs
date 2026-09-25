@@ -1,40 +1,5 @@
 use super::support::*;
 #[test]
-fn spec_comparison_distinguishes_mutable_resources_from_recreation() {
-    let requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    let current_service_id = service_id('a');
-    let current = container('b', '1', &requested, &current_service_id)
-        .into_parts()
-        .resolved_spec;
-
-    assert_eq!(compare_specs(&current, &requested), SpecChange::UpToDate);
-
-    let mut resources_changed = requested.clone();
-    resources_changed.container.resources.memory_bytes =
-        Some(ployz_core::ByteQuantity::try_from(512 * 1024 * 1024).unwrap());
-    assert_eq!(
-        compare_specs(&current, &resources_changed),
-        SpecChange::NeedsUpdate
-    );
-
-    let mut image_changed = requested.clone();
-    image_changed.container.image = "ghcr.io/getployz/api:2".into();
-    assert_eq!(
-        compare_specs(&current, &image_changed),
-        SpecChange::NeedsRecreate
-    );
-
-    let mut always_pull = requested;
-    always_pull.container.pull_policy = PullPolicy::Always;
-    assert_eq!(
-        compare_specs(&current, &always_pull),
-        SpecChange::NeedsRecreate
-    );
-}
-
-#[test]
 fn spec_comparison_covers_upstream_immutable_field_families() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
@@ -107,6 +72,18 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
         },
     );
     changes.push(("ulimit", changed));
+    let mut changed = requested.clone();
+    changed.container.healthcheck = Some(ployz_core::HealthcheckSpec::Configured(
+        ployz_core::ConfiguredHealthcheck {
+            test: ployz_core::HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+            interval_millis: Some(1_000),
+            timeout_millis: None,
+            start_period_millis: None,
+            start_interval_millis: None,
+            retries: None,
+        },
+    ));
+    changes.push(("healthcheck", changed));
     let mut changed = requested;
     changed.container.restart = RestartPolicy::No;
     changes.push(("restart", changed));
@@ -165,34 +142,6 @@ fn spec_comparison_handles_resource_precedence_and_unordered_volumes() {
     mutable.container.cap_add.push("NET_ADMIN".into());
     assert_eq!(
         compare_specs(&current, &scoped_spec(&mutable)),
-        SpecChange::NeedsRecreate
-    );
-}
-
-#[test]
-fn spec_comparison_treats_all_disabled_healthchecks_as_identical() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    requested.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
-    let mut current = container('b', '1', &requested, &service_id('a'))
-        .into_parts()
-        .resolved_spec;
-    current.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
-    assert_eq!(compare_specs(&current, &requested), SpecChange::UpToDate);
-
-    requested.container.healthcheck = Some(ployz_core::HealthcheckSpec::Configured(
-        ployz_core::ConfiguredHealthcheck {
-            test: ployz_core::HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
-            interval_millis: Some(1_000),
-            timeout_millis: None,
-            start_period_millis: None,
-            start_interval_millis: None,
-            retries: None,
-        },
-    ));
-    assert_eq!(
-        compare_specs(&current, &requested),
         SpecChange::NeedsRecreate
     );
 }

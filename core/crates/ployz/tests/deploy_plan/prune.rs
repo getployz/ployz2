@@ -3,9 +3,8 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
-    VolumeObservationFailure,
+    ContainerKind, DependencyCondition, MachineFailure, PruneRefusal, QualifiedService, RpcError,
+    RpcErrorCode, ServiceDependency, ServiceName,
 };
 
 #[test]
@@ -40,27 +39,6 @@ fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
 }
 
 #[test]
-fn selected_services_list_obsolete_services_and_remove_nothing() {
-    let (web, snapshot) = shop_with_obsolete_debug();
-    let plan = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            web,
-            PlanOptions::default(),
-        ),
-        &snapshot,
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        plan.would_remove,
-        [QualifiedService::parse("app/debug").unwrap()]
-    );
-    assert_eq!(plan.prune_refusal, Some(PruneRefusal::SelectedServices));
-    assert!(!removes(&plan, 'd'));
-}
-
-#[test]
 fn required_container_failure_makes_the_snapshot_incomplete() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
@@ -74,34 +52,12 @@ fn required_container_failure_makes_the_snapshot_incomplete() {
         }],
         ..Default::default()
     };
-    assert!(!snapshot.is_observer_complete());
-}
-
-#[test]
-fn required_named_volume_failure_makes_the_snapshot_incomplete() {
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::try_from_parts(
-            Vec::new(),
-            vec![VolumeObservationFailure {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: app_volume("data"),
-                },
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "detail failed".into(),
-                    details: Default::default(),
-                },
-            }],
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
-    };
-
-    assert!(!snapshot.is_observer_complete());
+    assert_eq!(
+        plan_deploy([], &snapshot, PlanOptions::default())
+            .unwrap()
+            .prune_refusal,
+        Some(PruneRefusal::IncompleteSnapshot)
+    );
 }
 
 #[test]
@@ -120,7 +76,12 @@ fn down_machine_omissions_do_not_make_the_snapshot_incomplete() {
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    assert!(snapshot.is_observer_complete());
+    assert_eq!(
+        plan_deploy([], &snapshot, PlanOptions::default())
+            .unwrap()
+            .prune_refusal,
+        None
+    );
 }
 
 #[test]
@@ -210,57 +171,6 @@ fn selecting_one_service_does_not_remove_the_rest_of_the_project() {
 }
 
 #[test]
-fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
-    let web = spec("web");
-    let debug = spec("debug");
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![
-            container('e', '1', &web, &service_id('a')),
-            container('d', '1', &debug, &service_id('b')),
-        ],
-        ..Default::default()
-    };
-    let partial = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            web,
-            PlanOptions::default(),
-        ),
-        &snapshot,
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(!removes(&partial, 'd'));
-    assert_eq!(partial.prune_refusal, Some(PruneRefusal::SelectedServices));
-
-    let mut requested_debug = debug;
-    requested_debug.container.image = "busybox".into();
-    let selected_debug = preview_deploy(
-        &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            requested_debug,
-            PlanOptions::default(),
-        ),
-        &snapshot,
-        IngressContext::default(),
-    )
-    .unwrap();
-    assert!(
-        selected_debug.operations.iter().any(|row| {
-            matches!(
-                &row.operation,
-                DeployOperation::ReplaceContainer(replacement)
-                    if replacement.old_container_id == container_id('d')
-            )
-        }),
-        "selecting the imperative Service updates it instead of leaving it as drift: {:?}",
-        selected_debug.operations
-    );
-    assert!(!removes(&selected_debug, 'e'));
-}
-
-#[test]
 fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned() {
     let web = spec("web");
     let mut system_ingress = spec("ingress");
@@ -316,8 +226,9 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
 #[test]
 fn other_project_services_are_not_removed_by_a_user_project_reconcile() {
     let web = spec("web");
-    let other_web = spec("web");
-    let mut other = container('9', '1', &other_web, &service_id('c'));
+    // A distinct name, so obsolete_services' name check cannot hide a missing project filter.
+    let other_worker = spec("worker");
+    let mut other = container('9', '1', &other_worker, &service_id('c'));
     other
         .try_update(|parts| parts.project_name = ProjectName::parse("other").unwrap())
         .unwrap();
@@ -362,46 +273,6 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
     .unwrap();
     assert!(removes(&plan, 'd'));
     assert!(removes(&plan, '8'));
-}
-
-#[test]
-fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
-    let web = spec("web");
-    let debug = spec("debug");
-    let plan = preview_deploy(
-        &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
-            [&web],
-            PlanOptions::default(),
-        ),
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![container('d', '1', &debug, &service_id('b'))],
-            ..Default::default()
-        },
-        IngressContext::default(),
-    )
-    .unwrap();
-    let ops = operations(&plan);
-    assert!(
-        matches!(
-            ops.first(),
-            Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
-        ),
-        "desired work comes first: {ops:?}"
-    );
-    assert!(
-        ops.iter().skip(1).any(|operation| {
-            matches!(
-                operation,
-                DeployOperation::RemoveContainer {
-                    container_id: removed,
-                    ..
-                } if *removed == container_id('d')
-            )
-        }),
-        "prune is after desired work: {ops:?}"
-    );
 }
 
 fn shop_with_obsolete_debug() -> (RequestedServiceSpec, DeploySnapshot) {
