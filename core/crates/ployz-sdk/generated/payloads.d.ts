@@ -11,6 +11,10 @@ export type BindRecursive = "disabled" | "writable" | "readonly";
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
+export type BuildConcurrency = number;
+
+export type BuildConcurrencyUpdate = { "action": "keep" } | { "action": "automatic" } | { "action": "set", "value": BuildConcurrency };
+
 export type BuildGrantEnded = {
 /**
  * `sha256:` digest of the manifest the Machine verified and stored, when the
@@ -353,7 +357,11 @@ accepts_services: boolean,
 /**
  * Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
  */
-accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
+accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime,
+/**
+ * Builds this Machine runs at once; absent means automatic.
+ */
+build_concurrency: BuildConcurrency | null, };
 
 export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
@@ -401,7 +409,11 @@ rtt: RttStatistics | null, };
 
 export type MachinePath = string;
 
-export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string, };
+export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string,
+/**
+ * Host memory, absent when the daemon could not observe it.
+ */
+memory_total_bytes?: number | null, };
 
 export type MachineStorageBudget = {
 /**
@@ -470,6 +482,42 @@ docker_root_total_bytes: number,
  * Docker-root filesystem free bytes.
  */
 docker_root_free_bytes: number, };
+
+export type MachineUpdate = {
+/**
+ * One change per Label key: a value sets it, `None` removes it.
+ */
+label_changes: { [key in MachineLabelKey]: MachineLabelValue | null },
+/**
+ * Change Build acceptance independently; `None` preserves it and existing work remains.
+ */
+accepts_builds: boolean | null,
+/**
+ * Change application Service acceptance independently; `None` preserves it.
+ */
+accepts_services: boolean | null,
+/**
+ * Change trusted Ingress acceptance independently; `None` preserves it.
+ */
+accepts_ingress: boolean | null,
+/**
+ * Replace the Machine Name, or preserve it when omitted.
+ */
+name: MachineName | null,
+/**
+ * Explicitly preserve, remove, or replace the advertised public IP.
+ */
+public_ip: PublicIpUpdate,
+/**
+ * Replace all Advertised Endpoints, or preserve them when omitted.
+ */
+advertised_endpoints: Array<AdvertisedEndpoint> | null,
+/**
+ * Explicitly preserve, clear to automatic, or set build concurrency.
+ */
+build_concurrency: BuildConcurrencyUpdate, };
+
+export type MachineUpdated = { machine: Machine, };
 
 export type ManagementClientLabel = string;
 
@@ -580,6 +628,8 @@ export type PruneTarget = { machine_id: MachineId,
  * Docker's short repository name, as `docker image ls` prints it.
  */
 repository: string, };
+
+export type PublicIpUpdate = { "action": "keep" } | { "action": "remove" } | { "action": "set", "value": string };
 
 export type PublicationBasis = { "kind": "no_saved_state" } | { "kind": "saved_revision", savedStateSnapshotId: string, };
 

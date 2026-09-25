@@ -527,11 +527,16 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .update(expect::<op::UpdateMachine>(request)?)
-                .await,
-        )
+        let updated = self
+            .local
+            .update(expect::<op::UpdateMachine>(request)?)
+            .await;
+        // Queued Builds follow a changed limit without waiting for a new arrival.
+        if let Ok(updated) = &updated {
+            self.builds
+                .resize(updated.machine.effective_build_concurrency());
+        }
+        finish(updated)
     }
 
     async fn request_machine_upgrade(

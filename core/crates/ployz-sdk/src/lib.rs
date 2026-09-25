@@ -3,7 +3,7 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / preview / run / previewProjectRemoval /
+//! about / runtime.watch / prepare / build / preview / run / previewProjectRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
 //! dataLossIfProjectDestroyed / destroyProject / dataLossIfClusterDestroyed /
 //! destroyCluster / close.
@@ -113,6 +113,34 @@ impl PreparationHandle {
         Ok(DeployPreviewHandle {
             inner: self.inner.finished().await.map_err(rpc_to_napi)?,
         })
+    }
+}
+
+/// Native cancellable Image Build.
+#[napi]
+pub struct BuildHandle {
+    inner: sdk::RunningBuild,
+}
+
+#[napi]
+impl BuildHandle {
+    /// Request cancellation and await finished for termination evidence.
+    #[napi]
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+    /// Bounded progress; lagging readers receive a truncation frame.
+    #[napi]
+    pub async fn next(&self) -> Option<serde_json::Value> {
+        self.inner.next().await
+    }
+    /// Await the `BuildOutcome` independently of progress consumption.
+    ///
+    /// # Errors
+    /// Returns structured Build failure or unknown outcome.
+    #[napi]
+    pub async fn finished(&self) -> Result<serde_json::Value> {
+        to_json(&self.inner.finished().await.map_err(rpc_to_napi)?)
     }
 }
 
@@ -273,6 +301,23 @@ impl Client {
         })
     }
 
+    /// Start one Image Build; `start_within_ms` withdraws it if not admitted in time.
+    ///
+    /// # Errors
+    /// Rejects malformed input or closed sessions.
+    #[napi]
+    pub fn build(
+        &self,
+        input: serde_json::Value,
+        start_within_ms: Option<u32>,
+    ) -> Result<BuildHandle> {
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        let start_within = start_within_ms.map(|ms| std::time::Duration::from_millis(ms.into()));
+        Ok(BuildHandle {
+            inner: self.inner.build(input, start_within).map_err(rpc_to_napi)?,
+        })
+    }
+
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Confirming executes these operations. It does not re-plan.
@@ -393,6 +438,30 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         to_json(&removed)
+    }
+
+    /// Apply one Server Policy edit to `machine`.
+    ///
+    /// `update` is a partial MachineUpdate; omitted fields keep their values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `update` is not a
+    /// MachineUpdate, the session is closed, or the Machine refuses the edit.
+    #[napi]
+    pub async fn update_machine(
+        &self,
+        machine: String,
+        update: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let update: ployz_core::MachineUpdate =
+            serde_json::from_value(update).map_err(invalid_argument)?;
+        let updated = self
+            .inner
+            .update_machine(&machine, update)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&updated)
     }
 
     /// Live Observation of Data Loss that destroying `project_name` would cause.

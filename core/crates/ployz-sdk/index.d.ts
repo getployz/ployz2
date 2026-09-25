@@ -16,6 +16,8 @@ import type {
   MachineId,
   MachineDetails,
   MachineTarget,
+  MachineUpdate,
+  MachineUpdated,
   ObservedDataLoss,
   LocalMachineRemoved,
   DataLossConfirmation,
@@ -119,6 +121,20 @@ export type RunningPreparation = AsyncIterable<PreparationEvent> & {
   readonly finished: Promise<PreparedDeploy>;
 };
 
+export type BuildOptions = WatchOptions & {
+  /** Withdraw the build when no Build Machine admits it within this many ms. Omit to wait in the queue. */
+  readonly startWithinMs?: number;
+};
+
+/** `queued`: not admitted within `startWithinMs`, withdrawn; nothing started. */
+export type BuildOutcome = { kind: "queued" } | { kind: "built"; receipt: BuildReceipt };
+
+export type RunningBuild = AsyncIterable<PreparationEvent> & {
+  abort(): void;
+  /** Rejects like `RunningPreparation.finished`; cancellation leaves no receipt. */
+  readonly finished: Promise<BuildOutcome>;
+};
+
 export type RunningDeploy = AsyncIterable<DeployEvent> & {
   abort(): void;
   /** Rejects with RpcError on session closure; an in-flight mutation may have completed. */
@@ -140,6 +156,8 @@ export declare function applyOne(
 
 export declare class Client {
   prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
+  /** One Image Build. `input` holds exactly one Git Service with its checkout and commit; its receipt is a reuse hint. */
+  build(input: PreparationInput, options?: BuildOptions): RunningBuild;
   clearManagementClient(label: string): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;
@@ -177,6 +195,11 @@ export declare class Client {
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
   ): Promise<LocalMachineRemoved>;
+  /** One Server Policy edit; omitted fields keep their values. */
+  updateMachine(
+    machine: MachineTarget,
+    update: Partial<MachineUpdate>,
+  ): Promise<MachineUpdated>;
   dataLossIfProjectDestroyed(
     project_name: ProjectName,
     destroy_volumes?: boolean,

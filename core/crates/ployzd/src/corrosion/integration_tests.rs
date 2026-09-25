@@ -450,6 +450,7 @@ fn machine(name: &str, seed: u8) -> Machine {
                 .unwrap(),
         )],
         runtime: Default::default(),
+        build_concurrency: None,
     }
 }
 

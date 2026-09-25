@@ -116,6 +116,30 @@ pub enum PreparationError {
     Cancelled,
 }
 
+impl PreparationError {
+    /// Cancellation reached this Build before any source left the client: it
+    /// was stopped while reading, selecting, or waiting in the Machine's queue.
+    pub(super) fn cancelled_before_upload(&self) -> bool {
+        use crate::build::{Error, RemoteBuildFailure};
+        use ployz_build::Stage;
+        match self {
+            Self::Cancelled => true,
+            Self::Build(Error::RemoteBuild { outcome }) => matches!(
+                **outcome,
+                RemoteBuildFailure::Failed {
+                    stage: Stage::Queued | Stage::Admission,
+                    ..
+                }
+            ),
+            Self::Build(_)
+            | Self::Connect(_)
+            | Self::Selection(_)
+            | Self::Plan(_)
+            | Self::Delivery(_) => false,
+        }
+    }
+}
+
 /// Caller-rendered preparation progress; no terminal or process ownership.
 #[derive(serde::Serialize)]
 pub enum Progress {
@@ -149,53 +173,12 @@ impl Prepared {
 pub async fn prepare(
     client: &mut Client,
     mut intent: DeployIntent,
-    mut build: CapturedBuild,
+    build: CapturedBuild,
     reusable: &[BuiltService],
     cancellation: &CancellationToken,
     progress: impl Fn(Progress),
 ) -> Result<Prepared, PreparationError> {
-    let mut builds = Vec::new();
-    if build.targets().next().is_some() {
-        let mut machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
-        let applied = intent.applied_names();
-        if intent.target.iter().any(|spec| {
-            applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
-        }) {
-            read(cancellation, async {
-                client.observe_machine_storage(&mut machines).await;
-                Ok(())
-            })
-            .await?;
-        }
-        build.cover_machines(&intent, &machines)?;
-        builds = build
-            .reuse_images(client, &intent, &machines, reusable, cancellation)
-            .await;
-        let targets = build.to_targets();
-        let platforms = targets
-            .iter()
-            .flat_map(|target| target.platforms.iter().cloned())
-            .collect::<std::collections::BTreeSet<_>>();
-        progress(Progress::Platforms(platforms.into_iter().collect()));
-        if !targets.is_empty() {
-            let selected = read(cancellation, async {
-                select_build_machine(client, &targets, &machines, cancellation)
-                    .await
-                    .map_err(PreparationError::Selection)
-            })
-            .await?;
-            let id = selected.machine.id;
-            progress(Progress::Selected(Box::new(selected)));
-            // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
-            builds.extend(
-                build
-                    .execute_remote_images(client, id, cancellation.clone(), |event| {
-                        progress(Progress::Build(event))
-                    })
-                    .await?,
-            );
-        }
-    }
+    let builds = build_images(client, &intent, build, reusable, cancellation, &progress).await?;
     crate::build::bind(&mut intent, &builds)?;
     let machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
     let plan = read(cancellation, async {
@@ -229,6 +212,64 @@ pub async fn prepare(
         )));
     }
     Ok(Prepared { plan, builds })
+}
+
+/// Reuse still-available images, then build the remaining targets on one
+/// selected Build Machine. `prepare` and the one-Service `Session::build` share this.
+/// # Errors
+/// Returns typed Build evidence across every target, eligibility, or cancellation.
+pub(super) async fn build_images(
+    client: &mut Client,
+    intent: &DeployIntent,
+    mut build: CapturedBuild,
+    reusable: &[BuiltService],
+    cancellation: &CancellationToken,
+    progress: &impl Fn(Progress),
+) -> Result<Vec<BuiltService>, PreparationError> {
+    if build.targets().next().is_none() {
+        return Ok(Vec::new());
+    }
+    let mut machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
+    let applied = intent.applied_names();
+    if intent.target.iter().any(|spec| {
+        applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
+    }) {
+        read(cancellation, async {
+            client.observe_machine_storage(&mut machines).await;
+            Ok(())
+        })
+        .await?;
+    }
+    build.cover_machines(intent, &machines)?;
+    let mut builds = build
+        .reuse_images(client, intent, &machines, reusable, cancellation)
+        .await;
+    let targets = build.to_targets();
+    let platforms = targets
+        .iter()
+        .flat_map(|target| target.platforms.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    progress(Progress::Platforms(platforms.into_iter().collect()));
+    if targets.is_empty() {
+        return Ok(builds);
+    }
+    let selected = read(cancellation, async {
+        select_build_machine(client, &targets, &machines, cancellation)
+            .await
+            .map_err(PreparationError::Selection)
+    })
+    .await?;
+    let id = selected.machine.id;
+    progress(Progress::Selected(Box::new(selected)));
+    // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
+    builds.extend(
+        build
+            .execute_remote_images(client, id, cancellation.clone(), |event| {
+                progress(Progress::Build(event))
+            })
+            .await?,
+    );
+    Ok(builds)
 }
 
 async fn read<T>(

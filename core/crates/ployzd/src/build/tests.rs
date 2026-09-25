@@ -230,7 +230,55 @@ async fn admitted_upload_queues_competitors_and_disconnect_releases_unused_owner
 }
 
 #[tokio::test]
-async fn active_build_refuses_an_upgrade_request() {
+async fn build_concurrency_bounds_simultaneous_builds_on_separate_slots() {
+    let fixture = Fixture::new().await;
+    // Automatic: a Machine that accepts Services builds one at a time.
+    let (first, mut first_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut first_response).await,
+        Event::Admitted { .. }
+    ));
+    let (second, mut second_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut second_response).await,
+        Event::Progress(_)
+    ));
+
+    fixture
+        .local
+        .update(
+            serde_json::from_value(serde_json::json!({
+                "update": {"build_concurrency": {"action": "set", "value": 2}}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The next arrival reads the explicit limit: the queued Build is admitted
+    // first, on its own build slot, and the arrival waits for a third slot.
+    let (third, mut third_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut second_response).await,
+        Event::Admitted { .. }
+    ));
+    assert!(matches!(
+        event(&mut third_response).await,
+        Event::Progress(_)
+    ));
+
+    drop(first);
+    let _ = terminal(&mut first_response).await;
+    assert!(matches!(
+        event(&mut third_response).await,
+        Event::Admitted { .. }
+    ));
+    drop((second, third));
+    let _ = terminal(&mut second_response).await;
+    let _ = terminal(&mut third_response).await;
+}
+
+#[tokio::test]
+async fn active_build_refuses_upgrade_but_not_machine_mutations() {
     let fixture = Fixture::new().await;
     let (sender, mut response) = fixture.request(Output::Load).await;
     assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
@@ -273,36 +321,30 @@ async fn active_build_refuses_an_upgrade_request() {
         crate::machine::LocalMachineError::Admission(crate::mutation::Error::Busy)
     ));
 
-    let mut rename = Box::pin(fixture.local.update(
-        serde_json::from_value(serde_json::json!({"update": {"name": "renamed"}})).unwrap(),
-    ));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), rename.as_mut())
-            .await
-            .is_err(),
-        "ordinary Machine update ran concurrently with active Build execution"
-    );
-    let mut ordinary = Box::pin(fixture.local.set_management_client(
-        ployz_core::SetManagementClientRequest::Clear {
-            label: ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
-        },
-    ));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), ordinary.as_mut())
-            .await
-            .is_err(),
-        "ordinary mutation ran concurrently with active Build execution"
-    );
+    // A Build holds only its build slot, never the Machine mutation lock, so
+    // deploys and ordinary mutations on the building Machine proceed.
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.local.update(
+            serde_json::from_value(serde_json::json!({"update": {"name": "renamed"}})).unwrap(),
+        ),
+    )
+    .await
+    .expect("Machine rename waited for active Build execution")
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture
+            .local
+            .set_management_client(ployz_core::SetManagementClientRequest::Clear {
+                label: ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
+            }),
+    )
+    .await
+    .expect("ordinary mutation waited for active Build execution")
+    .unwrap();
     drop(sender);
     let _ = terminal(&mut response).await;
-    tokio::time::timeout(Duration::from_secs(2), rename)
-        .await
-        .expect("Machine rename stayed blocked after Build execution ended")
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(2), ordinary)
-        .await
-        .expect("ordinary mutation stayed blocked after Build execution ended")
-        .unwrap();
 }
 
 #[tokio::test]

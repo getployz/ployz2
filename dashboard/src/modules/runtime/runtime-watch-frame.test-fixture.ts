@@ -47,6 +47,7 @@ export function runtimeWatchMachineFixture(
     accepts_services: true,
     accepts_ingress: true,
     advertised_endpoints: ["udp://203.0.113.10:51820"],
+    build_concurrency: null,
     runtime: {
       daemon_version: "0.1.2",
       docker_version: "27.0.0",
