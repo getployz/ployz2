@@ -181,6 +181,7 @@ async fn prepare(
             source_commits: BTreeMap::from([(name, "a".repeat(40))]),
             build_receipts: BTreeMap::new(),
             build_index: 0,
+            preferred_machine: None,
         })
         .unwrap()
         .finished()

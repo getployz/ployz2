@@ -105,10 +105,13 @@ export type PreparationInput = {
   build_receipts?: BuildReceipts;
   /** This build's position among its attempt's builds; builds without a warm Server spread across Servers by it. */
   build_index?: number;
+  /** The Service's Preferred Server, the Cluster's first choice to build. */
+  preferred_machine?: MachineId;
 };
 
 /** Why a Server was chosen to build. */
 export type BuilderReason =
+  | { kind: "preferred" }
   | { kind: "had_cache" }
   | { kind: "spread" }
   | { kind: "cache_holder_unavailable"; holder: string };

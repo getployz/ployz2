@@ -43,12 +43,13 @@ type BuildStep = { id: number; image: string; build: number; key: string; name: 
 export type BuildLog = {
   steps: readonly BuildStep[];
   output: readonly { stepId: number; text: string }[];
-  serverChoices?: readonly { image: string; serverChoice: ServerChoice | null; githubRunUrl?: string | null; skips?: readonly string[] }[];
+  serverChoices?: readonly { image: string; serverChoice: ServerChoice | null; githubRunUrl?: string | null; skips?: readonly string[]; preferred?: boolean }[];
 };
 
 /** Why the Engine chose a Server: recorded evidence, never a prediction. */
 function builderReason(reason: ServerChoice["reason"]): string {
   switch (reason.kind) {
+    case "preferred": return "preferred builder";
     case "had_cache": return "had this Service's build cache";
     case "spread": return "spread across Servers";
     case "cache_holder_unavailable": return `${reason.holder} has the cache but is offline or no longer builds`;
@@ -63,7 +64,7 @@ export function builtOn(log: Pick<BuildLog, "serverChoices"> | null | undefined,
   const row = image ? log?.serverChoices?.find((candidate) => candidate.image === image) : undefined;
   const skipped = row?.skips ?? [];
   if (row?.githubRunUrl) {
-    return { server: "GitHub Actions", reason: skipped.length ? "next in the build order" : "first in the build order", runUrl: row.githubRunUrl, skipped };
+    return { server: "GitHub Actions", reason: skipped.length ? "next in the build order" : row.preferred ? "preferred builder" : "first in the build order", runUrl: row.githubRunUrl, skipped };
   }
   if (row?.serverChoice) return { server: row.serverChoice.machineName, reason: builderReason(row.serverChoice.reason), skipped };
   return skipped.length ? { server: null, reason: null, skipped } : null;

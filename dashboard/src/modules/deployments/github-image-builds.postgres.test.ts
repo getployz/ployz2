@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
-import type { BuildOptions, BuildOutcome, BuildReceipts, Client, MachineDetails, PreparationEvent, PreparationInput, PreparedDeploy } from "@ployz/sdk";
+import type { BuildOptions, BuildOutcome, BuildReceipts, Client, Machine, MachineDetails, PreparationEvent, PreparationInput, PreparedDeploy } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -15,7 +15,7 @@ import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc
 import { InngestClient } from "#/modules/inngest/client";
 import { makeOrganizationRuntimeLayer, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
-import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database, ReportingDatabase } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -25,6 +25,7 @@ import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret
 import { loadDeploymentBuildLog } from "./deployment-events.server";
 import { createMarkCancelledRowBackedWorkflow, createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 import type { BuildOrder } from "./build-order";
+import { imageBuildCandidates } from "./build-order.server";
 import { checkInGithubBuild, recordGithubBuildSteps, withdrawGithubImageBuild } from "./github-image-builds.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
@@ -74,6 +75,10 @@ type Fake = {
   serversQueued: boolean;
   /** Whether the run ends before GitHub's start limit passes. */
   runEndsBeforeLimit: boolean;
+  /** The Cluster's Servers, as its Runtime Watch shows them. */
+  machines: Machine[];
+  /** Each server build's Preferred Server. */
+  preferredMachines: (string | undefined)[];
 };
 
 const serverReceipt = {
@@ -117,8 +122,12 @@ function fakeClient(fake: Fake) {
     },
     inspect: async () => asTestDouble<MachineDetails>()({ id: machine.id }),
     buildPlatforms: async () => fake.platforms,
-    build: (_input: PreparationInput, options?: BuildOptions) => {
+    runtime: { watch: async function* () {
+      yield runtimeWatchFrameFixture({ machines: fake.machines.map((observed) => runtimeWatchMachineObservationFixture({ machine: observed })) });
+    } },
+    build: (input: PreparationInput, options?: BuildOptions) => {
       fake.serverBuilds.push(options?.startWithinMs);
+      fake.preferredMachines.push(input.preferred_machine);
       const finished: Promise<BuildOutcome> = Promise.resolve(fake.serversQueued ? { kind: "queued" } : { kind: "built", receipt: serverReceipt });
       return { abort: () => undefined, finished, async *[Symbol.asyncIterator]() {
         yield { Selected: { machine, reason: { kind: "spread" as const }, rejections: [] } };
@@ -152,7 +161,7 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   beforeEach(async () => {
-    fake = { github: [], minted: [], ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false };
+    fake = { github: [], minted: [], ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, machines: [machine], preferredMachines: [] };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -289,7 +298,7 @@ describe("Image Builds on GitHub Actions", () => {
     expect(log.steps.filter((step) => step.image === "api").map((step) => step.name)).toEqual(["Building", "RUN make"]);
     expect(log.output.map((line) => line.text)).toEqual(["ok\n"]);
     // A GitHub build has no Server choice; the log links its run instead.
-    expect(log.serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001", skips: [] }]);
+    expect(log.serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001", skips: [], preferred: false }]);
     // A second report would duplicate output, so it is refused.
     expect(await run(Effect.flip(recordGithubBuildSteps(runnerRequest(oidcToken()), built?.id ?? "", JSON.stringify({ platforms: [], events: [] })))))
       .toMatchObject({ _tag: "Conflict" });
@@ -392,6 +401,56 @@ describe("Image Builds on GitHub Actions", () => {
     ]).execute();
     expect(output.error).toBeUndefined();
     expect(await row()).toMatchObject({ status: "built", builder: "github" });
-    expect((await buildLog()).serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001", skips: ["Your servers: none started it in 3 min"] }]);
+    expect((await buildLog()).serverChoices).toEqual([{ image: "api", serverChoice: null, githubRunUrl: "https://github.com/owner/repo/actions/runs/9001", skips: ["Your servers: none started it in 3 min"], preferred: false }]);
   }, 30_000);
+  describe("a Service's Preferred Builder", () => {
+    const fast = runtimeWatchMachineFixture("d".repeat(32), "fast");
+    const prefer = (preferredBuilder: string) => harness.db.update(schema.service)
+      .set({ policy: { autoDeploy: true, waitForCi: false, watchPaths: [], imageUpdate: { type: "off" }, preferredBuilder } });
+    /** The Builders a fresh Image Build of the Service walks. */
+    const plan = async () => {
+      await harness.db.delete(schema.environmentDeploymentImageBuild);
+      await harness.db.insert(schema.environmentDeploymentImageBuild).values({ organizationId, deploymentId, serviceId, image: "api", inngestRunId: runId });
+      return run(imageBuildCandidates(await target()));
+    };
+
+    it("walks the Build Order alone on Auto", async () => {
+      await buildOrder("github-then-servers");
+      expect(await plan()).toEqual([{ builder: "github" }, { builder: "servers" }]);
+      expect(await row()).toMatchObject({ preferred: false, skips: [] });
+    });
+
+    it("tries GitHub first, then the Build Order without it, and marks the build preferred", async () => {
+      await buildOrder("servers-then-github");
+      await prefer("github");
+      expect(await plan()).toEqual([{ builder: "github" }, { builder: "servers" }]);
+      expect(await row()).toMatchObject({ preferred: true });
+    });
+
+    it("asks the Cluster for a preferred Server first, then falls through when it doesn't start in time", async () => {
+      fake.machines = [machine, fast];
+      await buildOrder("github-only");
+      await prefer(fast.id);
+      expect(await plan()).toEqual([{ builder: "servers", machineId: fast.id }, { builder: "github" }]);
+      // The whole walk: the preferred Server's go has a start limit, then GitHub gets it.
+      await harness.db.delete(schema.environmentDeploymentImageBuild);
+      await queued();
+      fake.serversQueued = true;
+      await dispatch(1);
+      expect(fake.serverBuilds).toEqual([3 * 60_000]);
+      expect(fake.preferredMachines).toEqual([fast.id]);
+      expect(await row()).toMatchObject({ builder: "github", preferred: true, skips: ["Your servers: none started it in 3 min"] });
+    }, 30_000);
+
+    it("goes back to Auto, and says why, when the preferred Server no longer builds or is gone", async () => {
+      await buildOrder("github-then-servers");
+      await prefer(fast.id);
+      fake.machines = [machine, { ...fast, accepts_builds: false }];
+      expect(await plan()).toEqual([{ builder: "github" }, { builder: "servers" }]);
+      expect(await row()).toMatchObject({ preferred: false, skips: ["fast: no longer accepts builds"] });
+      fake.machines = [machine];
+      expect(await plan()).toEqual([{ builder: "github" }, { builder: "servers" }]);
+      expect(await row()).toMatchObject({ preferred: false, skips: ["Preferred server: no longer in the Cluster"] });
+    });
+  });
 });

@@ -18,6 +18,8 @@ pub struct SelectedBuilder {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BuilderReason {
+    /// It is the Service's Preferred Builder.
+    Preferred,
     /// It is the Server named in the Service's latest Build Receipt.
     HadCache,
     /// No Server held the Service's build cache; builds spread across Servers.
@@ -33,13 +35,16 @@ pub struct BuildPreference {
     pub cache_holder: Option<MachineId>,
     /// This build's position among its attempt's builds.
     pub spread: usize,
+    /// The Service's Preferred Builder: the Cluster's first choice, even
+    /// before the cache holder.
+    pub preferred: Option<MachineId>,
 }
 
 fn may_build(observed: &MachineObservation) -> bool {
     observed.membership.invites_rpc() && observed.machine.accepts_builds
 }
 
-/// Rank the cache holder first, then Servers that accept Builds, rotated by
+/// Rank the preferred Server first, then the cache holder, then Servers that accept Builds, rotated by
 /// `spread` so an attempt's builds start on different Servers. The rest follow
 /// only so their rejections are reported. Load from other attempts is not
 /// considered; it waits in each Server's queue.
@@ -51,12 +56,14 @@ fn rank(visible: &[MachineObservation], preference: BuildPreference) -> Vec<&Mac
         let spread = preference.spread % eligible.len();
         eligible.rotate_left(spread);
     }
-    if let Some(at) = ranked
-        .iter()
-        .position(|observed| Some(observed.machine.id) == preference.cache_holder)
-    {
-        let holder = ranked.remove(at);
-        ranked.insert(0, holder);
+    for first in [preference.cache_holder, preference.preferred] {
+        if let Some(at) = ranked
+            .iter()
+            .position(|observed| Some(observed.machine.id) == first)
+        {
+            let chosen = ranked.remove(at);
+            ranked.insert(0, chosen);
+        }
     }
     ranked
 }
@@ -67,6 +74,7 @@ fn builder_reason(
     selected: MachineId,
 ) -> BuilderReason {
     match preference.cache_holder {
+        _ if preference.preferred == Some(selected) => BuilderReason::Preferred,
         None => BuilderReason::Spread,
         Some(holder) if holder == selected => BuilderReason::HadCache,
         Some(holder) => BuilderReason::CacheHolderUnavailable {

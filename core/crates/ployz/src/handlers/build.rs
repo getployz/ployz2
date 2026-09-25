@@ -46,6 +46,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         source_commits: BTreeMap::from([(service.clone(), commit)]),
         build_receipts: BTreeMap::new(),
         build_index: 0,
+        preferred_machine: None,
     })?;
     if captured.fingerprints.get(&service) != Some(&expected) {
         return Err(Error::usage(format!(

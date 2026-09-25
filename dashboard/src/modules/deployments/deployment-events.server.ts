@@ -37,7 +37,7 @@ export const loadDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function
     .where(and(eq(environmentDeploymentBuildOutput.deploymentId, input.deploymentId), gt(environmentDeploymentBuildOutput.id, input.after)))
     .orderBy(asc(environmentDeploymentBuildOutput.id)).limit(input.limit);
   // Which Server (or GitHub run) each image builds on, and why; never the private receipt.
-  const serverChoices = yield* drizzle.select({ image: environmentDeploymentImageBuild.image, serverChoice: environmentDeploymentImageBuild.serverChoice, githubRunUrl: environmentDeploymentImageBuild.githubRunUrl, skips: environmentDeploymentImageBuild.skips })
+  const serverChoices = yield* drizzle.select({ image: environmentDeploymentImageBuild.image, serverChoice: environmentDeploymentImageBuild.serverChoice, githubRunUrl: environmentDeploymentImageBuild.githubRunUrl, skips: environmentDeploymentImageBuild.skips, preferred: environmentDeploymentImageBuild.preferred })
     .from(environmentDeploymentImageBuild).where(eq(environmentDeploymentImageBuild.deploymentId, input.deploymentId));
   const last = output.at(-1);
   return { steps, output, serverChoices, finished: deployment.finishedAt !== null, nextSequence: output.length === input.limit && last ? String(last.id) : null };

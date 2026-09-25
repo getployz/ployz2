@@ -100,7 +100,7 @@ describe("deployment view projection", () => {
   it("says which Server each image builds on and why, only once the Engine chose", () => {
     const view = deploymentView({
       deployment: deployment("queued"), progress: null,
-      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki"].map((image) => node({ nodeId: image, changed: true, image })),
+      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki", "shop", "mail"].map((image) => node({ nodeId: image, changed: true, image })),
       buildLog: {
         steps: [], output: [],
         serverChoices: [
@@ -111,6 +111,8 @@ describe("deployment view projection", () => {
           { image: "worker", serverChoice: null },
           { image: "blog", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/2", skips: ["Your servers: none started it in 3 min"] },
           { image: "wiki", serverChoice: null, skips: ["GitHub: no workflow in o/r"] },
+          { image: "shop", serverChoice: { machineName: "fast", reason: { kind: "preferred" } }, preferred: true },
+          { image: "mail", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/3", preferred: true },
         ],
       },
     });
@@ -122,9 +124,11 @@ describe("deployment view projection", () => {
       { server: "GitHub Actions", reason: "first in the build order", runUrl: "https://github.com/o/r/actions/runs/1", skipped: [] },
       { server: "GitHub Actions", reason: "next in the build order", runUrl: "https://github.com/o/r/actions/runs/2", skipped: ["Your servers: none started it in 3 min"] },
       { server: null, reason: null, skipped: ["GitHub: no workflow in o/r"] },
+      { server: "fast", reason: "preferred builder", skipped: [] },
+      { server: "GitHub Actions", reason: "preferred builder", runUrl: "https://github.com/o/r/actions/runs/3", skipped: [] },
     ]);
     // The skip trail reads after the Builder that took the build, or alone before one did.
-    expect(view.nodes.slice(5).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([
+    expect(view.nodes.slice(5, 7).map((n) => n.builtOn && builtOnLine(n.builtOn))).toEqual([
       "Built on GitHub Actions · next in the build order · skipped Your servers: none started it in 3 min",
       "Skipped GitHub: no workflow in o/r",
     ]);

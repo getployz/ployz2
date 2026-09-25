@@ -30,6 +30,9 @@ pub struct PreparationInput {
     /// holder cannot build spread across Servers by it.
     #[serde(default)]
     pub build_index: usize,
+    /// The Service's Preferred Server, tried before any other Server.
+    #[serde(default)]
+    pub preferred_machine: Option<ployz_core::MachineId>,
 }
 
 /// Private build evidence, independent of deployment success or current image availability.
@@ -138,6 +141,7 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
                 .map(|(_, receipt)| receipt.machine_id)
         }),
         spread: input.build_index,
+        preferred: input.preferred_machine,
     };
     let fingerprints = fingerprints(&intent, frozen.identities);
     let reusable = intent
@@ -318,6 +322,7 @@ mod tests {
             source_commits: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
             build_index: 0,
+            preferred_machine: None,
         })
         .unwrap();
         assert!(captured.build.targets().next().is_none());
