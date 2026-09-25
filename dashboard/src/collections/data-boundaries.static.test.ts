@@ -88,6 +88,7 @@ const ON_DEMAND_READS = {
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
   "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
+  "modules/deployments/deployment-commands.ts": "deploy and retry start runtime work",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
@@ -179,7 +180,10 @@ describe("data boundaries", () => {
           const isRoute = file.startsWith(`${SRC}/routes/`);
           // Only Org Store tables in collections/ inherit the createApiCollection staleTime default.
           const isCollectionsFile = file.startsWith(`${SRC}/collections/`);
-          const isUi = isRoute || file.startsWith(`${SRC}/components/`);
+          // Command hooks elsewhere are UI too: components wait through them. Data files read, and the editor owns the optimistic save queue.
+          const path = relative(SRC, file);
+          const isHookFile = /\bexport function use[A-Z]/.test(source.text) && !DATA_FILE.test(path) && path !== "modules/environment-design/environment-document-edit.ts";
+          const isUi = isRoute || file.startsWith(`${SRC}/components/`) || isHookFile;
           const serverCalls = new Set<string>();
           const importedFrom = new Map<string, string>();
           for (const statement of source.statements) {

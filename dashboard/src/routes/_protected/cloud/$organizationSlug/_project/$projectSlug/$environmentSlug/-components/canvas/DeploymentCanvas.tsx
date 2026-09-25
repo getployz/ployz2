@@ -34,7 +34,10 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.environmentId, environmentId))
       .select(({ service }) => ({ id: service.id, name: service.name })),
   });
-  const positionOf = (node: AttemptTargetNode) => positionRows.find((row) => row.resourceType === node.nodeType && row.resourceId === node.nodeId);
+  const positionOf = (node: AttemptTargetNode) => {
+    const row = positionRows.find((candidate) => candidate.resourceType === node.nodeType && candidate.resourceId === node.nodeId);
+    return row ? { x: row.x, y: row.y } : undefined;
+  };
   // A node deleted since the attempt lost its position: line those up below the canvas so they never stack at the origin.
   const unplaced = attempt.nodes.filter((node) => !positionOf(node));
   const belowAll = Math.max(0, ...positionRows.map((row) => row.y)) + SERVICE_NODE_HEIGHT + UNPLACED_GAP;
@@ -46,7 +49,7 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     const name = node.nodeType === "volume" ? node.config.name
       : serviceRows.find((row) => row.id === node.nodeId)?.name ?? node.config.privateDns;
     return [{
-      id: node.nodeId, type: "deployment", position: { x: position.x, y: position.y },
+      id: node.nodeId, type: "deployment", position,
       width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, draggable: false,
       data: { node, name, view },
     }];

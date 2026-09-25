@@ -25,6 +25,9 @@ export const canvasRouteSearch = {
   search: { middlewares: [retainSearchParams<{ deployment?: string }>(["deployment"])] },
 };
 
+/** The attempt a location's search string shows in Deployment Mode; null in Live Mode. */
+export const shownDeployment = (searchStr: string) => new URLSearchParams(searchStr).get("deployment");
+
 const DeploymentModeContext = createContext<DeploymentAttempt | null>(null);
 
 /** The attempt the canvas shows in Deployment Mode, or null in Live Mode. Everything in Deployment Mode is read-only. */
