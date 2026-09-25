@@ -728,38 +728,6 @@ async fn store_preserves_published_identities_and_keyed_incomplete_rows() {
     task.abort();
 }
 
-#[tokio::test]
-async fn invalid_hosted_reservation_is_unavailable_and_explicit_release_recovers() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
-    db.execute(
-        "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?)",
-        [json!({"endpoint": "https://dns.example", "name": "", "token": ""}).to_string()],
-    )
-    .unwrap();
-    let (store, server) = identity_store(db).await;
-    let client = crate::hosted_dns::HostedDns::new();
-    assert!(store.domain_reservation().await.is_err());
-    assert!(client.domain(&store).await.is_err());
-    let error = client.release_domain(&store).await.unwrap_err();
-    assert!(error.to_string().contains("cleared locally"), "{error}");
-    assert!(store.domain_reservation().await.unwrap().is_none());
-    let valid = crate::hosted_dns::Reservation::parse(
-        "http://127.0.0.1:1".into(),
-        "cluster.example".into(),
-        "opaque-token".into(),
-    )
-    .unwrap();
-    store.publish_domain_reservation(&valid).await.unwrap();
-    assert_eq!(client.domain(&store).await.unwrap(), "cluster.example");
-    assert_eq!(
-        client.release_domain(&store).await.unwrap(),
-        "cluster.example"
-    );
-    assert!(store.domain_reservation().await.unwrap().is_none());
-    server.abort();
-}
-
 /// A newer Machine may add optional fields to any replicated body; this reader
 /// must still recover every value it knows.
 #[tokio::test]
@@ -789,12 +757,6 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
         },
     };
     let hostname = IngressHost::parse("app.example.com").unwrap();
-    let reservation = crate::hosted_dns::Reservation::parse(
-        "https://dns.example".into(),
-        "cluster.example".into(),
-        "opaque-token".into(),
-    )
-    .unwrap();
     let mut container_body = serde_json::to_value(&container).unwrap();
     container_body
         .get_mut("resolved_spec")
@@ -837,13 +799,6 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
         ],
     )
     .unwrap();
-    db.execute(
-        "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?)",
-        [with_future_field(
-            serde_json::to_value(&reservation).unwrap(),
-        )],
-    )
-    .unwrap();
     let (store, task) = identity_store(db).await;
     assert_eq!(
         store.machine(machine.id.as_str()).await.unwrap(),
@@ -858,7 +813,6 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
         store.certificate_row(&hostname).await.unwrap().last_error(),
         Some("refused")
     );
-    assert_eq!(store.domain_reservation().await.unwrap(), Some(reservation));
     task.abort();
 }
 

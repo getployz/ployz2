@@ -183,16 +183,13 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 http_protocol: HttpProtocol::Https,
             });
         }
-        for hostname in config.managed_hostnames {
-            let port = target_port(hostname.target_port, &environment, "managedHostnames")?;
-            ports.push(PortPublication::Ingress {
-                hostname: IngressHostname::ClusterDomain {
-                    label: Some(hostname.prefix.try_into().map_err(lowering_error)?),
-                },
-                load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
-                container_port: port,
-                http_protocol: HttpProtocol::Https,
-            });
+        // Managed hostnames are Cloud's authored shorthand; Cloud expands them into
+        // explicit routes before lowering because only it knows the Cluster Domain.
+        if !config.managed_hostnames.is_empty() {
+            return Err(ConfigError::at(
+                "managedHostnames",
+                "Expand managed hostnames into explicit routes before deploying",
+            ));
         }
         let command = |command: &str| vec!["/bin/sh".into(), "-c".into(), command.into()];
         let pre_deploy = config

@@ -508,38 +508,6 @@ pub enum ImageRemovalOutcome {
 /// Request the exact generated Caddy configuration.
 pub struct GetIngressProxyConfigRequest {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReserveDomainRequest {
-    pub endpoint: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GetDomainRequest {}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReleaseDomainRequest {}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum DnsRecordType {
-    #[serde(rename = "A")]
-    A,
-    #[serde(rename = "AAAA")]
-    Aaaa,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DnsRecord {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub record_type: DnsRecordType,
-    pub values: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CreateDomainRecordsRequest {
-    pub records: Vec<DnsRecord>,
-}
-
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UpdateMachineRequest {
@@ -815,16 +783,6 @@ impl IngressProxyConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Domain {
-    pub name: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DomainRecords {
-    pub records: Vec<DnsRecord>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdated {
     pub machine: Machine,
 }
@@ -937,8 +895,6 @@ define_responses! {
     ImagePulled(ImagePulled) => "image_pulled";
     ImagesRemoved(ImagesRemoved) => "images_removed";
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
-    Domain(Domain) => "domain";
-    DomainRecords(DomainRecords) => "domain_records";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed";

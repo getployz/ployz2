@@ -27,8 +27,6 @@ export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
-export type ClusterDomainLabel = string;
-
 export type ClusterTeardown = { destroyed_projects: Array<ProjectName>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
 export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironmentNode>, variableProducers: Array<SavedVariableProducer>, };
@@ -274,7 +272,7 @@ export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use"
 
 export type IngressHost = string;
 
-export type IngressHostname = { "kind": "cluster_domain", label: ClusterDomainLabel | null, } | { "kind": "explicit", hostname: IngressHost, };
+export type IngressHostname = { "kind": "explicit", hostname: IngressHost, };
 
 export type IngressProxyFragment = string;
 
@@ -679,11 +677,7 @@ reason: RuntimeFailureKind, };
 
 export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<IngressHost>, };
 
-export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>,
-/**
- * Hosted DNS hostname only; never the renewal token or endpoint.
- */
-hosted_dns_hostname: string | null, incomplete_ids: RuntimeWatchIncompleteIds,
+export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, incomplete_ids: RuntimeWatchIncompleteIds,
 /**
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */

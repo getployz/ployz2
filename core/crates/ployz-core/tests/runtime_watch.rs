@@ -136,7 +136,6 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
     assert!(defaults.services().is_empty());
     assert!(defaults.volumes.is_empty());
     assert!(defaults.certificates.is_empty());
-    assert_eq!(defaults.hosted_dns_hostname, None);
     assert_eq!(
         defaults.incomplete_ids,
         RuntimeWatchIncompleteIds::default()
@@ -191,7 +190,6 @@ fn assert_no_secret_material(payload: &Value) {
         "challenge_token",
         "challenge_response",
         "renewal_token",
-        "dns_endpoint",
     ] {
         assert!(
             !text.contains(forbidden),
@@ -278,7 +276,6 @@ fn expected_frame() -> RuntimeWatchFrame {
                 backoff: None,
             },
         ],
-        hosted_dns_hostname: Some("cluster.example.ts.net".into()),
         incomplete_ids: RuntimeWatchIncompleteIds {
             machines: vec![MachineId::parse(OTHER_MACHINE_ID).unwrap()],
             containers: vec![ContainerId::parse(INCOMPLETE_CONTAINER_ID).unwrap()],

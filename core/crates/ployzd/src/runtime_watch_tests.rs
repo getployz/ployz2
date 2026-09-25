@@ -24,7 +24,6 @@ use super::{
     serve_runtime_watch,
 };
 use crate::corrosion::{CertificateChallenge, CertificateRow, Error, ReplicatedObservations};
-use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -39,8 +38,6 @@ const OBSERVED_AT: &str = "2024-01-01T00:00:00Z";
 const CHALLENGE_TOKEN: &str = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
 const CHALLENGE_RESPONSE: &str =
     "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const DNS_TOKEN: &str = "dns-renewal-token-secret";
-const DNS_ENDPOINT: &str = "https://dns.example.invalid/v1";
 const PAIRING: &str = "pairing-credential-secret";
 
 #[test]
@@ -73,7 +70,6 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
                 )],
                 incomplete_ids: Vec::new(),
             },
-            hosted_dns: Some(reservation()),
         },
         &entry.id,
         Some(&telemetry),
@@ -105,10 +101,6 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             last_error: None,
             backoff: None,
         }]
-    );
-    assert_eq!(
-        frame.hosted_dns_hostname.as_deref(),
-        Some("cluster.example.ts.net")
     );
     assert_eq!(frame.observed_at, OBSERVED_AT);
 }
@@ -147,7 +139,6 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
                 )],
                 incomplete_ids: vec![incomplete_cert.clone()],
             },
-            hosted_dns: None,
         },
         &entry.id,
         None,
@@ -204,7 +195,6 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
                 ],
                 incomplete_ids: Vec::new(),
             },
-            hosted_dns: Some(reservation()),
         },
         &entry.id,
         None,
@@ -251,12 +241,6 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
     let encoded = encode_runtime_watch_frame(&frame).unwrap();
     let round_trip: Value = encoded.decode_json().unwrap();
     assert_no_secret_material(&round_trip.to_string());
-    assert_eq!(
-        round_trip.get("hosted_dns_hostname"),
-        Some(&json!("cluster.example.ts.net"))
-    );
-    assert!(round_trip.get("endpoint").is_none());
-    assert!(round_trip.get("token").is_none());
     let certificates = round_trip
         .get("certificates")
         .and_then(Value::as_array)
@@ -282,7 +266,6 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
                 observations: Vec::new(),
                 incomplete_ids: Vec::new(),
             },
-            hosted_dns: None,
         },
         &entry.id,
         None,
@@ -296,7 +279,6 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
             MachineObservation::new(peer, MembershipObservation::Unknown),
         ]
     );
-    assert_eq!(frame.hosted_dns_hostname, None);
 }
 
 fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
@@ -304,15 +286,6 @@ fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
         observations,
         incomplete_ids: Vec::new(),
     }
-}
-
-fn reservation() -> Reservation {
-    Reservation::parse(
-        DNS_ENDPOINT.into(),
-        "cluster.example.ts.net".into(),
-        DNS_TOKEN.into(),
-    )
-    .unwrap()
 }
 
 fn machine(name: &str, id: &str, seed: u8) -> Machine {
@@ -409,8 +382,6 @@ fn assert_no_secret_material(text: &str) {
         "BEGIN PRIVATE KEY",
         CHALLENGE_TOKEN,
         CHALLENGE_RESPONSE,
-        DNS_TOKEN,
-        DNS_ENDPOINT,
         PAIRING,
         "private_key",
         "challenge_token",
@@ -846,7 +817,6 @@ fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchS
             observations: Vec::new(),
             incomplete_ids: Vec::new(),
         },
-        hosted_dns: None,
     }
 }
 

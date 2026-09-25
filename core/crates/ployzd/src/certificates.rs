@@ -336,10 +336,7 @@ pub(crate) fn wanted_certificate_hosts<'a>(
             else {
                 continue;
             };
-            let Some(hostname) = hostname.as_explicit_host() else {
-                continue;
-            };
-            wanted.insert(hostname.clone());
+            wanted.insert(hostname.host().clone());
         }
     }
     wanted
