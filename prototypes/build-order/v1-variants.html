@@ -1,0 +1,355 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Question: where does "Build on" live in Ployz Cloud,
+  and does the deploy flow feel identical no matter which builder runs?
+  Three variants, switch with ?variant=A|B|C or ← / →.
+  Builder = where BuildKit runs. Logs + image delivery are the same for all.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE · Builders in Ployz Cloud</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{
+    --ink:#111;--ink-hover:#2a2a2a;--pink:#d0268c;--pink-deep:#a80068;--pink-soft:#fff0f7;--pink-border:#efb3ce;
+    --canvas:#fff;--subtle:#fafafa;--muted:#f2f2f2;--ink-muted:#666;--rule:#dedede;
+    --ok:#42946e;--ok-soft:#dff1e9;--warn:#ad871f;--warn-soft:#f9efd2;--bad:#b62d2b;--info:#2057c5;--info-soft:#e8effc;
+    --deploy-tint:#f4f7fe;
+    --float:0 1px 3px rgb(0 0 0/.1),0 4px 6px -1px rgb(0 0 0/.1);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.43 "Geist",ui-sans-serif,system-ui,sans-serif;color:var(--ink);background:var(--canvas)}
+  .mono{font-family:"Geist Mono",ui-monospace,monospace;font-size:12px;line-height:1.5}
+  button{font:inherit;color:inherit;cursor:pointer}
+  .btn{height:32px;padding:0 10px;border-radius:12px;border:1px solid var(--rule);background:var(--canvas)}
+  .btn:hover{background:var(--muted)}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .btn.primary:hover{background:var(--ink-hover)}
+  .btn.sm{height:26px;border-radius:9px;font-size:12px}
+  .label{font-size:12px;font-weight:500;color:var(--ink-muted)}
+  .chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:999px;font-size:12px;font-weight:500;border:1px solid var(--rule);background:var(--subtle);white-space:nowrap}
+  .chip.ok{background:var(--ok-soft);border-color:#b9dfcc;color:#2d6e50}
+  .chip.warn{background:var(--warn-soft);border-color:#ead79f;color:#7c5f10}
+  .chip.info{background:var(--info-soft);border-color:#bccdf2;color:var(--info)}
+  .chip.pink{background:var(--pink-soft);border-color:var(--pink-border);color:var(--pink-deep)}
+  a{color:var(--info);text-decoration:none}
+
+  /* app shell */
+  .top{height:64px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:12px;padding:0 16px}
+  .logo{width:24px;height:24px;border-radius:7px;background:var(--ink)}
+  .crumb{color:var(--ink-muted)} .crumb b{color:var(--ink);font-weight:500}
+  .shell{display:flex;height:calc(100vh - 64px)}
+  .side{width:220px;border-right:1px solid var(--rule);padding:12px;display:flex;flex-direction:column;gap:2px;flex-shrink:0}
+  .nav{height:32px;border-radius:10px;padding:0 8px;display:flex;align-items:center;gap:8px;border:0;background:none;text-align:left;width:100%}
+  .nav:hover{background:var(--subtle)} .nav.on{background:var(--muted);font-weight:500}
+  .main{flex:1;position:relative;overflow:hidden;display:flex;flex-direction:column}
+
+  /* env header */
+  .envhead{height:48px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:10px;padding:0 16px;transition:background .3s}
+  .envhead .sp{flex:1}
+  .deploying .envhead{background:var(--deploy-tint)}
+
+  /* canvas */
+  .stage{flex:1;position:relative;display:flex;overflow:hidden}
+  .canvas{flex:1;position:relative;background-image:radial-gradient(#e4e4e4 1px,transparent 1px);background-size:18px 18px;transition:background-color .3s,box-shadow .3s}
+  .deploying .canvas{background-color:var(--deploy-tint);box-shadow:inset 0 0 0 2px #bccdf2}
+  .node{position:absolute;width:220px;border-radius:16px;border:1px solid var(--rule);background:var(--canvas);padding:12px;cursor:pointer}
+  .node.sel{outline:3px solid var(--pink-border)}
+  .node h4{margin:0 0 2px;font-size:14px;font-weight:500;display:flex;align-items:center;gap:6px}
+  .node .src{font-size:12px;color:var(--ink-muted)}
+  .ico{width:18px;height:18px;border-radius:5px;background:var(--muted);display:inline-grid;place-items:center;font-size:11px}
+  .phase{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--rule);flex-shrink:0}
+  .dot.run{background:var(--info);animation:pulse 1s infinite} .dot.ok{background:var(--ok)} .dot.wait{background:var(--warn);animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .tail{margin-top:6px;padding:6px 8px;border-radius:8px;background:var(--subtle);color:var(--ink-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* deploy bar */
+  .bar{white-space:nowrap;position:absolute;left:50%;bottom:64px;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:6px;border-radius:14px;background:var(--canvas);border:1px solid var(--rule);box-shadow:var(--float);z-index:5}
+  .bar.staged{background:var(--pink-soft);border-color:var(--pink-border)}
+  .seg{display:flex;background:var(--muted);border-radius:10px;padding:2px}
+  .seg button{height:28px;border:0;background:none;border-radius:8px;padding:0 10px}
+  .seg button.on{background:var(--canvas);box-shadow:0 1px 2px rgb(0 0 0/.08);font-weight:500}
+  .bar .n{color:var(--pink-deep);font-weight:500;padding:0 6px}
+
+  /* inspector */
+  .panel{width:400px;border-left:1px solid var(--rule);background:var(--canvas);display:flex;flex-direction:column;flex-shrink:0}
+  .panel .ph{padding:12px 16px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:8px}
+  .panel .ph h3{margin:0;font-size:16px;font-weight:500;flex:1}
+  .tabs{display:flex;gap:2px;padding:8px 12px;border-bottom:1px solid var(--rule)}
+  .tabs button{height:28px;border:0;background:none;border-radius:8px;padding:0 10px;color:var(--ink-muted)}
+  .tabs button.on{background:var(--muted);color:var(--ink);font-weight:500}
+  .pbody{padding:16px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:18px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .input{height:32px;border:1px solid var(--rule);border-radius:12px;padding:4px 10px;display:flex;align-items:center;background:var(--canvas)}
+  .section h5{margin:0 0 8px;font-size:12px;font-weight:500;color:var(--ink-muted);text-transform:none}
+  .section{border-top:1px solid var(--rule);padding-top:14px}
+  .section:first-child{border-top:0;padding-top:0}
+
+  /* builder picker */
+  .opts{display:flex;flex-direction:column;gap:6px}
+  .opt{cursor:pointer;display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--rule);border-radius:12px;background:var(--canvas);text-align:left;width:100%}
+  .opt:hover{background:var(--subtle)}
+  .opt.on{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+  .opt.staged{background:var(--pink-soft);border-color:var(--pink-border);box-shadow:0 0 0 1px var(--pink-border)}
+  .opt .t{font-weight:500;display:flex;gap:6px;align-items:center}
+  .opt .d{font-size:12px;color:var(--ink-muted)}
+  .radio{width:14px;height:14px;border-radius:50%;border:1px solid #bbb;margin-top:3px;flex-shrink:0}
+  .opt.on .radio,.opt.staged .radio{border:4px solid var(--ink)} .opt.staged .radio{border-color:var(--pink)}
+  .setup{margin-top:8px;padding:10px;border-radius:10px;background:var(--subtle);border:1px dashed var(--rule);font-size:12px;display:flex;flex-direction:column;gap:6px}
+
+  /* logs */
+  .logs{border:1px solid var(--rule);border-radius:12px;overflow:hidden}
+  .step{display:flex;gap:8px;align-items:center;padding:6px 10px;border-top:1px solid var(--muted)}
+  .step:first-child{border-top:0}
+  .step .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .step .tm{color:var(--ink-muted)}
+  .builderline{padding:8px 10px;background:var(--subtle);border-bottom:1px solid var(--rule);display:flex;gap:8px;align-items:center}
+
+  /* servers page (variant B) */
+  .page{padding:24px 32px;overflow:auto;flex:1}
+  .page h2{font-size:20px;font-weight:600;margin:0 0 4px}
+  table{width:100%;border-collapse:collapse}
+  td,th{padding:10px 12px;border-bottom:1px solid var(--rule);text-align:left;font-weight:400}
+  th{font-size:12px;font-weight:500;color:var(--ink-muted)}
+  .menu{white-space:normal;position:absolute;bottom:58px;right:6px;width:300px;background:var(--canvas);border:1px solid var(--rule);border-radius:12px;box-shadow:var(--float);padding:6px}
+  .menu .opt{border:0;border-radius:8px}
+
+  /* prototype chrome (NOT design) */
+  .proto{position:fixed;left:50%;bottom:-2px;transform:translateX(-50%);z-index:50;display:flex;align-items:center;gap:8px;background:#222;color:#fff;padding:6px 10px 8px;border-radius:12px 12px 0 0;font-size:12px}
+  .proto button{background:#444;border:0;color:#fff;border-radius:6px;height:24px;padding:0 8px}
+  .proto .state{color:#9f9;font-family:ui-monospace,monospace}
+  .note{position:fixed;bottom:56px;left:12px;z-index:40;max-width:196px;background:#fffbe6;border:1px solid #ead79f;border-radius:10px;padding:10px 12px;font-size:12px;color:#5c4a0f}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="proto" id="proto"></div>
+
+<script>
+const BUILDERS = {
+  hel1:   {name:"hel-1", kind:"Server", desc:"Builds on your server, then ships to the others", wait:0, waitText:"", icon:"▣"},
+  nuc:    {name:"nuc-basement", kind:"Build-only server", desc:"Your homelab box. Joined to the cluster, runs no services", wait:600, waitText:"Connecting to nuc-basement…", icon:"⌂"},
+  github: {name:"GitHub Actions", kind:"External", desc:"Free runner per build. Needs a workflow in the repo", wait:3200, waitText:"Waiting for GitHub runner… queued", icon:"◉", setup:true},
+  depot:  {name:"Depot", kind:"External · BuildKit URL", desc:"Hosted BuildKit with a warm cache", wait:900, waitText:"Connecting to Depot…", icon:"◆"},
+};
+const SERVICES = [
+  {id:"web", name:"web", src:"acme/shop · apps/web", icon:"W", x:80, y:70, build:true},
+  {id:"api", name:"api", src:"acme/shop · apps/api", icon:"A", x:360, y:70, build:true},
+  {id:"worker", name:"worker", src:"acme/shop · apps/worker", icon:"⚙", x:360, y:250, build:true},
+  {id:"pg", name:"postgres", src:"postgres:17", icon:"🐘", x:80, y:250, build:false},
+];
+const STEPS = [
+  ["[internal] load build definition", 300],
+  ["[internal] load metadata for node:22-slim", 500],
+  ["COPY package.json pnpm-lock.yaml ./", 200],
+  ["RUN pnpm install --frozen-lockfile", 1600],
+  ["COPY . .", 250],
+  ["RUN pnpm build", 1400],
+  ["exporting image", 400],
+];
+
+const params = new URLSearchParams(location.search);
+const S = {
+  variant: params.get("variant") || "A",
+  deployed: "hel1",     // builder in Applied State
+  builder: "hel1",      // builder in Working State (staged if different)
+  ghReady: false,       // workflow installed?
+  page: "canvas",       // canvas | servers
+  sel: "api",
+  tab: "details",
+  mode: "live",         // live | deploy
+  run: null,            // {builder, phase:'wait'|'build'|'deploy'|'done', svc:{id:{build:[..], deploy}}, waitMsg}
+  menu: false,
+};
+const VARIANTS = {A:"Service ▸ Build section", B:"Builders are Servers", C:"Pick at deploy"};
+
+function h(s){return s}
+function staged(){return S.builder !== S.deployed}
+function B(){return BUILDERS[S.builder]}
+
+/* ---------- builder picker (shared by A & B) ---------- */
+function picker(keys, compact){
+  return `<div class="opts">${keys.map(k=>{
+    const b=BUILDERS[k], on=S.builder===k, st=on&&staged();
+    return `<div role="button" tabindex="0" class="opt ${on?(st?'staged':'on'):''}" onclick="pick('${k}')">
+      <span class="radio"></span>
+      <span style="flex:1"><span class="t">${b.icon} ${b.name} ${k==='hel1'?'<span class="chip">default</span>':''}${k==='nuc'?'<span class="chip">build only</span>':''}</span>
+      ${compact?'':`<span class="d">${b.desc}</span>`}
+      ${on&&k==='github'?ghSetup():''}
+      ${on&&k==='depot'?`<div class="setup"><span class="label">BuildKit URL</span><div class="input mono">tcp://acme.depot.dev:443</div><span class="label">Credential</span><div class="input mono">•••••••• <span style="flex:1"></span><span class="chip ok">verified</span></div></div>`:''}
+      </span></div>`}).join("")}</div>`;
+}
+function ghSetup(){
+  if(S.ghReady) return `<div class="setup"><span><span class="chip ok">✓ ready</span> <span class="mono">.github/workflows/ployz-build.yml</span> on main</span><span class="d">Runs only when Ployz starts a build. It never deploys by itself.</span></div>`;
+  return `<div class="setup" onclick="event.stopPropagation()"><span><span class="chip warn">setup needed</span> No builder workflow in acme/shop</span>
+    <span class="d">We'll open a PR that adds one small file. Merge it and you're done.</span>
+    <span><button class="btn sm primary" onclick="S.ghReady=true;render()">Open setup PR</button> <button class="btn sm" onclick="S.ghReady=true;render()">Show YAML</button></span></div>`;
+}
+function pick(k){S.builder=k;S.menu=false;render()}
+
+/* ---------- canvas pieces ---------- */
+function nodeHtml(s){
+  let inner="";
+  if(S.mode==="deploy" && S.run){
+    const r=S.run.svc[s.id];
+    if(s.build){
+      const bs=r.buildState, last=r.steps.filter(x=>x.state!=='pending').slice(-1)[0];
+      const lbl = bs==='wait' ? `<span class="dot wait"></span>Build · waiting for builder`
+               : bs==='run' ? `<span class="dot run"></span>Build · ${r.steps.filter(x=>x.state==='done').length}/${r.steps.length}`
+               : bs==='done' ? `<span class="dot ok"></span>Build · ${r.cached?'cached steps reused':'done'}`
+               : `<span class="dot"></span>Build`;
+      inner += `<div class="phase">${lbl}</div>`;
+      if(bs==='wait') inner += `<div class="tail mono">${S.run.waitMsg}</div>`;
+      else if(bs==='run' && last) inner += `<div class="tail mono">${last.name}</div>`;
+    }
+    const ds=r.deployState;
+    inner += `<div class="phase">${ds==='run'?'<span class="dot run"></span>Deploy · starting':ds==='done'?'<span class="dot ok"></span>Deploy · healthy':'<span class="dot"></span>Deploy'}</div>`;
+  } else {
+    inner = `<div class="phase"><span class="dot ok"></span>online</div>`;
+  }
+  const buildChip = (S.variant!=="C" && s.build && S.mode==="live" && staged()) ? `<span class="chip pink" style="margin-top:6px">builder changed</span>`:'';
+  return `<div class="node ${S.sel===s.id?'sel':''}" style="left:${s.x}px;top:${s.y}px" onclick="S.sel='${s.id}';render()">
+    <h4><span class="ico">${s.icon}</span>${s.name}</h4><div class="src">${s.src}</div>${inner}${buildChip}</div>`;
+}
+
+function deployBar(){
+  const running = S.run && S.run.phase!=='done';
+  const segs = `<div class="seg"><button class="${S.mode==='live'?'on':''}" onclick="S.mode='live';render()">Live</button>
+    <button class="${S.mode==='deploy'?'on':''}" onclick="S.mode='deploy';S.tab=S.run?'build':S.tab;render()">${running?`Deploying ${doneCount()}/4 ›`:'Deployments ⌄'}</button></div>`;
+  const cPick = S.variant==="C" ? `<button class="btn" onclick="S.menu=!S.menu;render()" title="Where images build">${B().icon} ${B().name} ⌄</button>`:'';
+  if(staged() && S.variant!=="C" && S.mode==='live')
+    return `<div class="bar staged">${segs}<span class="n">Apply 1 change</span><button class="btn">Details</button><button class="btn primary" onclick="deploy()">Deploy ⇧↵</button><button class="btn">⋮</button></div>`;
+  return `<div class="bar">${segs}${S.mode==='live'?`${cPick}<button class="btn primary" onclick="deploy()">Redeploy</button>`:''}
+    ${S.menu?`<div class="menu"><div class="label" style="padding:6px 8px">Build images on</div>${picker(["hel1","nuc","github","depot"],true)}<div class="d label" style="padding:6px 8px;font-weight:400">Remembered for this environment.</div></div>`:''}</div>`;
+}
+function doneCount(){return S.run?Object.values(S.run.svc).filter(x=>x.deployState==='done').length:0}
+
+/* ---------- inspector ---------- */
+function panel(){
+  const s=SERVICES.find(x=>x.id===S.sel);
+  const tabs = S.mode==='deploy'
+    ? ['details','build','deploy'].map(t=>`<button class="${S.tab===t?'on':''}" onclick="S.tab='${t}';render()">${{details:'Details',build:'Build logs',deploy:'Deploy logs'}[t]}</button>`).join('')
+    : ['settings','variables'].map(t=>`<button class="${(S.tab===t||(t==='settings'&&!['variables'].includes(S.tab)))?'on':''}" onclick="S.tab='${t}';render()">${t[0].toUpperCase()+t.slice(1)}</button>`).join('');
+  let body="";
+  if(S.mode==='deploy' && S.tab==='build') body = buildLogs(s);
+  else if(S.mode==='deploy' && S.tab==='deploy') body = `<div class="logs mono"><div class="step">container ${s.name}-7f2 created on hel-1</div><div class="step">health: ${S.run&&S.run.svc[s.id].deployState==='done'?'healthy':'waiting'}</div></div>`;
+  else if(S.mode==='deploy') body = `<div class="field"><span class="label">Deployment</span><div>#58 · ${S.run?S.run.trigger:''}</div></div><div class="field"><span class="label">Builder</span><div>${S.run?BUILDERS[S.run.builder].icon+' '+BUILDERS[S.run.builder].name:''}</div></div>`;
+  else body = settings(s);
+  return `<div class="panel"><div class="ph"><span class="ico">${s.icon}</span><h3>${s.name}</h3><button class="btn sm">✕</button></div><div class="tabs">${tabs}</div><div class="pbody">${body}</div></div>`;
+}
+function settings(s){
+  const src = `<div class="section"><h5>Source</h5><div class="field"><span class="label">Repository</span><div class="input">${s.build?'acme/shop · main':'postgres:17'}</div></div>
+    ${s.build?`<div class="field"><span class="label">Root directory</span><div class="input mono">apps/${s.id}</div></div>`:''}</div>`;
+  if(!s.build) return src + `<div class="section"><h5>Build</h5><div class="d label" style="font-weight:400">Image source. Nothing to build.</div></div>`;
+  let build = `<div class="field"><span class="label">Dockerfile</span><div class="input mono">apps/${s.id}/Dockerfile</div></div>`;
+  if(S.variant==="A"){
+    build += `<div class="field"><span class="label">Build on <span style="font-weight:400">· applies to every service in production</span></span>${picker(["hel1","nuc","github","depot"])}</div>`;
+  } else if(S.variant==="B"){
+    build += `<div class="field"><span class="label">Build on</span><div class="input" style="justify-content:space-between">${B().icon} ${B().name} <a href="#" onclick="S.page='servers';render();return false">Change in Servers ›</a></div></div>`;
+  } else {
+    build += `<div class="field"><span class="label">Build on</span><div class="d label" style="font-weight:400">Picked in the deploy bar. Currently ${B().name}.</div></div>`;
+  }
+  return src + `<div class="section"><h5>Build</h5><div style="display:flex;flex-direction:column;gap:12px">${build}</div></div>`;
+}
+function buildLogs(s){
+  if(!s.build) return `<div class="label" style="font-weight:400">postgres uses an image. No build.</div>`;
+  const r=S.run&&S.run.svc[s.id]; if(!r) return '';
+  const b=BUILDERS[S.run.builder];
+  const link = S.run.builder==='github' ? (r.buildState==='wait'?'<span class="chip warn">queued</span>':'<a href="#">run #412 ↗</a>') : '';
+  const rows = r.buildState==='wait'
+    ? `<div class="step"><span class="dot wait"></span><span class="nm">${S.run.waitMsg}</span></div>`
+    : r.steps.map(x=>`<div class="step"><span class="dot ${x.state==='done'?'ok':x.state==='run'?'run':''}"></span><span class="nm">${x.name}</span><span class="tm">${x.state==='done'?(x.cached?'CACHED':(x.ms/1000).toFixed(1)+'s'):''}</span></div>`).join('');
+  return `<div class="logs mono"><div class="builderline">${b.icon} <span style="flex:1">${b.name}</span>${link}</div>${rows}</div>
+   <div class="label" style="font-weight:400">Same steps and same log format on every builder. The image always lands on hel-1, then ships to your other servers over the mesh.</div>`;
+}
+
+/* ---------- servers page (variant B) ---------- */
+function serversPage(){
+  const row=(k,status,role)=>{const b=BUILDERS[k];const on=S.builder===k;
+    return `<tr><td>${b.icon} <b style="font-weight:500">${b.name}</b></td><td>${role}</td><td>${status}</td>
+    <td style="text-align:right">${on?`<span class="chip ${staged()?'pink':'ok'}">builds production</span>`:`<button class="btn sm" onclick="pick('${k}')">Use for production builds</button>`}</td></tr>`};
+  return `<div class="page"><h2>Servers</h2><div class="label" style="font-weight:400;margin-bottom:20px">Machines in your cluster, and the places that can build your images.</div>
+  <table><tr><th>Name</th><th>Runs</th><th>Status</th><th></th></tr>
+    ${row('hel1','<span class="chip ok">online</span>','services + builds')}
+    <tr><td>▣ <b style="font-weight:500">hel-2</b></td><td>services</td><td><span class="chip ok">online</span></td><td></td></tr>
+    ${row('nuc','<span class="chip ok">online</span>','builds only')}
+  </table>
+  <h2 style="font-size:16px;font-weight:500;margin:28px 0 4px">External builders</h2><div class="label" style="font-weight:400;margin-bottom:12px">Not in your cluster. Borrowed for the length of one build.</div>
+  <table>
+    ${row('github',S.ghReady?'<span class="chip ok">workflow ready</span>':'<span class="chip warn">setup needed</span>','builds only')}
+    ${row('depot','<span class="chip ok">reachable</span>','builds only')}
+  </table>
+  ${S.builder==='github'&&!S.ghReady?`<div style="max-width:420px;margin-top:16px">${ghSetup()}</div>`:''}
+  <div style="margin-top:16px;display:flex;gap:8px"><button class="btn">+ Add server</button><button class="btn">+ Add builder</button>
+  <button class="btn" style="margin-left:auto" onclick="S.page='canvas';render()">Back to production ›</button></div></div>`;
+}
+
+/* ---------- simulation ---------- */
+let timers=[];
+function deploy(){
+  if(S.builder==='github' && !S.ghReady){ alert('GitHub Actions needs the workflow first (Open setup PR).'); return; }
+  timers.forEach(clearTimeout); timers=[];
+  S.deployed=S.builder; S.menu=false;
+  const svc={}; SERVICES.forEach(s=>svc[s.id]={buildState:s.build?'pending':'none',deployState:'pending',steps:STEPS.map(([name,ms])=>({name,ms,state:'pending'}))});
+  S.run={builder:S.builder,phase:'wait',svc,waitMsg:BUILDERS[S.builder].waitText,trigger:'manual deploy · abc1234'};
+  S.mode='deploy'; S.tab='build'; S.sel='web';
+  let t=0; const at=(ms,fn)=>{t+=ms;timers.push(setTimeout(()=>{fn();render()},t))};
+  const b=BUILDERS[S.builder];
+  SERVICES.filter(s=>s.build).forEach(s=>svc[s.id].buildState=b.wait?'wait':'pending');
+  if(S.builder==='github'){ at(1400,()=>S.run.waitMsg='Runner started · ubuntu-24.04 · starting BuildKit…'); at(1800,()=>{}); }
+  else if(b.wait) at(b.wait,()=>{});
+  // builds run one at a time, later ones reuse shared steps
+  SERVICES.filter(s=>s.build).forEach((s,i)=>{
+    const r=svc[s.id];
+    at(i===0?50:150,()=>{r.buildState='run';S.run.phase='build'; if(i===0) SERVICES.filter(x=>x.build&&x!==s).forEach(x=>svc[x.id].buildState='pending')});
+    r.steps.forEach((st,j)=>{
+      const cached = i>0 && j<4 && S.builder!=='github' || i>0 && j<2;
+      at(cached?60:Math.round(st.ms/2),()=>{st.state='done';st.cached=cached;if(r.steps[j+1])r.steps[j+1].state='run'});
+    });
+    r.steps.push({name:S.builder==='hel1'?'image ready on hel-1':'receive image on hel-1',ms:0,state:'pending'});
+    at(S.builder==='hel1'?100:700,()=>{r.steps[r.steps.length-1].state='done';r.buildState='done';r.cached=i>0});
+  });
+  at(300,()=>{S.run.phase='deploy';SERVICES.forEach(s=>svc[s.id].deployState='run')});
+  at(1200,()=>{SERVICES.forEach(s=>svc[s.id].deployState='done');S.run.phase='done'});
+  render();
+}
+
+/* ---------- render ---------- */
+function render(){
+  const deploying = S.mode==='deploy';
+  const main = (S.variant==="B" && S.page==='servers') ? serversPage() : `
+    <div class="envhead"><b style="font-weight:500">production</b>
+      ${deploying?`<span class="chip info">Deployment #58</span><span class="label" style="font-weight:400">${S.run?S.run.trigger:''}</span>`:''}
+      <span class="sp"></span>
+      ${S.variant!=="C"?`<span class="label" style="font-weight:400">Builds on</span><span class="chip ${staged()?'pink':''}">${B().icon} ${B().name}</span>`:''}
+      ${deploying?`<button class="btn sm" onclick="S.mode='live';S.tab='settings';render()">Back to live</button>`:''}
+    </div>
+    <div class="stage"><div class="canvas">${SERVICES.map(nodeHtml).join('')}${deployBar()}</div>${panel()}</div>`;
+  document.getElementById('app').innerHTML = `
+    <div class="top"><div class="logo"></div><span class="crumb">acme / <b>shop</b> / production</span></div>
+    <div class="shell ${deploying&&S.page!=='servers'?'deploying':''}">
+      <div class="side">
+        <button class="nav ${S.page==='canvas'?'on':''}" onclick="S.page='canvas';render()">▦ Projects</button>
+        <button class="nav ${S.page==='servers'?'on':''}" onclick="S.page='${S.variant==="B"?'servers':'canvas'}';render()">▣ Servers</button>
+        <button class="nav">⚙ Settings</button>
+      </div>
+      <div class="main">${main}</div>
+    </div>
+    <div class="note"><b>Variant ${S.variant} · ${VARIANTS[S.variant]}</b><br>${{
+      A:"Builder lives in the service's Build section. It's one setting for the whole environment, so changing it is a staged change (pink) that goes out with the next Deploy.",
+      B:"Builders sit next to machines on the Servers page. The homelab is a build-only Server; GitHub and Depot are external builders. The service only links there.",
+      C:"No setting to find. The deploy bar says where this deploy builds, and it's remembered. Not a staged change.",
+    }[S.variant]}<br><br>Try: switch to <b>GitHub Actions</b> → Deploy → watch the Build logs.</div>`;
+  document.getElementById('proto').innerHTML = `<button onclick="cycle(-1)">←</button><b>${S.variant}</b> ${VARIANTS[S.variant]}<button onclick="cycle(1)">→</button>
+    <span class="state">builder=${S.builder} applied=${S.deployed} gh=${S.ghReady?'ready':'none'} mode=${S.mode} phase=${S.run?S.run.phase:'-'}</span>
+    <button onclick="reset()">reset</button>`;
+}
+function cycle(d){const k=Object.keys(VARIANTS);S.variant=k[(k.indexOf(S.variant)+d+k.length)%k.length];S.page='canvas';S.menu=false;params.set('variant',S.variant);history.replaceState(null,'','?'+params);render()}
+function reset(){timers.forEach(clearTimeout);Object.assign(S,{deployed:'hel1',builder:'hel1',ghReady:false,page:'canvas',sel:'api',tab:'settings',mode:'live',run:null,menu:false});render()}
+addEventListener('keydown',e=>{if(e.target.closest('input,textarea,[contenteditable]'))return;if(e.key==='ArrowLeft')cycle(-1);if(e.key==='ArrowRight')cycle(1)});
+render();
+</script>
+</body>
+</html>

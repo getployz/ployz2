@@ -1,0 +1,396 @@
+<!doctype html>
+<!-- PROTOTYPE v3, throwaway: build pool + per-service override. v1 variants in v1-variants.html -->
+<html lang="en"><head><meta charset="utf-8"><title>PROTOTYPE · Build pool v4</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{
+    --ink:#111;--ink-hover:#2a2a2a;--pink:#d0268c;--pink-deep:#a80068;--pink-soft:#fff0f7;--pink-border:#efb3ce;
+    --canvas:#fff;--subtle:#fafafa;--muted:#f2f2f2;--ink-muted:#666;--rule:#dedede;
+    --ok:#42946e;--ok-soft:#dff1e9;--warn:#ad871f;--warn-soft:#f9efd2;--bad:#b62d2b;--info:#2057c5;--info-soft:#e8effc;
+    --deploy-tint:#f4f7fe;
+    --float:0 1px 3px rgb(0 0 0/.1),0 4px 6px -1px rgb(0 0 0/.1);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.43 "Geist",ui-sans-serif,system-ui,sans-serif;color:var(--ink);background:var(--canvas)}
+  .mono{font-family:"Geist Mono",ui-monospace,monospace;font-size:12px;line-height:1.5}
+  button{font:inherit;color:inherit;cursor:pointer}
+  .btn{height:32px;padding:0 10px;border-radius:12px;border:1px solid var(--rule);background:var(--canvas)}
+  .btn:hover{background:var(--muted)}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .btn.primary:hover{background:var(--ink-hover)}
+  .btn.sm{height:26px;border-radius:9px;font-size:12px}
+  .label{font-size:12px;font-weight:500;color:var(--ink-muted)}
+  .chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:999px;font-size:12px;font-weight:500;border:1px solid var(--rule);background:var(--subtle);white-space:nowrap}
+  .chip.ok{background:var(--ok-soft);border-color:#b9dfcc;color:#2d6e50}
+  .chip.warn{background:var(--warn-soft);border-color:#ead79f;color:#7c5f10}
+  .chip.info{background:var(--info-soft);border-color:#bccdf2;color:var(--info)}
+  .chip.pink{background:var(--pink-soft);border-color:var(--pink-border);color:var(--pink-deep)}
+  a{color:var(--info);text-decoration:none}
+
+  /* app shell */
+  .top{height:64px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:12px;padding:0 16px}
+  .logo{width:24px;height:24px;border-radius:7px;background:var(--ink)}
+  .crumb{color:var(--ink-muted)} .crumb b{color:var(--ink);font-weight:500}
+  .shell{display:flex;height:calc(100vh - 64px)}
+  .side{width:220px;border-right:1px solid var(--rule);padding:12px;display:flex;flex-direction:column;gap:2px;flex-shrink:0}
+  .nav{height:32px;border-radius:10px;padding:0 8px;display:flex;align-items:center;gap:8px;border:0;background:none;text-align:left;width:100%}
+  .nav:hover{background:var(--subtle)} .nav.on{background:var(--muted);font-weight:500}
+  .main{flex:1;position:relative;overflow:hidden;display:flex;flex-direction:column}
+
+  /* env header */
+  .envhead{height:48px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:10px;padding:0 16px;transition:background .3s}
+  .envhead .sp{flex:1}
+  .deploying .envhead{background:var(--deploy-tint)}
+
+  /* canvas */
+  .stage{flex:1;position:relative;display:flex;overflow:hidden}
+  .canvas{flex:1;position:relative;background-image:radial-gradient(#e4e4e4 1px,transparent 1px);background-size:18px 18px;transition:background-color .3s,box-shadow .3s}
+  .deploying .canvas{background-color:var(--deploy-tint);box-shadow:inset 0 0 0 2px #bccdf2}
+  .node{position:absolute;width:220px;border-radius:16px;border:1px solid var(--rule);background:var(--canvas);padding:12px;cursor:pointer}
+  .node.sel{outline:3px solid var(--pink-border)}
+  .node h4{margin:0 0 2px;font-size:14px;font-weight:500;display:flex;align-items:center;gap:6px}
+  .node .src{font-size:12px;color:var(--ink-muted)}
+  .ico{width:18px;height:18px;border-radius:5px;background:var(--muted);display:inline-grid;place-items:center;font-size:11px}
+  .phase{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--rule);flex-shrink:0}
+  .dot.run{background:var(--info);animation:pulse 1s infinite} .dot.ok{background:var(--ok)} .dot.wait{background:var(--warn);animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .tail{margin-top:6px;padding:6px 8px;border-radius:8px;background:var(--subtle);color:var(--ink-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* deploy bar */
+  .bar{white-space:nowrap;position:absolute;left:50%;bottom:64px;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:6px;border-radius:14px;background:var(--canvas);border:1px solid var(--rule);box-shadow:var(--float);z-index:5}
+  .bar.staged{background:var(--pink-soft);border-color:var(--pink-border)}
+  .seg{display:flex;background:var(--muted);border-radius:10px;padding:2px}
+  .seg button{height:28px;border:0;background:none;border-radius:8px;padding:0 10px}
+  .seg button.on{background:var(--canvas);box-shadow:0 1px 2px rgb(0 0 0/.08);font-weight:500}
+  .bar .n{color:var(--pink-deep);font-weight:500;padding:0 6px}
+
+  /* inspector */
+  .panel{width:400px;border-left:1px solid var(--rule);background:var(--canvas);display:flex;flex-direction:column;flex-shrink:0}
+  .panel .ph{padding:12px 16px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:8px}
+  .panel .ph h3{margin:0;font-size:16px;font-weight:500;flex:1}
+  .tabs{display:flex;gap:2px;padding:8px 12px;border-bottom:1px solid var(--rule)}
+  .tabs button{height:28px;border:0;background:none;border-radius:8px;padding:0 10px;color:var(--ink-muted)}
+  .tabs button.on{background:var(--muted);color:var(--ink);font-weight:500}
+  .pbody{padding:16px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:18px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .input{height:32px;border:1px solid var(--rule);border-radius:12px;padding:4px 10px;display:flex;align-items:center;background:var(--canvas)}
+  .section h5{margin:0 0 8px;font-size:12px;font-weight:500;color:var(--ink-muted);text-transform:none}
+  .section{border-top:1px solid var(--rule);padding-top:14px}
+  .section:first-child{border-top:0;padding-top:0}
+
+  /* builder picker */
+  .opts{display:flex;flex-direction:column;gap:6px}
+  .opt{cursor:pointer;display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--rule);border-radius:12px;background:var(--canvas);text-align:left;width:100%}
+  .opt:hover{background:var(--subtle)}
+  .opt.on{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+  .opt.staged{background:var(--pink-soft);border-color:var(--pink-border);box-shadow:0 0 0 1px var(--pink-border)}
+  .opt .t{font-weight:500;display:flex;gap:6px;align-items:center}
+  .opt .d{font-size:12px;color:var(--ink-muted)}
+  .radio{width:14px;height:14px;border-radius:50%;border:1px solid #bbb;margin-top:3px;flex-shrink:0}
+  .opt.on .radio,.opt.staged .radio{border:4px solid var(--ink)} .opt.staged .radio{border-color:var(--pink)}
+  .setup{margin-top:8px;padding:10px;border-radius:10px;background:var(--subtle);border:1px dashed var(--rule);font-size:12px;display:flex;flex-direction:column;gap:6px}
+
+  /* logs */
+  .logs{border:1px solid var(--rule);border-radius:12px;overflow:hidden}
+  .step{display:flex;gap:8px;align-items:center;padding:6px 10px;border-top:1px solid var(--muted)}
+  .step:first-child{border-top:0}
+  .step .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .step .tm{color:var(--ink-muted)}
+  .builderline{padding:8px 10px;background:var(--subtle);border-bottom:1px solid var(--rule);display:flex;gap:8px;align-items:center}
+
+  /* servers page (variant B) */
+  .page{padding:24px 32px;overflow:auto;flex:1}
+  .page h2{font-size:20px;font-weight:600;margin:0 0 4px}
+  table{width:100%;border-collapse:collapse}
+  td,th{padding:10px 12px;border-bottom:1px solid var(--rule);text-align:left;font-weight:400}
+  th{font-size:12px;font-weight:500;color:var(--ink-muted)}
+  .menu{white-space:normal;position:absolute;bottom:58px;right:6px;width:300px;background:var(--canvas);border:1px solid var(--rule);border-radius:12px;box-shadow:var(--float);padding:6px}
+  .menu .opt{border:0;border-radius:8px}
+
+  /* prototype chrome (NOT design) */
+  .proto{position:fixed;left:50%;bottom:-2px;transform:translateX(-50%);z-index:50;display:flex;align-items:center;gap:8px;background:#222;color:#fff;padding:6px 10px 8px;border-radius:12px 12px 0 0;font-size:12px}
+  .proto button{background:#444;border:0;color:#fff;border-radius:6px;height:24px;padding:0 8px}
+  .proto .state{color:#9f9;font-family:ui-monospace,monospace}
+  .note{position:fixed;bottom:56px;left:12px;z-index:40;max-width:196px;background:#fffbe6;border:1px solid #ead79f;border-radius:10px;padding:10px 12px;font-size:12px;color:#5c4a0f}
+</style>
+<style>
+  .pool td{vertical-align:middle}
+  .ord{display:inline-flex;flex-direction:column;gap:0}
+  .ord button{border:0;background:none;height:14px;line-height:14px;font-size:10px;color:var(--ink-muted);padding:0 4px}
+  .ord button:hover{color:var(--ink)}
+  .num{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:6px;background:var(--muted);font-size:12px;font-weight:500}
+  .toggle{width:32px;height:18px;border-radius:999px;border:0;background:#ccc;position:relative;padding:0}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s}
+  .toggle.on{background:var(--ink)} .toggle.on::after{left:16px}
+  tr.off td{color:#aaa}
+  select.input{appearance:auto;font:inherit;width:100%}
+  .why{font-size:12px;color:var(--ink-muted)}
+  .rule{padding:10px 12px;border-radius:12px;background:var(--subtle);border:1px solid var(--rule);font-size:13px;margin:12px 0 16px;display:flex;gap:8px;align-items:center}
+  .num-in{width:52px;height:26px;border:1px solid var(--rule);border-radius:8px;padding:0 6px;font:inherit}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="proto" id="proto"></div>
+<script>
+/* PROTOTYPE v3 — throwaway.
+   Builder = {order, concurrent builds, start within}.
+   A service builds from a list: the org pool, or its override list.
+   Walk the list: skip offline/full builders; wait up to "start within"
+   for one to start, else try the next. All full → queue. Nothing starts → fail.
+   No predictions: show the rule before, live state during, evidence after.
+   Sim time: 1 minute = 2 seconds. */
+const MIN = 2000;
+const BUILDERS = {
+  cluster:{name:"Your servers", icon:"▣", kind:"pool"},
+  hel1:   {name:"hel-1", icon:"▣", kind:"cluster", runs:"services", builds:true, cap:1, start:0, within:null},
+  hel2:   {name:"hel-2", icon:"▣", kind:"cluster", runs:"services", builds:false, cap:1, start:0, within:null},
+  nuc:    {name:"nuc-basement", icon:"⌂", kind:"cluster", runs:"no services", builds:true, cap:2, start:0, within:null},
+  github: {name:"GitHub Actions", icon:"◉", kind:"external", runs:"one runner per build", cap:20, start:0.8, within:3},
+  depot:  {name:"Depot", icon:"◆", kind:"external", runs:"BuildKit URL", cap:4, start:0.3, within:1},
+};
+const SERVICES = [
+  {id:"web", name:"web", src:"acme/shop · apps/web", icon:"W", x:80, y:70, build:true},
+  {id:"api", name:"api", src:"acme/shop · apps/api", icon:"A", x:360, y:70, build:true},
+  {id:"worker", name:"worker", src:"acme/shop · apps/worker", icon:"⚙", x:360, y:250, build:true},
+  {id:"pg", name:"postgres", src:"postgres:17", icon:"🐘", x:80, y:250, build:false},
+];
+const STEPS = [["[internal] load build definition",300],["[internal] load metadata for node:22-slim",500],["COPY package.json pnpm-lock.yaml ./",200],["RUN pnpm install --frozen-lockfile",1600],["COPY . .",250],["RUN pnpm build",1400],["exporting image",400]];
+
+const S = {
+  pool: [ {k:"cluster",on:true}, {k:"github",on:true}, {k:"depot",on:false} ],
+  cache: {web:"nuc", worker:"hel1", api:"hel1"},   // last server that built each service (from Build Receipts)
+  online: {nuc:true, hel1:true, hel2:true, github:true, depot:true},
+  stall: {github:false, depot:false},     // sim: builder never starts
+  ghReady: true,
+  override: {api:{to:"github", fallback:true}},  // to: builder key | "cluster"
+  page: "canvas", sel: "api", tab: "settings", mode: "live", run: null,
+};
+const nm = k => BUILDERS[k].name;
+
+/* the list a service builds from: pool tokens (cluster | github | depot) */
+const SRV = ()=>Object.keys(BUILDERS).filter(k=>BUILDERS[k].kind==='cluster');
+function listFor(id){
+  const pool = S.pool.filter(p=>p.on).map(p=>p.k);
+  const o = S.override[id];
+  if (!o) return pool;
+  if (o.to==="cluster") return ["cluster"];
+  return o.fallback ? [o.to, ...pool.filter(k=>k!==o.to)] : [o.to];
+}
+function listText(id){
+  const o=S.override[id], l=listFor(id).map(nm);
+  if(!o) return `Uses the build pool: ${l.join(" → ")}.`;
+  if(o.to==="cluster") return `Only your servers. Never GitHub or Depot.`;
+  return o.fallback ? `${nm(o.to)} first. If it doesn't start in time, the build pool.` : `Only ${nm(o.to)}. Fails if it doesn't start in time.`;
+}
+/* Your servers: pick one at build time. Warm cache first, then most free slots. */
+function pickServer(id, notes){
+  const ok = SRV().filter(k=>BUILDERS[k].builds && S.online[k]);
+  const free = ok.filter(k=>load(k)<BUILDERS[k].cap);
+  if(!ok.length){ notes.push('no server can build'); return null; }
+  if(!free.length){ notes.push('your servers are full'); return null; }
+  const c=S.cache[id];
+  if(free.includes(c)) return {k:c, why:`has ${id}'s build cache`};
+  const k=free.sort((a,b)=>(BUILDERS[b].cap-load(b))-(BUILDERS[a].cap-load(a)))[0];
+  const why = c && ok.includes(c) ? `most free slots · ${nm(c)} has the cache but is full`
+            : c && BUILDERS[c].builds===false ? `most free slots · ${nm(c)} had the cache but no longer builds`
+            : c && !S.online[c] ? `most free slots · ${nm(c)} has the cache but is offline`
+            : `most free slots · no cache yet`;
+  return {k, why};
+}
+
+/* ---------- live simulation (decisions happen at run time) ---------- */
+let tick=null;
+function load(k){return S.run?Object.values(S.run.b).filter(x=>x.k===k&&(x.state==='wait'||x.state==='run')).length:0}
+function step(){
+  const R=S.run, now=Date.now()-R.t0;
+  for (const s of SERVICES.filter(s=>s.build)) {
+    const x=R.b[s.id];
+    if (x.state==='pending'||x.state==='queued') {
+      const notes=[]; let got=null;
+      for (const k of x.list) {
+        if (k==='cluster'){ const p=pickServer(s.id,notes); if(p){got=p.k;x.why=p.why;break} continue; }
+        if (x.timedOut.includes(k)) continue;
+        if (k==='github'&&!S.ghReady){notes.push(`${nm(k)} not set up`);continue}
+        if (!S.online[k]){notes.push(`${nm(k)} offline`);continue}
+        if (load(k)>=BUILDERS[k].cap){notes.push(`${nm(k)} full`);continue}
+        got=k;x.why=k==='depot'?'persistent remote cache':'cold cache';break;
+      }
+      if (got){ Object.assign(x,{k:got,t:now,state:BUILDERS[got].start?'wait':'run',warm:S.cache[s.id]===got||got==='depot'}); x.trail.push(...notes); if(x.state==='run')x.tr=now;
+        x.steps.forEach((st,j)=>{st.cached=x.warm&&j<5}); }
+      else if (x.list.some(k=>k==='cluster'?SRV().some(v=>BUILDERS[v].builds&&S.online[v]):S.online[k]&&!x.timedOut.includes(k))) { x.state='queued'; x.qnote=notes.join(' · '); }
+      else { x.state='failed'; x.trail.push(...notes); x.fail = x.timedOut.length ? `${x.timedOut.map(nm).join(', ')} didn't start in time` : 'no builder online'; }
+    }
+    else if (x.state==='wait') {
+      const b=BUILDERS[x.k];
+      if (S.stall[x.k] && b.within!=null && now-x.t >= b.within*MIN) {
+        x.timedOut.push(x.k); x.trail.push(`${b.name}: didn't start in ${b.within}m`); x.k=null; x.state='pending';
+      } else if (!S.stall[x.k] && now-x.t >= b.start*MIN) { x.state='run'; x.tr=now; }
+    }
+    else if (x.state==='run') {
+      let t=x.tr; x.steps.forEach(st=>{ const d=st.cached?60:st.ms/2; t+=d; st.state = now>=t?'done':(now>=t-d?'run':'pending'); });
+      if (now>=t+ (BUILDERS[x.k].kind==='cluster'?0:600)) { x.state='done'; x.steps.forEach(st=>st.state='done'); x.recv=true; if(BUILDERS[x.k].kind==='cluster') S.cache[s.id]=x.k; }
+    }
+  }
+  const xs=Object.values(R.b);
+  if (R.phase==='build' && xs.every(x=>x.state==='done'||x.state==='failed')) {
+    if (xs.some(x=>x.state==='failed')) { R.phase='failed'; clearInterval(tick); }
+    else { R.phase='deploy'; R.td=now; }
+  }
+  if (R.phase==='deploy' && now-R.td>1200) { R.phase='done'; clearInterval(tick); }
+  render();
+}
+function deploy(){
+  clearInterval(tick);
+  const b={}; SERVICES.filter(s=>s.build).forEach(s=>b[s.id]={list:listFor(s.id),state:'pending',k:null,trail:[],timedOut:[],steps:STEPS.map(([name,ms])=>({name,ms,state:'pending'}))});
+  S.run={t0:Date.now(),phase:'build',b,trigger:'manual deploy · abc1234'};
+  S.mode='deploy'; S.tab='build'; tick=setInterval(step,100); step();
+}
+
+/* ---------- servers page ---------- */
+function liveFor(k){
+  if(!S.run||S.run.phase==='done'||S.run.phase==='failed') return '';
+  const xs=Object.entries(S.run.b).filter(([,x])=>x.k===k&&(x.state==='wait'||x.state==='run'));
+  return xs.map(([id,x])=>`<span class="chip ${x.state==='run'?'info':'warn'}">${x.state==='run'?'building':'starting'} ${id}</span>`).join(' ');
+}
+function serversPage(){
+  const tog=(on,js,dis)=>`<button class="toggle ${on?'on':''}" ${dis?'disabled style="opacity:.4"':''} onclick="${js};render()"></button>`;
+  const srvRows = SRV().map(k=>{const b=BUILDERS[k];
+    const cached=Object.entries(S.cache).filter(([,v])=>v===k).map(([id])=>id);
+    return `<tr><td>${b.icon} <b style="font-weight:500">${b.name}</b></td><td>${b.runs}</td>
+      <td>${tog(b.builds,`BUILDERS.${k}.builds=!BUILDERS.${k}.builds`)}</td>
+      <td><span style="display:inline-flex;align-items:center;gap:6px;${b.builds?'':'opacity:.4'}"><input type="number" min="1" max="50" value="${b.cap}" class="num-in" ${b.builds?'':'disabled'} onchange="BUILDERS.${k}.cap=Math.max(1,+this.value||1);render()"> at once</span></td>
+      <td class="why">${b.builds&&cached.length?cached.join(', '):''}</td>
+      <td>${S.online[k]?'<span class="chip ok">online</span>':'<span class="chip warn">offline</span>'} <button class="btn sm" onclick="S.online.${k}=!S.online.${k};render()">${S.online[k]?'sim offline':'sim online'}</button></td>
+      <td>${liveFor(k)}</td></tr>`}).join('');
+  const building=SRV().filter(k=>BUILDERS[k].builds);
+  const poolRows = S.pool.map((p,i)=>{const b=BUILDERS[p.k];
+    const what = p.k==='cluster' ? `${building.length} of ${SRV().length} servers build · ${building.reduce((a,k)=>a+BUILDERS[k].cap,0)} at once<div class="why">Picks the server with the service's cache, then the one with the most free slots.</div>`
+      : `${b.runs} · ${b.cap} at once`;
+    const status = p.k==='cluster' ? '' : p.k==='github' ? (S.ghReady?'<span class="chip ok">workflow ready</span>':'<span class="chip warn">setup needed</span>') : '<span class="chip ok">reachable</span>';
+    const within = b.within==null ? '<span class="why">instant</span>'
+      : `<span style="display:inline-flex;align-items:center;gap:6px"><input type="number" min="1" max="30" value="${b.within}" class="num-in" onchange="BUILDERS.${p.k}.within=Math.max(1,+this.value||1);render()"> min</span>`;
+    const sim = b.within!=null?`<div style="margin-top:4px"><button class="btn sm" onclick="S.stall.${p.k}=!S.stall.${p.k};render()">${S.stall[p.k]?'sim: starts':'sim: never starts'}</button></div>`:'';
+    return `<tr class="${p.on?'':'off'}"><td style="width:70px"><span class="ord"><button onclick="mv(${i},-1)">▲</button><button onclick="mv(${i},1)">▼</button></span> <span class="num">${p.on?S.pool.filter(x=>x.on).indexOf(p)+1:'–'}</span></td>
+      <td>${b.icon} <b style="font-weight:500">${b.name}</b> ${b.kind==='external'?'<span class="chip">external</span>':''}</td>
+      <td>${what}</td><td>${within}</td><td>${status}${S.stall[p.k]?' <span class="chip warn">stalled</span>':''}${sim}</td>
+      <td>${p.k==='cluster'?'':liveFor(p.k)}</td>
+      <td style="text-align:right">${tog(p.on,`S.pool[${i}].on=!S.pool[${i}].on`)}</td></tr>`}).join('');
+  return `<div class="page"><h2>Servers</h2><div class="label" style="font-weight:400;margin-bottom:20px">Machines in your cluster, and where your images build.</div>
+  <table><tr><th>Name</th><th>Runs</th><th>Builds</th><th>Concurrent builds</th><th>Build cache for</th><th>Status</th><th>Now</th></tr>${srvRows}</table>
+  <h2 style="font-size:16px;font-weight:500;margin:32px 0 4px">Build pool</h2>
+  <div class="rule">↓ A build tries each entry top to bottom. It skips an entry that's full, and moves on if it doesn't start in time. If everything is full, the build waits.</div>
+  <table class="pool"><tr><th>Order</th><th>Builder</th><th></th><th>Start within</th><th>Status</th><th>Now</th><th style="text-align:right">In pool</th></tr>${poolRows}</table>
+  <div style="margin-top:16px;display:flex;gap:8px"><button class="btn">+ Add server</button><button class="btn">+ Add external builder</button>
+  <button class="btn" style="margin-left:auto" onclick="S.page='canvas';render()">Back to production ›</button></div></div>`;
+}
+function mv(i,d){const j=i+d;if(j<0||j>=S.pool.length)return;[S.pool[i],S.pool[j]]=[S.pool[j],S.pool[i]];render()}
+
+/* ---------- canvas ---------- */
+function buildLabel(x){
+  if(x.state==='queued') return `<span class="dot wait"></span>Build · waiting for a free builder`;
+  if(x.state==='wait') return `<span class="dot wait"></span>Build · starting on ${nm(x.k)}`;
+  if(x.state==='run') return `<span class="dot run"></span>Build · ${nm(x.k)} · ${x.steps.filter(s=>s.state==='done').length}/${x.steps.length}`;
+  if(x.state==='done') return `<span class="dot ok"></span>Build · ${nm(x.k)}${x.warm?' · cached':''}`;
+  if(x.state==='failed') return `<span class="dot" style="background:var(--bad)"></span><span style="color:var(--bad)">Build failed</span>`;
+  return `<span class="dot"></span>Build`;
+}
+function nodeHtml(s){
+  let inner="";
+  if(S.mode==="deploy" && S.run){
+    const x=S.run.b[s.id];
+    if(x){
+      inner += `<div class="phase">${buildLabel(x)}</div>`;
+      const tail = x.state==='failed'?x.fail : x.state==='queued'?x.qnote : x.state==='wait'?(x.k==='github'?'waiting for a GitHub runner…':'connecting…') : x.state==='run'?(x.steps.filter(t=>t.state!=='pending').slice(-1)[0]||{}).name : x.trail.length&&x.state!=='done'?'':'';
+      if(tail) inner += `<div class="tail mono">${tail}</div>`;
+    }
+    const ph=S.run.phase, ds = ph==='deploy'?'run':ph==='done'?'done':ph==='failed'?'skip':'';
+    inner += `<div class="phase">${ds==='run'?'<span class="dot run"></span>Deploy · starting':ds==='done'?'<span class="dot ok"></span>Deploy · healthy':ds==='skip'?'<span class="dot"></span><span class="why">Deploy · not started</span>':'<span class="dot"></span>Deploy'}</div>`;
+  } else {
+    inner = `<div class="phase"><span class="dot ok"></span>online</div>`;
+    const o=S.override[s.id];
+    if(o) inner += `<div class="phase why">${o.to==='cluster'?'▣ builds on your servers only':`${BUILDERS[o.to].icon} builds on ${nm(o.to)}${o.fallback?', then pool':' only'}`}</div>`;
+  }
+  return `<div class="node ${S.sel===s.id?'sel':''}" style="left:${s.x}px;top:${s.y}px" onclick="S.sel='${s.id}';render()"><h4><span class="ico">${s.icon}</span>${s.name}</h4><div class="src">${s.src}</div>${inner}</div>`;
+}
+function deployBar(){
+  const R=S.run, running=R&&(R.phase==='build'||R.phase==='deploy');
+  const lbl = running?`Deploying ›`:R&&R.phase==='failed'&&S.mode==='live'?'Last deploy failed ⌄':'Deployments ⌄';
+  return `<div class="bar"><div class="seg"><button class="${S.mode==='live'?'on':''}" onclick="S.mode='live';S.tab='settings';render()">Live</button>
+    <button class="${S.mode==='deploy'?'on':''}" onclick="if(S.run){S.mode='deploy';S.tab='build';render()}">${lbl}</button></div>
+    ${S.mode==='live'?`<button class="btn primary" onclick="deploy()">Redeploy</button>`:''}</div>`;
+}
+
+/* ---------- inspector ---------- */
+function panel(){
+  const s=SERVICES.find(x=>x.id===S.sel);
+  const tabs = S.mode==='deploy'
+    ? ['details','build','deploy'].map(t=>`<button class="${S.tab===t?'on':''}" onclick="S.tab='${t}';render()">${{details:'Details',build:'Build logs',deploy:'Deploy logs'}[t]}</button>`).join('')
+    : ['settings','variables'].map(t=>`<button class="${S.tab===t?'on':''}" onclick="S.tab='${t}';render()">${t[0].toUpperCase()+t.slice(1)}</button>`).join('');
+  let body;
+  if(S.mode==='deploy'&&S.tab==='build') body=buildLogs(s);
+  else if(S.mode==='deploy'&&S.tab==='deploy') body=`<div class="logs mono"><div class="step">${S.run.phase==='failed'?'not started: a build failed':`container ${s.name}-7f2 created on hel-1`}</div></div>`;
+  else if(S.mode==='deploy') body=`<div class="field"><span class="label">Deployment</span><div>#58 · ${S.run.trigger}</div></div>`;
+  else body=settings(s);
+  return `<div class="panel"><div class="ph"><span class="ico">${s.icon}</span><h3>${s.name}</h3><button class="btn sm">✕</button></div><div class="tabs">${tabs}</div><div class="pbody">${body}</div></div>`;
+}
+function setOverride(id,v){ if(!v) delete S.override[id]; else S.override[id]={to:v,fallback:S.override[id]?.fallback ?? true}; render(); }
+function settings(s){
+  const src=`<div class="section"><h5>Source</h5><div class="field"><span class="label">Repository</span><div class="input">${s.build?'acme/shop · main':'postgres:17'}</div></div></div>`;
+  if(!s.build) return src+`<div class="section"><h5>Build</h5><div class="why">Image source. Nothing to build.</div></div>`;
+  const o=S.override[s.id], v=o?o.to:'';
+  const opt=(val,label)=>`<option value="${val}" ${v===val?'selected':''}>${label}</option>`;
+  const opts=[opt('','Build pool (automatic)'),opt('cluster','▣ Your servers only'),
+    ...['github','depot'].map(k=>opt(k,`${BUILDERS[k].icon} ${nm(k)}`))].join('');
+  const fb = o&&o.to!=='cluster' ? `<label class="why" style="display:flex;gap:6px;align-items:center;color:var(--ink)"><input type="checkbox" ${o.fallback?'checked':''} onchange="S.override['${s.id}'].fallback=this.checked;render()">
+      ${BUILDERS[o.to].within!=null?`If it doesn't start in ${BUILDERS[o.to].within} min`:`If it's offline or full`}, use the build pool</label>`:'';
+  return src+`<div class="section"><h5>Build</h5><div style="display:flex;flex-direction:column;gap:12px">
+    <div class="field"><span class="label">Dockerfile</span><div class="input mono">apps/${s.id}/Dockerfile</div></div>
+    <div class="field"><span class="label">Build on</span>
+      <select class="input" onchange="setOverride('${s.id}',this.value)">${opts}</select>${fb}
+      <span class="why">${listText(s.id)} <a href="#" onclick="S.page='servers';render();return false">Build pool ›</a></span>
+      <span class="why">Takes effect on the next build. No deploy needed.</span>
+    </div></div></div>`;
+}
+function buildLogs(s){
+  const x=S.run.b[s.id]; if(!x) return `<div class="why">postgres uses an image. No build.</div>`;
+  const b=x.k&&BUILDERS[x.k];
+  const trail = x.trail.length?`<div class="why" style="padding:6px 10px;border-bottom:1px solid var(--rule)">skipped: ${x.trail.join(' · ')}</div>`:'';
+  const head = x.state==='failed' ? `<div class="builderline" style="color:var(--bad)">✕ <span style="flex:1">No builder: ${x.fail}</span></div>`
+    : x.state==='queued'||x.state==='pending' ? `<div class="builderline">… <span style="flex:1">waiting for a free builder</span></div>`
+    : `<div class="builderline">${b.icon} <span style="flex:1">${b.name} <span class="why">· ${x.why||''}</span></span>${x.k==='github'?(x.state==='wait'?'<span class="chip warn">runner queued</span>':'<a href="#">run #412 ↗</a>'):''}</div>`;
+  const rows = x.state==='failed'?'' : x.state==='queued'?`<div class="step"><span class="dot wait"></span><span class="nm">${x.qnote}</span></div>`
+    : x.state==='wait'?`<div class="step"><span class="dot wait"></span><span class="nm">${x.k==='github'?'waiting for a GitHub runner':'connecting'} · gives up after ${b.within??'–'} min</span></div>`
+    : x.steps.map(t=>`<div class="step"><span class="dot ${t.state==='done'?'ok':t.state==='run'?'run':''}"></span><span class="nm">${t.name}</span><span class="tm">${t.state==='done'?(t.cached?'CACHED':(t.ms/1000).toFixed(1)+'s'):''}</span></div>`).join('')
+      + `<div class="step"><span class="dot ${x.recv?'ok':''}"></span><span class="nm">${b.kind==='cluster'?`image ready on ${b.name}`:'receive image on hel-1'}</span></div>`;
+  return `<div class="logs mono">${head}${trail}${rows}</div><div class="why">Same steps and log format on every builder.</div>`;
+}
+
+/* ---------- render ---------- */
+function render(){
+  const dep=S.mode==='deploy'&&S.page==='canvas';
+  const main = S.page==='servers' ? serversPage() : `
+    <div class="envhead"><b style="font-weight:500">production</b>
+      ${dep?`<span class="chip ${S.run.phase==='failed'?'warn':'info'}">Deployment #58${S.run.phase==='failed'?' · failed':''}</span><span class="why">${S.run.trigger}</span>`:''}
+      <span class="sp"></span>
+      <a href="#" onclick="S.page='servers';render();return false" class="why">Build pool: ${S.pool.filter(p=>p.on).map(p=>nm(p.k)).join(' → ')}</a>
+      ${dep?`<button class="btn sm" onclick="S.mode='live';S.tab='settings';render()">Back to live</button>`:''}
+    </div>
+    <div class="stage"><div class="canvas">${SERVICES.map(nodeHtml).join('')}${deployBar()}</div>${panel()}</div>`;
+  document.getElementById('app').innerHTML=`
+    <div class="top"><div class="logo"></div><span class="crumb">acme / <b>shop</b> / production</span></div>
+    <div class="shell ${dep?'deploying':''}">
+      <div class="side">
+        <button class="nav ${S.page==='canvas'?'on':''}" onclick="S.page='canvas';render()">▦ Projects</button>
+        <button class="nav ${S.page==='servers'?'on':''}" onclick="S.page='servers';render()">▣ Servers</button>
+        <button class="nav">⚙ Settings</button>
+      </div>
+      <div class="main">${main}</div>
+    </div>
+    <div class="note"><b>v4 · Your servers = one pool entry</b><br>Each server has its own Builds toggle and concurrency. At build time the cluster picks: warm cache first, then most free slots.<br><br>Try: Redeploy (web and worker hit warm caches). Then on Servers, turn off Builds on hel-1 and redeploy: worker moves to nuc, cold.</div>`;
+  document.getElementById('proto').innerHTML=`<span class="state">phase=${S.run?S.run.phase:'-'} ${S.run?Object.entries(S.run.b).map(([id,x])=>`${id}:${x.state}${x.k?'@'+x.k:''}`).join(' '):''}</span><button onclick="location.reload()">reset</button>`;
+}
+render();
+</script>
+</body>
+</html>
