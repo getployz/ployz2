@@ -31,8 +31,9 @@ use tonic::{
 
 use crate::{
     connect::{
-        BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
-        UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout, target_request,
+        BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
+        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout,
+        target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, VolumeSnapshot},
@@ -45,11 +46,6 @@ mod container_observations;
 pub(crate) use container_observations::ContainerObservationCondition;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
-/// Bounds how long a connect waits for the entry daemon to confirm itself.
-///
-/// A socket-activated daemon accepts connects before it serves; this bound is
-/// what keeps a starting daemon from hanging the CLI.
-pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct Client {
@@ -98,8 +94,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
-    /// when the daemon does not answer within the connector's confirm timeout
-    /// ([`CONNECT_CONFIRM_TIMEOUT`] by default).
+    /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
     pub(crate) async fn confirm_entry(&self) -> Result<(), ConnectError> {
         let confirm = async {
             let payload =
@@ -128,10 +123,11 @@ impl Client {
                 Err(error) => Err(error),
             }
         };
-        let waited = self.connector.confirm_timeout();
-        tokio::time::timeout(waited, confirm)
+        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
-            .map_err(|_| ConnectError::EntryNotReady { waited })?
+            .map_err(|_| ConnectError::EntryNotReady {
+                waited: CONNECT_CONFIRM_TIMEOUT,
+            })?
     }
 
     /// Issue one unary RPC. The response type is derived from the RPC, so a request

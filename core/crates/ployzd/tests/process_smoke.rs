@@ -80,7 +80,7 @@ fn volume_plugin_accepts_the_systemd_socket() {
     let root = TestDir::new("ployzd-volume-plugin-process");
     fs::create_dir_all(&root.0).unwrap();
     let socket = root.0.join("ployz-volume.sock");
-    let _plugin = socket_activated_volume_plugin(&[&socket]);
+    let _plugin = socket_activated(&[&socket], &["volume-plugin"]);
 
     let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
     stream
@@ -94,12 +94,37 @@ fn volume_plugin_accepts_the_systemd_socket() {
 }
 
 #[test]
+fn machine_daemon_serves_the_systemd_socket() {
+    use std::os::unix::fs::MetadataExt;
+
+    let root = TestDir::new("ployzd-machine-socket-activation");
+    fs::create_dir_all(&root.0).unwrap();
+    let socket = root.0.join("ployz.sock");
+    let data_dir = root.0.join("data");
+    let _daemon = socket_activated(
+        &[&socket],
+        &[
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--socket",
+            socket.to_str().unwrap(),
+            "--management-port=0",
+        ],
+    );
+    let inherited = fs::metadata(&socket).unwrap().ino();
+
+    assert!(describe(&socket).supports(DESCRIBE_CONTRACT_CAPABILITY));
+    // A rebound socket would be a new inode.
+    assert_eq!(fs::metadata(&socket).unwrap().ino(), inherited);
+}
+
+#[test]
 fn volume_plugin_rejects_more_than_one_systemd_socket() {
     let root = TestDir::new("ployzd-volume-plugin-two-sockets");
     fs::create_dir_all(&root.0).unwrap();
     let first = root.0.join("first.sock");
     let second = root.0.join("second.sock");
-    let mut plugin = socket_activated_volume_plugin(&[&first, &second]);
+    let mut plugin = socket_activated(&[&first, &second], &["volume-plugin"]);
     // systemd-socket-activate execs ployzd only once a connection arrives.
     let _stream = std::os::unix::net::UnixStream::connect(&first).unwrap();
 
@@ -303,9 +328,9 @@ fn wait_for_exit(child: &mut Child, stage: &str) -> (ExitStatus, String) {
     }
 }
 
-/// Runs `ployzd volume-plugin` behind `systemd-socket-activate` listening on
+/// Runs `ployzd <args>` behind `systemd-socket-activate` listening on
 /// `sockets`, once the first socket exists.
-fn socket_activated_volume_plugin(sockets: &[&Path]) -> ChildGuard {
+fn socket_activated(sockets: &[&Path], args: &[&str]) -> ChildGuard {
     let plugin = ChildGuard(
         Command::new("systemd-socket-activate")
             .args(
@@ -313,7 +338,8 @@ fn socket_activated_volume_plugin(sockets: &[&Path]) -> ChildGuard {
                     .iter()
                     .map(|socket| format!("--listen={}", socket.display())),
             )
-            .args([env!("CARGO_BIN_EXE_ployzd"), "volume-plugin"])
+            .arg(env!("CARGO_BIN_EXE_ployzd"))
+            .args(args)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()

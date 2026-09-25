@@ -110,6 +110,7 @@ pub(super) fn create_user_and_directories(
         )?;
     }
     let data = paths.data_dir.to_string_lossy();
+    // ployz.socket recreates run_dir on boot, but the installer's MutationGate needs it before the units exist.
     let run = paths.run_dir.to_string_lossy();
     let mode = format!("{PLOYZ_DIR_MODE:04o}");
     run_host(

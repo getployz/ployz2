@@ -46,6 +46,12 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Bounds how long a connect waits for the entry daemon to confirm itself.
+///
+/// A socket-activated daemon accepts connects before it serves; this bound is
+/// what keeps a starting daemon from hanging the CLI.
+pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
     match grace_period_seconds {
         Some(seconds) if seconds < 0 => None,
@@ -67,11 +73,6 @@ pub type BoxProxyStream = Box<dyn ProxyStream>;
 pub trait Connector: Send + Sync {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError>;
 
-    /// How long a connect waits for the entry daemon to confirm itself.
-    fn confirm_timeout(&self) -> Duration {
-        crate::cluster::CONNECT_CONFIRM_TIMEOUT
-    }
-
     async fn dial_proxy(
         &self,
         connection: &Connection,
@@ -84,7 +85,6 @@ pub trait Connector: Send + Sync {
 pub struct SystemConnector {
     ssh_program: PathBuf,
     ssh_timeout: Duration,
-    confirm_timeout: Duration,
     relay: ManagementRelay,
 }
 
@@ -99,7 +99,6 @@ impl SystemConnector {
         Self {
             ssh_program: ssh_program.into(),
             ssh_timeout: Duration::from_secs(5),
-            confirm_timeout: crate::cluster::CONNECT_CONFIRM_TIMEOUT,
             relay: ManagementRelay::default(),
         }
     }
@@ -117,21 +116,10 @@ impl SystemConnector {
         self.ssh_timeout = timeout;
         self
     }
-
-    /// Set how long a connect waits for the entry daemon to confirm itself.
-    #[must_use]
-    pub fn with_confirm_timeout(mut self, timeout: Duration) -> Self {
-        self.confirm_timeout = timeout;
-        self
-    }
 }
 
 #[tonic::async_trait]
 impl Connector for SystemConnector {
-    fn confirm_timeout(&self) -> Duration {
-        self.confirm_timeout
-    }
-
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(

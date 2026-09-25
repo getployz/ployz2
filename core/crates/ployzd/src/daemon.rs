@@ -102,7 +102,7 @@ pub enum Error {
 impl Daemon {
     /// Start serving Machine RPC on the configured unix socket.
     ///
-    /// Returns only once that socket accepts connections. Local Machine Phase
+    /// Returns once the listener is held and every plane is spawned. Local Machine Phase
     /// decides which planes start, degrade, or wait for catch-up.
     ///
     /// # Errors
@@ -125,7 +125,7 @@ impl Daemon {
 
     async fn start_with_build_policy(
         config: DaemonConfig,
-        (socket_lock, rpc_listener): (File, std_net::UnixListener),
+        socket: MachineApiSocket,
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
@@ -221,7 +221,7 @@ impl Daemon {
 
         let rpc = Server::builder().serve_with_incoming_shutdown(
             machine_api.clone(),
-            UnixListenerStream::new(UnixListener::from_std(rpc_listener)?),
+            UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
             shutdown.clone().cancelled_owned(),
         );
         let publisher =
@@ -234,7 +234,7 @@ impl Daemon {
             management::bind(local_record.management_secret(), &config.management)
                 .await
                 .map_err(io::Error::other)?;
-        let socket = config.socket.clone();
+        let socket_path = config.socket.clone();
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -361,18 +361,12 @@ impl Daemon {
             )
             .map(|_| ())
         });
-        if let Err(error) = wait_until_socket_accepts(&socket, Duration::from_secs(5)).await {
-            shutdown.cancel();
-            servers.abort();
-            let _ = servers.await;
-            return Err(error.into());
-        }
         tracing::info!(
             phase = local_phase.as_str(),
             version = env!("CARGO_PKG_VERSION"),
             "started"
         );
-        tracing::debug!(socket = %socket.display(), "listening");
+        tracing::debug!(socket = %socket_path.display(), "listening");
         Ok(Self {
             stop: CancellationToken::new(),
             shutdown,
@@ -381,7 +375,7 @@ impl Daemon {
             ingest,
             restart_requested,
             servers,
-            _socket_lock: socket_lock,
+            _socket_lock: socket.lock,
         })
     }
 
@@ -653,9 +647,17 @@ enum StopKind {
 
 /// Claims the Machine API socket and takes its listener, before startup spawns
 /// any thread or subprocess that could inherit the systemd socket.
-fn claim_machine_api_socket(path: &Path) -> io::Result<(File, std_net::UnixListener)> {
+fn claim_machine_api_socket(path: &Path) -> io::Result<MachineApiSocket> {
     let lock = claim_socket(path)?;
-    Ok((lock, socket_activation::machine_api_listener(path)?))
+    Ok(MachineApiSocket {
+        lock,
+        listener: socket_activation::machine_api_listener(path)?,
+    })
+}
+
+struct MachineApiSocket {
+    lock: File,
+    listener: std_net::UnixListener,
 }
 
 fn claim_socket(path: &Path) -> io::Result<File> {
