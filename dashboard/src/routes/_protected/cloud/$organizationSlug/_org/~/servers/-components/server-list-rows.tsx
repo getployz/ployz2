@@ -32,7 +32,6 @@ import {
 import { Switch } from "#/components/ui/switch";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import {
-  automaticBuildConcurrency,
   policyChangeObserved,
   type BuildConcurrencyChange,
   type ServerPolicyChange,
@@ -142,10 +141,8 @@ function useServerPolicy(machine: RuntimeMachineRecord, organizationSlug: string
   return {
     acceptsBuilds: pending?.acceptsBuilds ?? machine.acceptsBuilds,
     concurrency,
-    automatic: automaticBuildConcurrency(
-      machine.acceptsServices,
-      machine.memoryTotalBytes,
-    ),
+    // The Server reports what it enforces; while automatic, that is the automatic value.
+    automatic: machine.buildConcurrency === null ? machine.effectiveBuildConcurrency : null,
     request,
   };
 }
@@ -200,7 +197,7 @@ function RuntimeMachineRow({
                 }
               />
             </label>
-            <RemoveMachineControls
+            <MachineActionsMenu
               machine={machine}
               organizationSlug={organizationSlug}
               policy={policy}
@@ -213,7 +210,7 @@ function RuntimeMachineRow({
   );
 }
 
-function RemoveMachineControls({
+function MachineActionsMenu({
   machine,
   organizationSlug,
   policy,
@@ -266,7 +263,7 @@ function RemoveMachineControls({
               }
             >
               <DropdownMenuRadioItem value="automatic">
-                Automatic ({policy.automatic})
+                {policy.automatic === null ? "Automatic" : `Automatic (${policy.automatic})`}
               </DropdownMenuRadioItem>
               {choices.map((choice) => (
                 <DropdownMenuRadioItem key={choice} value={String(choice)}>

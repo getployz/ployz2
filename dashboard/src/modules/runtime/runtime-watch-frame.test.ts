@@ -33,6 +33,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
 
     const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
       observed_at: OBSERVED_AT,
+      effective_build_concurrency: { ["machine-a" as typeof api.machine_id]: 2 },
       machines: [
         runtimeWatchMachineObservationFixture({
           machine: runtimeWatchMachineFixture("machine-a", "edge-a", {
@@ -87,9 +88,8 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           publicIp: "203.0.113.10",
           endpoints: ["udp://203.0.113.10:51820"],
           acceptsBuilds: true,
-          acceptsServices: false,
           buildConcurrency: 2,
-          memoryTotalBytes: 16_000_000_000,
+          effectiveBuildConcurrency: 2,
           runningBuilds: 1,
           membership: "suspect",
           observedContainerCount: 1,

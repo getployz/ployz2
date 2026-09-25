@@ -23,9 +23,8 @@ const runtimeWatchMachineSchema = Schema.Struct({
     public_ip: Schema.NullOr(Schema.String),
     advertised_endpoints: Schema.Array(Schema.String),
     accepts_builds: Schema.Boolean,
-    accepts_services: Schema.Boolean,
     build_concurrency: Schema.NullOr(Schema.Number),
-    runtime: Schema.Struct({ memory_total_bytes: Schema.NullOr(Schema.Number), running_builds: Schema.Number }),
+    runtime: Schema.Struct({ running_builds: Schema.Number }),
   }),
   membership: Schema.String,
 });
@@ -61,6 +60,8 @@ const runtimeWatchServiceSchema = Schema.Struct({
 export const runtimeWatchFrameSchema = Schema.Struct({
   services: Schema.Array(runtimeWatchServiceSchema),
   machines: Schema.Array(runtimeWatchMachineSchema),
+  /** Each Machine's build concurrency in effect, by Machine id. */
+  effective_build_concurrency: Schema.Record(Schema.String, Schema.Number),
   containers: Schema.Array(runtimeWatchContainerSchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
   incomplete_ids: Schema.Struct({
@@ -110,15 +111,12 @@ export function runtimeWatchFrameForTransport(
         public_ip: machine.machine.public_ip,
         advertised_endpoints: [...machine.machine.advertised_endpoints],
         accepts_builds: machine.machine.accepts_builds,
-        accepts_services: machine.machine.accepts_services,
         build_concurrency: machine.machine.build_concurrency,
-        runtime: {
-          memory_total_bytes: machine.machine.runtime.memory_total_bytes ?? null,
-          running_builds: machine.machine.runtime.running_builds,
-        },
+        runtime: { running_builds: machine.machine.runtime.running_builds },
       },
       membership: machine.membership,
     })),
+    effective_build_concurrency: { ...frame.effective_build_concurrency },
     containers: frame.containers.map(runtimeWatchContainerForTransport),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
@@ -175,9 +173,8 @@ export function runtimeSnapshotFromWatchFrame(
       publicIp: machine.machine.public_ip,
       endpoints: [...machine.machine.advertised_endpoints],
       acceptsBuilds: machine.machine.accepts_builds,
-      acceptsServices: machine.machine.accepts_services,
       buildConcurrency: machine.machine.build_concurrency,
-      memoryTotalBytes: machine.machine.runtime.memory_total_bytes,
+      effectiveBuildConcurrency: frame.effective_build_concurrency[machine.machine.id] ?? 1,
       runningBuilds: machine.machine.runtime.running_builds,
       membership: machine.membership,
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,

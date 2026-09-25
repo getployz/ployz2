@@ -16,6 +16,7 @@ export function runtimeWatchFrameFixture(
 ): RuntimeWatchView {
   return {
     machines: [],
+    effective_build_concurrency: {},
     containers: [],
     services: [],
     volumes: [],

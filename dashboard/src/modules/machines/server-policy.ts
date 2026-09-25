@@ -61,21 +61,3 @@ export function policyChangeObserved(
       change.buildConcurrency === (observed.buildConcurrency ?? "automatic"))
   );
 }
-
-const AUTOMATIC_BYTES_PER_BUILD = 4_000_000_000;
-
-/**
- * Mirrors `BuildConcurrency::automatic` in ployz-core so the Servers page can
- * show the value the Server's daemon enforces: 1 when it runs Services,
- * otherwise one Build per 4 GB of RAM clamped to 1–4. Unknown RAM is 1.
- */
-export function automaticBuildConcurrency(
-  acceptsServices: boolean,
-  memoryTotalBytes: number | null,
-): number {
-  if (acceptsServices || memoryTotalBytes === null) return 1;
-  return Math.min(
-    4,
-    Math.max(1, Math.floor(memoryTotalBytes / AUTOMATIC_BYTES_PER_BUILD)),
-  );
-}
