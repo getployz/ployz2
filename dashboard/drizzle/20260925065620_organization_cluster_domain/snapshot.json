@@ -1,9 +1,10 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "14fe1271-6fca-4a65-8f27-a7c199e4869c",
+  "id": "4e687dc8-97ba-4547-a108-8b37cc80bef0",
   "prevIds": [
-    "8e727755-ea1f-48ce-b6fc-8a0efffb508d"
+    "75f56b1f-011a-46cc-8822-b6d50bd7c1ec",
+    "fc143b08-cafd-4414-98ed-403fed75594e"
   ],
   "ddl": [
     {
@@ -1047,6 +1048,19 @@
       "generated": null,
       "identity": null,
       "name": "image",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "open_started_deployments",
       "entityType": "columns",
       "schema": "public",
       "table": "user"
@@ -5636,71 +5650,6 @@
       "generated": null,
       "identity": null,
       "name": "active_subscription_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "current_plan",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "product_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "amount",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "currency",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "current_period_start",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_billing_state"
@@ -10561,15 +10510,8 @@
       "table": "github_webhook_delivery"
     },
     {
-      "value": "(\n        \"has_active_subscription\" = false\n        OR (\n          \"active_subscription_id\" IS NOT NULL\n          AND \"current_plan\" IS NOT NULL\n          AND \"product_id\" IS NOT NULL\n          AND \"amount\" IS NOT NULL\n          AND \"currency\" IS NOT NULL\n          AND \"current_period_start\" IS NOT NULL\n          AND \"current_period_end\" IS NOT NULL\n        )\n      )",
+      "value": "(\n        \"has_active_subscription\" = false\n        OR (\n          \"active_subscription_id\" IS NOT NULL\n          AND \"current_period_end\" IS NOT NULL\n        )\n      )",
       "name": "organization_billing_state_active_fields_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "organization_billing_state"
-    },
-    {
-      "value": "\"current_plan\" IS NULL OR \"current_plan\" IN ('free', 'solo', 'teams', 'hobby', 'pro')",
-      "name": "organization_billing_state_current_plan_check",
       "entityType": "checks",
       "schema": "public",
       "table": "organization_billing_state"

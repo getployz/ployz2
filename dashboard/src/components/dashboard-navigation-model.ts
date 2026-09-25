@@ -4,7 +4,6 @@ import {
   ActivityIcon,
   CreditCardIcon,
   LayoutGridIcon,
-  RocketIcon,
   ServerCogIcon,
   ServerIcon,
   Settings2Icon,
@@ -12,7 +11,6 @@ import {
 
 const sectionOrder = [
   "overview",
-  "deployments",
   "logs",
   "environment-settings",
   "servers",
@@ -52,6 +50,8 @@ interface DashboardSectionDefinition {
   icon: LucideIcon;
   allPath?: RegisteredPath;
   environmentPath?: RegisteredPath;
+  /** Only Ployz-hosted Cloud has billing. */
+  requiresBilling?: true;
 }
 
 const sectionDefinitions = {
@@ -61,12 +61,6 @@ const sectionDefinitions = {
     allPath: "/cloud/$organizationSlug/~",
     environmentPath:
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
-  },
-  deployments: {
-    label: "Deployments",
-    icon: RocketIcon,
-    environmentPath:
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
   },
   logs: {
     label: "Logs",
@@ -94,6 +88,7 @@ const sectionDefinitions = {
     label: "Billing",
     icon: CreditCardIcon,
     allPath: "/cloud/$organizationSlug/~/billing",
+    requiresBilling: true,
   },
 } satisfies Record<DashboardSection, DashboardSectionDefinition>;
 
@@ -137,13 +132,15 @@ export function getDashboardSectionLabel(
 
 export function createDashboardNavItems(
   scope: DashboardScope,
+  { billingEnabled = false }: { billingEnabled?: boolean } = {},
 ): DashboardNavItem[] {
   return sectionOrder.flatMap((section) => {
     const definition = sectionDefinitions[section];
 
-    const available = scope.kind === "all"
+    const available = (scope.kind === "all"
       ? "allPath" in definition
-      : "environmentPath" in definition;
+      : "environmentPath" in definition) &&
+      (billingEnabled || !("requiresBilling" in definition));
 
     return !available
       ? []
@@ -164,12 +161,9 @@ interface SectionByRouteId {
 
 const sectionByRouteId: SectionByRouteId = {
   "/_protected/cloud/$organizationSlug/_org/~/billing": "billing",
-  "/_protected/cloud/$organizationSlug/_org/~/deployments": "deployments",
   "/_protected/cloud/$organizationSlug/_org/~/logs": "logs",
   "/_protected/cloud/$organizationSlug/_org/~/settings": "server-settings",
   "/_protected/cloud/$organizationSlug/_org/~/servers/": "servers",
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments":
-    "deployments",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs":
     "logs",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings":

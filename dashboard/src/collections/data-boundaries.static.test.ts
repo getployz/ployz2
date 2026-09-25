@@ -34,17 +34,16 @@ const SPINNER_FILES = {
   "components/data-loss/data-loss-confirm-dialog.tsx": "submit in flight",
   "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
   "components/deployment-logs.tsx": "deployment step running",
-  "components/deployment-status-card.tsx": "deployment or image cleanup running",
   "components/navigation-switcher.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/-components/BillingPlanCard.tsx": "checkout in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/-components/BillingPlanChangeDialog.tsx": "plan change in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Publish now in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/DeploymentNode.tsx": "build or deploy stage running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "retry in flight",
   "routes/_public/-components/AppHeaderActions.tsx": "sign-out in flight",
@@ -57,7 +56,6 @@ const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 const COMMAND_READ_FILES = {
   "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "gather data-loss evidence before confirming teardown",
-  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "preview a plan change before confirming it",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-list-rows.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "gather data-loss evidence before confirming removal",
 };
@@ -88,13 +86,18 @@ const ON_DEMAND_READS = {
   githubBranchesQueryOptions: "depends on the repository the user just picked",
 };
 
+/** Hook files outside data files that await the server without making UI wait on it. */
+const HOOK_FILES_NOT_COMMANDS = {
+  "modules/environment-design/environment-document-edit.ts": "the editor owns the optimistic save queue; edits apply before it saves",
+};
+
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
   "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
-  "components/deployment-row.tsx": "deploy and retry start runtime work",
+  "modules/deployments/deployment-commands.ts": "deploy and retry start runtime work",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
-  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "plan changes and checkout involve money",
+  "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_org/~/settings.tsx": "Publish now calls Hosted DNS, an external service",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-list-rows.tsx": "removing a machine is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publishing, discarding, and destructive review span many entities and deploy",
@@ -184,7 +187,10 @@ describe("data boundaries", () => {
           const isRoute = file.startsWith(`${SRC}/routes/`);
           // Only Org Store tables in collections/ inherit the createApiCollection staleTime default.
           const isCollectionsFile = file.startsWith(`${SRC}/collections/`);
-          const isUi = isRoute || file.startsWith(`${SRC}/components/`);
+          // Command hooks elsewhere are UI too: components wait through them. Data files only read.
+          const path = relative(SRC, file);
+          const isHookFile = /\bexport (function|const) use[A-Z]/.test(source.text) && !DATA_FILE.test(path) && !(path in HOOK_FILES_NOT_COMMANDS);
+          const isUi = isRoute || file.startsWith(`${SRC}/components/`) || isHookFile;
           const serverCalls = new Set<string>();
           const importedFrom = new Map<string, string>();
           for (const statement of source.statements) {

@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
-import { checkout, polar, portal, webhooks } from "@polar-sh/better-auth";
+import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar as PolarSdk } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
 import { organization as organizationPlugin } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
-import { sessionAdditionalFields } from "#/auth/session-fields";
+import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
   account,
@@ -59,6 +59,7 @@ const AuthSession = Schema.Struct({
     email: Schema.String,
     name: Schema.String,
     image: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    openStartedDeployments: Schema.optionalKey(Schema.Boolean),
   }),
 });
 
@@ -118,19 +119,11 @@ function hostedPolarPlugin(
     accessToken: Redacted.value(config.polar.accessToken),
     server: config.polar.server,
   });
+  // Sign-up never calls Polar; checkout creates the customer.
   return polar({
     client,
-    createCustomerOnSignUp: true,
+    createCustomerOnSignUp: false,
     use: [
-      checkout({
-        products: [
-          { productId: config.polar.productIds.free, slug: "free" },
-          { productId: config.polar.productIds.solo, slug: "solo" },
-          { productId: config.polar.productIds.teams, slug: "teams" },
-        ],
-        successUrl: config.polarSuccessUrl,
-        authenticatedUsersOnly: true,
-      }),
       portal({ returnUrl: new URL("/cloud", config.app.url).href }),
       webhooks({
         secret: Redacted.value(config.polar.webhookSecret),
@@ -195,6 +188,9 @@ const makeAuth = Effect.gen(function* () {
     },
     session: {
       additionalFields: sessionAdditionalFields,
+    },
+    user: {
+      additionalFields: userAdditionalFields,
     },
     advanced: { database: { generateId: "uuid" } },
     databaseHooks: {

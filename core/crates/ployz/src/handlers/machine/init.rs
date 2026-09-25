@@ -127,7 +127,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
                 .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
         if machine.accepts_ingress {
-            let requested = crate::ingress::service_spec(None, Default::default(), None).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
+            let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
             crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
                 let error: Error = error.into();
                 Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))

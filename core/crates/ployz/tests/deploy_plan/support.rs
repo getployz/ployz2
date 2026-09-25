@@ -106,7 +106,6 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
         ports: Vec::new(),
         mount_graph: Default::default(),
         pre_deploy: None,
-        ingress_proxy_fragment: None,
         update: UpdateConfig::default(),
     }
 }

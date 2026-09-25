@@ -46,6 +46,12 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Bounds how long a connect waits for the entry daemon to confirm itself.
+///
+/// A socket-activated daemon accepts connects before it serves; this bound is
+/// what keeps a starting daemon from hanging the CLI.
+pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
     match grace_period_seconds {
         Some(seconds) if seconds < 0 => None,
@@ -399,26 +405,25 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             ..
         } if matches!(
             *error,
-            ConnectError::RefusedByIdentity | ConnectError::PairingCleared
+            ConnectError::ClientRefused | ConnectError::ClientCleared
         ) =>
         {
             rpc_error(*error)
         }
-        ConnectError::PairingCleared => RpcError {
+        ConnectError::ClientCleared => RpcError {
             code: RpcErrorCode::Unauthenticated,
-            message: "Machine confirmed its management pairing is cleared".into(),
-            details: json!({ "management_pairing": "cleared" }),
+            message: "Machine confirmed this Management Client was cleared".into(),
+            details: json!({ "management_client": "cleared" }),
         },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
-        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::RefusedByIdentity) => {
-            RpcError {
-                code: RpcErrorCode::Unauthenticated,
-                message: error.to_string(),
-                details: Value::Null,
-            }
-        }
+        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClientRefused) => RpcError {
+            code: RpcErrorCode::Unauthenticated,
+            message: error.to_string(),
+            details: Value::Null,
+        },
         error @ (ConnectError::Attempt(_)
+        | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
@@ -617,6 +622,12 @@ pub enum ConnectError {
     },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
+    /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
+    #[error(
+        "connection attempt failed: entry Machine daemon did not answer within {:?}; it may still be starting, retry shortly",
+        CONNECT_CONFIRM_TIMEOUT
+    )]
+    EntryNotReady,
     #[error("connection attempt failed: {0}")]
     Io(#[from] io::Error),
     #[error("connection attempt failed: {0}")]
@@ -624,9 +635,9 @@ pub enum ConnectError {
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
     #[error("Machine refused this Management Capability")]
-    RefusedByIdentity,
-    #[error("Machine confirmed its management pairing is cleared")]
-    PairingCleared,
+    ClientRefused,
+    #[error("Machine confirmed this Management Client was cleared")]
+    ClientCleared,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing(#[source] io::Error),
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
@@ -695,9 +706,10 @@ impl ConnectError {
             | Self::Join(_) => true,
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
+            | Self::EntryNotReady
             | Self::IdentityMismatch { .. }
-            | Self::RefusedByIdentity
-            | Self::PairingCleared
+            | Self::ClientRefused
+            | Self::ClientCleared
             | Self::MissingMachineDetails
             | Self::SshClientMissing(_)
             | Self::Routing(_)
@@ -724,6 +736,8 @@ impl ConnectError {
             Self::AllFailed {
                 setup_retryable, ..
             } => *setup_retryable,
+            // A socket-activated daemon accepts before it serves; setup waits it out.
+            Self::EntryNotReady => true,
             Self::SshProbe { detail, .. } => [
                 "Connection timed out",
                 "Operation timed out",
@@ -757,7 +771,11 @@ impl ConnectError {
     pub(crate) fn is_unreachable(&self) -> bool {
         matches!(
             self,
-            Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
+            Self::Attempt(_)
+                | Self::EntryNotReady
+                | Self::Io(_)
+                | Self::Dial(_)
+                | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
 }

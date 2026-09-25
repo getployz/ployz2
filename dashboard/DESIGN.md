@@ -251,7 +251,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 ### Apply Changes
 
-The staged-change system connects edited fields, affected resources, and environment-wide review. Desktop and tablet place the change count and Review action in the persistent environment header; mobile uses a structural footer. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Details (the review) and Deploy in the deploy bar's apply zone. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
 ### Deployment Mode
 
@@ -264,6 +264,8 @@ Deployments are a view of the canvas, not a page. One floating **deploy bar** si
 Choosing a deployment puts the canvas into that deployment: the header and canvas tint, nodes show Build → Deploy with a short log tail, and the service panel becomes **Details · Build logs · Deploy logs**. Live-mode nodes never change. A manual Deploy opens its deployment (remembered if the user leaves it while running); Git-triggered deployments never take over the canvas, and nothing returns the user to live automatically. Deploying while another deployment runs queues.
 
 The switch between live and a deployment is the product's one moment of flair, and it stays minimal: the tint and frame sweep in and reverse on Back to live. Motion is short, moves the same elements rather than swapping them, and falls back to a crossfade under reduced motion.
+
+The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
 
 **The One Vocabulary Rule.** A state looks and behaves the same in every field, resource, drawer, diff row, and toolbar. Local reinvention is a defect.
 

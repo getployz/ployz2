@@ -86,7 +86,6 @@ export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
     });
 
     return mintedEnrollment({
-      installerUrl: config.ployz.installerUrl.href,
       origin: config.app.url.origin,
       token,
       expiresAt,

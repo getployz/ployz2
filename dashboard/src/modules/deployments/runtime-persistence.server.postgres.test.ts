@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { loadBuildReceipts, persistBuildReceipts } from "./build-receipts.server";
@@ -46,9 +47,7 @@ import { InngestClient } from "#/modules/inngest/client";
 const encryption = makeSecretEncryption("test-encryption-secret");
 // Hosted DNS points at a closed port, so an inline reserve fails fast.
 const appConfig = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {
-  DATABASE_URL: "postgres://unused.example.test/db", APP_URL: "https://cloud.example.test",
-  BETTER_AUTH_SECRET: "better-auth-secret", GITHUB_CLIENT_ID: "github-client-id", GITHUB_CLIENT_SECRET: "github-client-secret",
-  APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters", PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
+  ...testConfigEnvironment(), DATABASE_URL: "postgres://unused.example.test/db", PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
 } }))));
 
 const organizationId = "00000000-0000-4000-8000-000000000501";

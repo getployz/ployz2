@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { Cause, ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -19,14 +20,9 @@ it.live(
       yield* migrateTestDatabase(container.url);
       const provider = ConfigProvider.fromEnv({
         env: {
+          ...testConfigEnvironment(),
           NODE_ENV: "test",
           DATABASE_URL: container.url.href,
-          APP_URL: "http://localhost:3000",
-          BETTER_AUTH_SECRET: "better-auth-secret",
-          GITHUB_CLIENT_ID: "github-client-id",
-          GITHUB_CLIENT_SECRET: "github-client-secret",
-          APP_ENCRYPTION_SECRET:
-            "app-encryption-secret-at-least-32-characters",
         },
       });
       const configLayer = AppConfig.layer.pipe(
@@ -83,6 +79,16 @@ it.live(
           body: JSON.stringify({ sidebarOpen: "false" }),
         }));
         assert.strictEqual(invalidPreference.status, 400);
+
+        assert.strictEqual(restored?.user.openStartedDeployments, true);
+        const userPreference = yield* auth.handler(new Request("http://localhost:3000/api/auth/update-user", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json", origin: "http://localhost:3000" },
+          body: JSON.stringify({ openStartedDeployments: false }),
+        }));
+        assert.strictEqual(userPreference.status, 200);
+        const updatedUser = yield* auth.getSession(new Headers({ cookie }));
+        assert.strictEqual(updatedUser?.user.openStartedDeployments, false);
 
         const anonymous = yield* Effect.exit(auth.resolveActor(new Headers()));
         assert.strictEqual(anonymous._tag, "Failure");

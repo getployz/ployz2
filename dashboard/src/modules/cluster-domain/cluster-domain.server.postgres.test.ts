@@ -1,3 +1,4 @@
+import { testConfigEnvironment } from "#/test/config-environment";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,12 +30,8 @@ describe("Organization Cluster Domain", () => {
   ) {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
       env: {
+        ...testConfigEnvironment(),
         DATABASE_URL: harness.databaseUrl,
-        APP_URL: "https://cloud.example.test",
-        BETTER_AUTH_SECRET: "better-auth-secret",
-        GITHUB_CLIENT_ID: "github-client-id",
-        GITHUB_CLIENT_SECRET: "github-client-secret",
-        APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
         PLOYZ_HOSTED_DNS_URL: hostedDns.url,
         ...env,
       },
