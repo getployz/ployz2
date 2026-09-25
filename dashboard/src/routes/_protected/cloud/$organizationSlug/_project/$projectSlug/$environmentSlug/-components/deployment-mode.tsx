@@ -34,7 +34,7 @@ export function DeploymentModeProvider({ children }: { children: ReactNode }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deploymentId = useSearch({ from: CANVAS_ROUTE_ID, select: (search) => search.deployment ?? null });
-  const attempt = useDeploymentAttempt(organizationSlug, environmentId, deploymentId);
+  const attempt = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
   return <DeploymentModeContext value={attempt}>{children}</DeploymentModeContext>;
 }
 

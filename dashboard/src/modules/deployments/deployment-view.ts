@@ -2,6 +2,7 @@ import type { DeployEvent, DeployOperation, OperationRow } from "@ployz/sdk";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import type { EnvironmentDeploymentStatus } from "./tables";
+import { BUILDING_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 
 /**
@@ -31,8 +32,13 @@ export type DeploymentView = {
   deployed: number; changed: number;
   nodes: DeploymentNodeView[];
 };
-/** One Environment Node of the Attempt Target. */
-export type AttemptNode = { nodeId: string; changed: boolean; removed?: boolean; built?: boolean };
+/** One Environment Node of the Attempt Target. `image` names its Image Build (the service's private DNS name) when built. */
+export type AttemptNode = { nodeId: string; changed: boolean; removed?: boolean; built?: boolean; image?: string };
+/** The attempt's Build Steps and their output, as the build log read returns them. */
+export type BuildLog = {
+  steps: readonly { id: number; build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; error: string | null }[];
+  output: readonly { stepId: number; text: string }[];
+};
 export type DeploymentViewInput = {
   deployment: {
     status: EnvironmentDeploymentStatus;
@@ -42,6 +48,7 @@ export type DeploymentViewInput = {
   };
   progress: DeploymentProgress | null;
   nodes: readonly AttemptNode[];
+  buildLog?: BuildLog | null;
 };
 
 // Provider messages and operation specs may contain resolved secrets. Only
@@ -77,12 +84,17 @@ function projectRow(row: OperationRow, serviceId: string | null): DeploymentProg
 export function deploymentProgressForEvent(
   event: Exclude<DeployEvent, { type: "images_pruned" }>,
   planned: readonly OperationRow[],
-  context: { prior?: DeploymentProgress; serviceIdFor?: (serviceName: string | null) => string | null } = {},
+  context: { prior?: DeploymentProgress; serviceIdFor?: (serviceName: string | null) => string | null; now?: number } = {},
 ): DeploymentProgress {
+  const now = context.now ?? Date.now();
   const project = (row: OperationRow) => {
     const projected = projectRow(row, context.serviceIdFor?.(row.service_name) ?? null);
     const prior = context.prior?.rows.find((candidate) => candidate.index === row.index);
-    return projected.status === "failed" && prior ? { ...projected, phase: prior.phase, elapsedMs: prior.elapsedMs, deadlineMs: prior.deadlineMs, health: prior.health } : projected;
+    const finished = projected.status === "completed" || projected.status === "failed";
+    const timed = { ...projected,
+      startedAt: prior?.startedAt ?? (finished || projected.status === "running" ? now : null),
+      finishedAt: prior?.finishedAt ?? (finished ? now : null) };
+    return projected.status === "failed" && prior ? { ...timed, phase: prior.phase, elapsedMs: prior.elapsedMs, deadlineMs: prior.deadlineMs, health: prior.health } : timed;
   };
   if (event.type === "progress") return { completed: event.completed, total: event.total, rows: event.rows.map(project), outcome: null, compensation: [] };
   const outcome = event.outcome;
@@ -117,9 +129,37 @@ export function deploymentProgressForEvent(
 }
 
 const TAIL_LINES = 2;
-const rowLine = (row: DeploymentProgressRow) => `${row.machineName ?? row.machineId} · ${row.health ?? progressRowLabel(row)}${row.elapsedMs !== null ? ` · ${Math.floor(row.elapsedMs / 1000)}s / ${Math.floor((row.deadlineMs ?? 0) / 1000)}s deadline` : ""}`;
+const rowLine = (row: DeploymentProgressRow) => `${row.machineName ?? row.machineId} · ${row.health ?? progressRowLabel(row)}${row.status === "completed" ? " · done" : ""}${row.elapsedMs !== null ? ` · ${Math.floor(row.elapsedMs / 1000)}s / ${Math.floor((row.deadlineMs ?? 0) / 1000)}s deadline` : ""}`;
 
-export function deploymentView({ deployment, progress, nodes }: DeploymentViewInput): DeploymentView {
+/** Terminal colour and cursor sequences carry nothing the log needs. */
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+const ansi = new RegExp(`${ESC}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL}]*(?:${BEL}|${ESC}\\\\)|[@-Z\\\\-_])`, "g");
+export const stripAnsi = (text: string) => text.replaceAll(ansi, "");
+const logLines = (text: string) => stripAnsi(text).split("\n").filter((line) => line.trim());
+
+/**
+ * One Image Build: the build runs whose Building heading names the image (a multi-platform image has several),
+ * without the attempt-wide cleanup and delivery that land under the last run.
+ */
+function imageBuild(log: BuildLog, image: string) {
+  const runs = new Set(log.steps.filter((step) => step.key === BUILDING_KEY && step.name === image).map((step) => step.build));
+  const steps = log.steps.filter((step) => runs.has(step.build) && step.key !== "stage:Cleanup" && step.key !== "transfer");
+  if (!steps.length) return null;
+  const failed = steps.filter((step) => step.error !== null);
+  const output = (ids: ReadonlySet<number>) => logLines(log.output.filter((row) => ids.has(row.stepId)).map((row) => row.text).join(""));
+  const starts = steps.flatMap((step) => step.startedAt ? [step.startedAt.getTime()] : []);
+  const ends = steps.flatMap((step) => step.completedAt ? [step.completedAt.getTime()] : []);
+  return {
+    failed: failed.length > 0,
+    open: steps.some((step) => step.startedAt && !step.completedAt),
+    durationMs: starts.length && ends.length ? Math.max(...ends) - Math.min(...starts) : undefined,
+    lines: output(new Set(steps.map((step) => step.id))),
+    errorLines: [...output(new Set(failed.map((step) => step.id))), ...failed.flatMap((step) => logLines(step.error ?? ""))],
+  };
+}
+
+export function deploymentView({ deployment, progress, nodes, buildLog }: DeploymentViewInput): DeploymentView {
   const { status } = deployment;
   const active = status === "queued" || status === "planning" || status === "deploying";
   const succeeded = progress?.outcome === "success" || status === "applied";
@@ -133,14 +173,23 @@ export function deploymentView({ deployment, progress, nodes }: DeploymentViewIn
   const ready = buildState === "none" || buildState === "done";
   const runtimeUnknown = !active && status !== "applied" && !progress?.outcome && deployment.failureCode === "sdk_deploy_outcome_unknown";
   const rows = progress?.rows ?? [];
+  const images = new Map(nodes.map((node) => [node.nodeId, buildLog && node.image ? imageBuild(buildLog, node.image) : null]));
+  const building = [...images.values()].some(Boolean);
+  const blamed = [...images.values()].some((image) => image?.failed);
 
   const views = nodes.map((node): DeploymentNodeView => {
     const own = rows.filter((row) => row.serviceId === node.nodeId);
     const failedRow = own.find((row) => row.status === "failed");
-    const build: Stage = { state: node.built ? buildState : "none" };
+    const image = images.get(node.nodeId) ?? null;
+    // Images build one after another: one without a run yet waits, and is skipped once another image's build failed.
+    const build: Stage = !node.built ? { state: "none" }
+      : !image ? { state: buildState === "running" && building ? "queued" : buildState === "failed" && blamed ? "skipped" : buildState }
+      : image.failed ? { state: "failed", durationMs: image.durationMs }
+      : !image.open || buildState === "done" ? { state: "done", durationMs: image.durationMs }
+      : { state: active ? "running" : buildState };
     const done = (own.length > 0 && own.every((row) => row.status === "completed")) || succeeded;
-    // Without a runtime outcome, a failed attempt blames every changed node it could have reached.
-    const preRuntimeFailure = status === "failed" && !progress?.outcome && (node.built || ready);
+    // Without a runtime outcome, a failed attempt blames the image whose build failed, or else every changed node it could have reached.
+    const preRuntimeFailure = status === "failed" && !progress?.outcome && (blamed ? build.state === "failed" : node.built || ready);
     const deployState: StageState = !node.changed ? "skipped"
       : failedRow ? "failed"
       : done ? "done"
@@ -158,9 +207,16 @@ export function deploymentView({ deployment, progress, nodes }: DeploymentViewIn
       : build.state === "running" ? "building"
       : deployState === "running" ? "deploying"
       : "queued";
-    const tail = failure ? [failedRow ? `${failedRow.machineName ?? failedRow.machineId} · ${failure.message}` : failure.message]
-      : own.filter((row) => row.status === "running").map(rowLine);
-    return { nodeId: node.nodeId, outcome, build, deploy: { state: deployState }, failure, tail: tail.slice(-TAIL_LINES) };
+    // The tail follows the stage that matters: the error when failed, else the rollout once it started, else the build.
+    const started = own.filter((row) => row.status === "running" || row.status === "completed");
+    const tail = failure ? failedRow ? [`${failedRow.machineName ?? failedRow.machineId} · ${failure.message}`]
+        : build.state === "failed" && image?.errorLines.length ? image.errorLines : [failure.message]
+      : started.length ? started.map(rowLine)
+      : image?.lines ?? [];
+    const spans = own.flatMap((row) => row.startedAt != null && row.finishedAt != null ? [[row.startedAt, row.finishedAt] as const] : []);
+    const deployDurationMs = (deployState === "done" || deployState === "failed") && spans.length
+      ? Math.max(...spans.map(([, end]) => end)) - Math.min(...spans.map(([start]) => start)) : undefined;
+    return { nodeId: node.nodeId, outcome, build, deploy: { state: deployState, durationMs: deployDurationMs }, failure, tail: tail.slice(-TAIL_LINES) };
   });
 
   const changed = views.filter((node) => node.outcome !== "unchanged");
@@ -208,11 +264,12 @@ export function attemptTarget({ attempt, progress, history, snapshots }: {
     : { ...row, serviceId: services.find((s) => s.config.privateDns === row.serviceName)?.nodeId ?? null }) };
   const rows = resolved?.rows ?? [];
   const nodes = own.map((row): AttemptTargetNode => {
-    const built = services.find((s) => s.nodeId === row.nodeId)?.config.source.type === "git";
+    const config = services.find((s) => s.nodeId === row.nodeId)?.config;
+    const built = config?.source.type === "git";
     const before = prior.find((node) => node.nodeType === row.nodeType && node.nodeId === row.nodeId);
     const changed = row.nodeType === "service" && rows.length > 0 ? rows.some((r) => r.serviceId === row.nodeId)
       : built || !before || canonicalJson(before.config) !== canonicalJson(row.config);
-    return { nodeId: row.nodeId, nodeType: row.nodeType, config: row.config, changed, built };
+    return { nodeId: row.nodeId, nodeType: row.nodeType, config: row.config, changed, built, image: built ? config?.privateDns : undefined };
   });
   return { nodes: [...nodes, ...removed.map((row) => ({ nodeId: row.nodeId, nodeType: row.nodeType, config: row.config, changed: true, removed: true }))], progress: resolved };
 }

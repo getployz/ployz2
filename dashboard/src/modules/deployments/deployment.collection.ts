@@ -7,7 +7,7 @@ import {
   useLiveSuspenseQuery,
 } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { attemptTarget, deploymentView, type AttemptTargetNode, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { attemptTarget, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentSavedStateRevisionsCollection,
@@ -23,6 +23,7 @@ import {
 } from "#/modules/deployments/deployment-contract";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
+import { useBuildLog } from "#/modules/deployments/deployment-build-log.queries";
 
 export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
   const client = getDbClient(scope.queryClient);
@@ -163,13 +164,16 @@ function useAttemptTargetInputs(organizationSlug: string, environmentId: string)
   return { history, snapshots: snapshotRows };
 }
 
-function projectAttempt(deployment: EnvironmentDeploymentSummary, inputs: ReturnType<typeof useAttemptTargetInputs>): DeploymentAttempt {
+function projectAttempt(deployment: EnvironmentDeploymentSummary, inputs: ReturnType<typeof useAttemptTargetInputs>, buildLog?: BuildLog | null): DeploymentAttempt {
   const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, ...inputs });
-  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes }) };
+  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes, buildLog }) };
 }
 
-/** One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt. */
-export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null): DeploymentAttempt | null {
+/**
+ * One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt.
+ * `buildLog` also reads the attempt's Build Steps (polled until it finishes) for per-image build stages and tails.
+ */
+export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}): DeploymentAttempt | null {
   const scope = useCollectionScope();
   const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
   const { data: attempts } = useLiveSuspenseQuery({
@@ -178,8 +182,9 @@ export function useDeploymentAttempt(organizationSlug: string, environmentId: st
   });
   const inputs = useAttemptTargetInputs(organizationSlug, environmentId);
   const deployment = attempts[0];
+  const { data: log } = useBuildLog(organizationSlug, deploymentId ?? "", buildLog && (deployment?.buildServiceIds.length ?? 0) > 0);
   if (!deployment || deployment.environmentId !== environmentId) return null;
-  return projectAttempt(deployment, inputs);
+  return projectAttempt(deployment, inputs, log);
 }
 
 /** The environment's attempts whose target holds this node, newest first, each with the node's view. */

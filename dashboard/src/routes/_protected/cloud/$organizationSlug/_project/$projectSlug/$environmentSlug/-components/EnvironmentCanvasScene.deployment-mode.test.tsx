@@ -29,7 +29,7 @@ const projectId = "00000000-0000-4000-8000-000000000002";
 const environmentId = "00000000-0000-4000-8000-000000000003";
 const [previous, attemptId, failedId, runningId] = ["a0000000-0000-4000-8000-000000000011", "b0000000-0000-4000-8000-000000000012",
   "c0000000-0000-4000-8000-000000000013", "d0000000-0000-4000-8000-000000000014"];
-const [api, old, worker] = ["00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022", "00000000-0000-4000-8000-000000000023"];
+const [api, old, worker, web] = ["00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022", "00000000-0000-4000-8000-000000000023", "00000000-0000-4000-8000-000000000024"];
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
 const createdAt = new Date("2026-09-01T00:00:00Z");
 const config = (privateDns: string) => parseServiceConfig({ version: 2, source: { version: 1, type: "image", image: "nginx:1", credentials: { type: "none" } },
@@ -48,19 +48,24 @@ const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgr
 });
 const snapshot = (deploymentId: string, nodeId: string, privateDns: string) => ({ id: `${deploymentId}:${nodeId}`, organizationId, environmentId,
   environmentDeploymentId: deploymentId, nodeType: "service", nodeId, nodeLineageId: nodeId, configVersion: 1, config: config(privateDns), createdAt, updatedAt: createdAt });
-// The attempt removed `old` (its row has no serviceId on the record side) and left `api` unchanged; `worker` came later.
+// The attempt removed `old` (its row has no serviceId on the record side), failed `web`'s health check and left `api` unchanged; `worker` came later.
 const removal: DeploymentProgressRow = { index: 0, machineId: "m", machineName: "server", serviceId: null, runtimeServiceId: null, serviceName: "old", displayName: null,
-  operation: "remove_container", target: null, updateOrder: null, status: "completed", phase: null, elapsedMs: null, deadlineMs: null, health: null, error: null };
+  operation: "remove_container", target: null, updateOrder: null, status: "completed", phase: null, elapsedMs: null, deadlineMs: null, health: null, error: null,
+  startedAt: 0, finishedAt: 3_000 };
+const healthFailure: DeploymentProgressRow = { ...removal, index: 1, serviceId: web, serviceName: "web", operation: "replace_container", status: "failed",
+  error: "Health check timed out", containerId: "4e7a19c", startedAt: 3_000, finishedAt: 63_000 };
 const rows = new Map<string, unknown[]>(Object.entries({
   project: [{ id: projectId, organizationId, name: "Shop", slug: "shop", createdAt, updatedAt: createdAt }],
   environment: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt, updatedAt: createdAt,
-    intent: { version: 1, environmentSlug: "production", services: [intentService(api, "api"), intentService(worker, "worker")], volumes: [] } }],
+    intent: { version: 1, environmentSlug: "production", services: [intentService(api, "api"), intentService(web, "web"), intentService(worker, "worker")], volumes: [] } }],
   environment_summary: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt }],
-  service: [service(api, "api"), service(old, "old"), service(worker, "worker")],
+  service: [service(api, "api"), service(old, "old"), service(web, "web"), service(worker, "worker")],
   environment_deployment: [deployment(previous, 1, null),
-    deployment(attemptId, 2, { completed: 1, total: 1, outcome: "success", rows: [removal], compensation: [] })],
-  environment_node_config_snapshot: [snapshot(previous, api, "api"), snapshot(previous, old, "old"), snapshot(attemptId, api, "api")],
+    deployment(attemptId, 2, { completed: 1, total: 2, outcome: "failed", rows: [removal, healthFailure], compensation: [] }, "failed")],
+  environment_node_config_snapshot: [snapshot(previous, api, "api"), snapshot(previous, old, "old"), snapshot(previous, web, "web"),
+    snapshot(attemptId, api, "api"), snapshot(attemptId, web, "web")],
 }));
+const card = (name: string) => screen.getAllByText(name)[0]?.closest("[data-canvas-node]");
 
 async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production" }: { extra?: Record<string, unknown[]>; path?: string } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -134,6 +139,25 @@ describe("deployment mode on the environment canvas", () => {
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
     expect(router.state.location.search).not.toHaveProperty("deployment");
     expect(screen.queryAllByText("Removed")).toEqual([]);
+  });
+
+  it("shows Build → Deploy and the tail on nodes the attempt changed, and nothing new on live nodes", async () => {
+    const router = await openCanvas();
+    expect(card("web")?.textContent).not.toContain("Failed");
+    expect(document.querySelector("[data-stage], [data-tail]")).toBeNull();
+
+    await enterDeploymentMode(router);
+    await screen.findAllByText("Removed");
+    const failed = card("web");
+    expect(failed?.textContent).toContain("Failed");
+    expect(failed?.querySelector('[data-stage="Build"]')?.textContent).toBe("Build —");
+    expect(failed?.querySelector('[data-stage="Deploy"]')?.textContent).toBe("Deploy 1m 0s");
+    expect(failed?.querySelector("[data-tail]")?.textContent).toBe("server · Health check timed out");
+    expect(card("old")?.querySelector('[data-stage="Deploy"]')?.textContent).toBe("Deploy 3s");
+    expect(card("old")?.querySelector("[data-tail]")?.textContent).toBe("server · Removing container · done");
+    // Unchanged: name and outcome only, dimmed.
+    expect(card("api")?.querySelector("[data-stage], [data-tail]")).toBeNull();
+    expect(card("api")?.textContent).toBe("apiUnchanged");
   });
 
   it("leaves the mode on browser Back", async () => {

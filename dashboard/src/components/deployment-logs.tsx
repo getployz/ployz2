@@ -8,6 +8,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 import { BUILDING_KEY } from "#/modules/deployments/preparation-progress";
+import { stripAnsi } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
@@ -37,11 +38,7 @@ function useNow(active: boolean) {
 
 export const clock = (date: Date) => date.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-/** Terminal colour and cursor sequences carry nothing the log needs. */
-const ESC = String.fromCharCode(27);
-const BEL = String.fromCharCode(7);
-const ansi = new RegExp(`${ESC}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL}]*(?:${BEL}|${ESC}\\\\)|[@-Z\\\\-_])`, "g");
-export const stripAnsi = (text: string) => text.replaceAll(ansi, "");
+export { stripAnsi };
 
 const lastLine = (rows: readonly BuildOutputRow[]) => {
   const lines = stripAnsi(rows.map((row) => row.text).join("")).split("\n").filter((line) => line.trim());
