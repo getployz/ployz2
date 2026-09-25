@@ -13,4 +13,6 @@ process.env["POLAR_PRODUCT_TEAMS_ID"] ??= "33333333-3333-4333-8333-333333333333"
 process.env["POLAR_PRODUCT_HOBBY_ID"] = process.env["POLAR_PRODUCT_SOLO_ID"];
 process.env["POLAR_PRODUCT_PRO_ID"] = process.env["POLAR_PRODUCT_TEAMS_ID"];
 process.env["PLOYZ_INSTALLER_URL"] ??= "https://ployz.sh/";
+// Refuses connections, so no test reaches the real Hosted DNS by accident.
+process.env["PLOYZ_HOSTED_DNS_URL"] ??= "http://127.0.0.1:9/";
 process.env["APP_ENCRYPTION_SECRET"] ??= "test-app-encryption-secret-1234567890";

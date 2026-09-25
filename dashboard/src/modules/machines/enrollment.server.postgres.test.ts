@@ -27,6 +27,7 @@ import {
 } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { asTestDouble } from "#/lib/test-double";
+import { type FakeHostedDns, startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { readCollection } from "#/collections/read.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -39,6 +40,7 @@ import {
 } from "#/utils/encrypted-secret.server";
 
 const disposeClients: Array<() => Promise<void>> = [];
+let hostedDns: FakeHostedDns;
 const organizationId = "00000000-0000-4000-8000-000000000401";
 const userId = "00000000-0000-4000-8000-000000000402";
 const tokens = ["pmet_founding_cas_a", "pmet_founding_cas_b"];
@@ -118,6 +120,7 @@ function enrollmentTestClient(
       GITHUB_CLIENT_SECRET: "github-client-secret",
       APP_ENCRYPTION_SECRET:
         "app-encryption-secret-at-least-32-characters",
+      PLOYZ_HOSTED_DNS_URL: hostedDns.url,
     },
   });
   const config = AppConfig.layer.pipe(
@@ -178,15 +181,17 @@ describe("organization enrollment coordinator", () => {
   let harness: GithubPostgresTestHarness;
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    [harness, hostedDns] = await Promise.all([startGithubPostgresTestHarness(), startFakeHostedDns()]);
   }, 60_000);
 
   afterEach(async () => {
     await Promise.all(disposeClients.splice(0).map((dispose) => dispose()));
+    hostedDns.requests.length = 0;
+    hostedDns.state.failWith = null;
   });
 
   afterAll(async () => {
-    await harness.stop();
+    await Promise.all([harness.stop(), hostedDns.close()]);
   });
 
   beforeEach(async () => {
@@ -339,6 +344,9 @@ describe("organization enrollment coordinator", () => {
     if (Result.isFailure(completed) || Result.isFailure(repeated)) return;
     expect(completed.success).toEqual({ machineId: founderMachineId });
     expect(repeated.success).toEqual(completed.success);
+    // Founder completion reserved the Cluster Domain once, with the Organization slug.
+    expect(hostedDns.requests).toEqual([{ path: "/domains", authorization: null, body: { preferred: "enroll" } }]);
+    expect((await harness.pool.query("select name from organization_cluster_domain")).rows).toEqual([{ name: "enroll.ployz.test" }]);
 
     const waiters = await Promise.all(
       Array.from({ length: 19 }, (_, index) =>
@@ -376,6 +384,21 @@ describe("organization enrollment coordinator", () => {
     expect(fake.registerCalls()).toBe(calls);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows)
       .toEqual([{ founder_machine_id: founderMachineId }]);
+  });
+
+  it("completes founder enrollment without a Cluster Domain when Hosted DNS is unreachable", async () => {
+    hostedDns.state.failWith = 503;
+    const { coordinator } = fakeSession(harness.database);
+    const first = await coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) });
+    if (Result.isFailure(first) || first.success.kind !== "initialize") throw new Error("founder did not initialize");
+    const pairingCredential = first.success.pairing.secret;
+    await coordinator.publish({ token: tokens[0] ?? "", machineId: founderMachineId, pairingCredential, capability });
+
+    const completed = await coordinator.completeFounding({ token: tokens[0] ?? "", machineId: founderMachineId, pairingCredential });
+
+    expect(completed).toMatchObject({ success: { machineId: founderMachineId } });
+    expect(hostedDns.requests).toHaveLength(1);
+    expect((await harness.pool.query("select name from organization_cluster_domain")).rows).toEqual([]);
   });
 
   it("retains the committed assignment after publication failure and conflicts on changed retry inputs", async () => {

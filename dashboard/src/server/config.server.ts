@@ -11,6 +11,7 @@ import {
 } from "effect";
 
 const DEFAULT_INSTALLER_URL = new URL("https://ployz.sh/");
+const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const Sha256 = Schema.String.check(
   Schema.isPattern(/^[a-fA-F0-9]{64}$/),
 );
@@ -80,6 +81,12 @@ const rawConfig = Config.all({
     Config.withDefault(DEFAULT_INSTALLER_URL),
   ),
   installerSha256: optional(Config.schema(Sha256, "PLOYZ_INSTALLER_SHA256")),
+  hostedDnsUrl: Config.url("PLOYZ_HOSTED_DNS_URL").pipe(
+    Config.withDefault(DEFAULT_HOSTED_DNS_URL),
+  ),
+  hostedDnsMintKey: optional(
+    Config.schema(NonEmptySecret, "PLOYZ_HOSTED_DNS_MINT_KEY"),
+  ),
   inngestEventKey: optional(Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY")),
   inngestSigningKey: optional(
     Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
@@ -191,6 +198,8 @@ const makeAppConfig = Effect.gen(function* () {
     ployz: {
       installerUrl: raw.installerUrl,
       installerSha256: raw.installerSha256,
+      hostedDnsUrl: raw.hostedDnsUrl,
+      hostedDnsMintKey: raw.hostedDnsMintKey,
     },
     inngest: {
       eventKey: raw.inngestEventKey,
