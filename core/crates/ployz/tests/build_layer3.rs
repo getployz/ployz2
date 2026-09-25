@@ -35,13 +35,7 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     .unwrap();
     cluster.wait_ready(Duration::from_secs(120)).await.unwrap();
     cluster.initialize_entry().await.unwrap();
-    // Layer reuse must not depend on this host's free disk (see policy.rs).
-    cluster
-        .machine_shell(
-            0,
-            "mkdir -p /root/.ployz; echo 'min_free_bytes: 1' > /root/.ployz/build.yaml",
-        )
-        .unwrap();
+    configure_build(&cluster, 0, RETAIN_CACHE);
     let session = session(&cluster).await;
     let built_content = |prepared: &PreparedDeploy| {
         let receipt = prepared.build_receipts().values().next().unwrap();
@@ -136,6 +130,23 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
     assert!(failed.message.contains("Railpack"), "{failed:?}");
     assert_eq!(containers(), before);
     session.close().await;
+}
+
+/// Host build policy that keeps layer reuse independent of the test host's
+/// free disk. The default GC target keeps 20% of the Docker root free, and
+/// below it evicts cache until that much is free again.
+const RETAIN_CACHE: &str = "min_free_bytes: 1\n";
+
+/// Write `policy` as Machine `index`'s host build policy.
+fn configure_build(cluster: &Cluster, index: usize, policy: &str) {
+    cluster
+        .machine_shell(
+            index,
+            &format!(
+                "mkdir -p /root/.ployz; cat > /root/.ployz/build.yaml <<'PLOYZ_POLICY'\n{policy}\nPLOYZ_POLICY"
+            ),
+        )
+        .unwrap();
 }
 
 /// A Cloud session through the entry Machine's plain TCP endpoint.

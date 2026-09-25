@@ -149,6 +149,19 @@ impl Resources {
             },
             (_, min_free_bytes) => min_free_bytes,
         };
+        let arguments = self.prune_arguments(builder, min_free_bytes);
+        docker
+            .run(
+                "collect retained Ployz build cache",
+                &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
+                Streams::Captured,
+            )
+            .map(|_| ())
+    }
+
+    /// Always capped: with only a free-space target that is already met,
+    /// BuildKit still evicts one record (see `UNCAPPED_CACHE_BYTES`).
+    fn prune_arguments(&self, builder: &str, min_free_bytes: Option<u64>) -> Vec<String> {
         let mut arguments = vec![
             "buildx".into(),
             "prune".into(),
@@ -164,13 +177,7 @@ impl Resources {
         if let Some(bytes) = min_free_bytes {
             arguments.extend(["--min-free-space".into(), bytes.to_string()]);
         }
-        docker
-            .run(
-                "collect retained Ployz build cache",
-                &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
-                Streams::Captured,
-            )
-            .map(|_| ())
+        arguments
     }
 
     fn max_used_bytes(&self) -> u64 {
@@ -300,5 +307,23 @@ mod tests {
             assert!(Resources::parse(invalid.as_bytes()).is_err(), "{invalid}");
         }
         assert!(Resources::parse(b"cpu_cores: 0.5\nmemory_bytes: 536870912\ncache_bytes: 1073741824\nmin_free_bytes: 2147483648").is_ok());
+    }
+
+    #[test]
+    fn cache_collection_always_caps_used_space_so_a_met_free_target_evicts_nothing() {
+        let max_used = |yaml: &[u8]| {
+            let arguments = Resources::parse(yaml)
+                .unwrap()
+                .prune_arguments("ployz-0", Some(1));
+            arguments
+                .iter()
+                .skip_while(|argument| *argument != "--max-used-space")
+                .nth(1)
+                .expect("prune always passes --max-used-space")
+                .clone()
+        };
+        assert_eq!(max_used(b"{}"), "4611686018427387904");
+        assert_eq!(max_used(b"min_free_bytes: 1"), "4611686018427387904");
+        assert_eq!(max_used(b"cache_bytes: 1073741824"), "1073741824");
     }
 }
