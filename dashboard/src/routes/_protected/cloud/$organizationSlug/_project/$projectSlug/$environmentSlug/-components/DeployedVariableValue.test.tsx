@@ -21,3 +21,10 @@ it("shows a sealed value as Sealed with nothing to reveal", () => {
   expect(screen.getByText("Sealed")).toBeTruthy();
   expect(screen.queryByRole("button")).toBeNull();
 });
+
+it("shows a key the server did not return as not resolved, not Sealed", () => {
+  render(<DeployedVariableValue name="GONE" value={undefined} from={[]} />);
+  expect(screen.getByText("Not resolved")).toBeTruthy();
+  expect(screen.queryByText("Sealed")).toBeNull();
+  expect(screen.queryByRole("button")).toBeNull();
+});
