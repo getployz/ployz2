@@ -344,9 +344,7 @@ pub(crate) fn wanted_certificate_hosts<'a>(
             else {
                 continue;
             };
-            let Some(hostname) = hostname.as_explicit_host() else {
-                continue;
-            };
+            let hostname = hostname.host();
             if published.iter().any(|name| name.covers(hostname)) {
                 continue;
             }

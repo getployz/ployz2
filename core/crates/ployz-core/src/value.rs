@@ -40,7 +40,7 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn is_dns_label(value: &str) -> bool {
+pub(crate) fn is_dns_label(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 63
@@ -575,19 +575,6 @@ impl QualifiedService {
         format!("{}.{}", self.name, self.project)
     }
 
-    /// Combined public ingress DNS label `{name}-{project}` under a Cluster Domain wildcard.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IngressLabelTooLong`] when the hyphenated label exceeds 63 characters.
-    pub fn ingress_label(&self) -> Result<String, IngressLabelTooLong> {
-        let label = format!("{}-{}", self.name, self.project);
-        if label.len() > 63 {
-            return Err(IngressLabelTooLong { label });
-        }
-        Ok(label)
-    }
-
     /// Parse Internal DNS labels `{name}.{project}`.
     ///
     /// # Errors
@@ -614,15 +601,6 @@ impl QualifiedService {
             ServiceName::parse("ingress").expect("ingress is a DNS-label Service Name"),
         )
     }
-}
-
-/// Combined `{name}-{project}` label for a public Ingress Hostname.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error(
-    "generated Ingress Hostname label \"{label}\" exceeds the 63-character DNS label limit; shorten the Service Name or Project Name, or supply a custom hostname"
-)]
-pub struct IngressLabelTooLong {
-    pub label: String,
 }
 
 fn qualified_service_error(value: &str) -> ValueError {
@@ -674,14 +652,6 @@ impl From<&QualifiedService> for ServiceSelector {
         Self(value.to_string())
     }
 }
-validated_string_newtype!(
-    /// One DNS label under the Cluster Domain for a public Ingress Hostname.
-    ClusterDomainLabel,
-    "Cluster Domain label",
-    "a 1-63 character lowercase DNS label",
-    |value| is_dns_label(value)
-);
-
 validated_string_newtype!(
     /// A validated HTTP ingress hostname. It is not a Machine Name.
     IngressHost,

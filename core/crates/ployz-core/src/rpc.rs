@@ -508,38 +508,6 @@ pub enum ImageRemovalOutcome {
 /// Request the exact generated Caddy configuration.
 pub struct GetIngressProxyConfigRequest {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReserveDomainRequest {
-    pub endpoint: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GetDomainRequest {}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReleaseDomainRequest {}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum DnsRecordType {
-    #[serde(rename = "A")]
-    A,
-    #[serde(rename = "AAAA")]
-    Aaaa,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DnsRecord {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub record_type: DnsRecordType,
-    pub values: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CreateDomainRecordsRequest {
-    pub records: Vec<DnsRecord>,
-}
-
 /// Publish or clear operator-supplied Certificate Material for one certificate hostname.
 ///
 /// Published material is served as given; ACME never orders, renews, or overwrites it.
@@ -852,16 +820,6 @@ impl IngressProxyConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Domain {
-    pub name: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DomainRecords {
-    pub records: Vec<DnsRecord>,
-}
-
 /// The certificate row holds the published material, or no longer holds published material.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateMaterialPublished {}
@@ -979,8 +937,6 @@ define_responses! {
     ImagePulled(ImagePulled) => "image_pulled";
     ImagesRemoved(ImagesRemoved) => "images_removed";
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
-    Domain(Domain) => "domain";
-    DomainRecords(DomainRecords) => "domain_records";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";

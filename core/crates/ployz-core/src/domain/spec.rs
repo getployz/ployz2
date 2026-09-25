@@ -18,9 +18,8 @@ use super::{
     ServiceVolumeGraph,
 };
 use crate::{
-    ClusterDomainLabel, ContainerHostname, ContainerLabels, ContainerPath, ExtraHost, IngressHost,
-    MachinePath, PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName, ServiceVolume,
-    ValueError,
+    ContainerHostname, ContainerLabels, ContainerPath, ExtraHost, IngressHost, MachinePath,
+    PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName, ServiceVolume, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -107,37 +106,15 @@ pub enum HostBind {
     },
 }
 
-/// How an HTTP ingress publication obtains its hostname.
+/// The hostname an HTTP ingress publication serves. Core only knows explicit
+/// hostnames; Cloud expands its own generated names before they arrive.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum IngressHostname {
-    ClusterDomain {
-        #[serde(default)]
-        label: Option<ClusterDomainLabel>,
-    },
-    Explicit {
-        hostname: IngressHost,
-    },
+    Explicit { hostname: IngressHost },
 }
 
 impl IngressHostname {
-    /// Automatic `{service}-{project}` Cluster Domain assignment.
-    #[must_use]
-    pub fn cluster_domain() -> Self {
-        Self::ClusterDomain { label: None }
-    }
-
-    /// Chosen Cluster Domain label with no Project suffix.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ValueError`] when `label` is not a lowercase DNS label.
-    pub fn cluster_domain_label(label: impl Into<String>) -> Result<Self, ValueError> {
-        Ok(Self::ClusterDomain {
-            label: Some(ClusterDomainLabel::parse(label)?),
-        })
-    }
-
     /// Parse a non-empty validated hostname as explicit ingress intent.
     ///
     /// # Errors
@@ -149,12 +126,11 @@ impl IngressHostname {
         })
     }
 
-    /// The explicit hostname when this intent is already a concrete Ingress Hostname.
+    /// The concrete Ingress Hostname.
     #[must_use]
-    pub fn as_explicit_host(&self) -> Option<&IngressHost> {
+    pub fn host(&self) -> &IngressHost {
         match self {
-            Self::Explicit { hostname } => Some(hostname),
-            Self::ClusterDomain { .. } => None,
+            Self::Explicit { hostname } => hostname,
         }
     }
 }

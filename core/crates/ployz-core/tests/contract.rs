@@ -7,12 +7,11 @@ use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CapabilityName, CertificateHost, CertificateMaterialChange,
     CertificateMaterialPublished, CodecError, ContainerCreated, ContainerHostname, ContainerId,
     ContainerKind, ContainerLabels, ContainerObservationMap, ContainerRuntimeObservation,
-    ContractDescription, CreateContainerRequest, CreateDomainRecordsRequest,
-    DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace, DnsRecord, DnsRecordType,
-    DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
+    ContractDescription, CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY,
+    DescribeContractRequest, DiskSpace, DockerVolumeName, ENSURE_IMAGE_INGEST_CAPABILITY,
     EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
     FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation, HttpProtocol,
+    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
     ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressHostname,
     IngressProxyConfig, IngressProxyFragment, InspectMachineUpgradeRequest,
@@ -23,11 +22,11 @@ use ployz_core::{
     ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, ProjectName,
     PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
-    PullImageFromMachineRequest, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
+    PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
     RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId,
-    ServiceName, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    RequestedServiceSpec, ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
+    UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -209,41 +208,6 @@ fn qualified_service_is_project_slash_name() {
             "{invalid}"
         );
     }
-}
-
-#[test]
-fn qualified_service_ingress_label_is_name_hyphen_project_under_63() {
-    let shop = QualifiedService::parse("shop/web").unwrap();
-    let blog = QualifiedService::parse("blog/web").unwrap();
-    assert_eq!(shop.ingress_label().unwrap(), "web-shop");
-    assert_eq!(blog.ingress_label().unwrap(), "web-blog");
-
-    let name = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    let project = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let exact = QualifiedService::new(
-        ProjectName::parse(project).unwrap(),
-        ServiceName::parse(name).unwrap(),
-    );
-    assert_eq!(
-        exact.ingress_label().unwrap(),
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
-}
-
-#[test]
-fn qualified_service_ingress_label_rejects_more_than_63_characters() {
-    let name = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    let project = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let error = QualifiedService::new(
-        ProjectName::parse(project).unwrap(),
-        ServiceName::parse(name).unwrap(),
-    )
-    .ingress_label()
-    .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "generated Ingress Hostname label \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds the 63-character DNS label limit; shorten the Service Name or Project Name, or supply a custom hostname"
-    );
 }
 
 #[test]
@@ -443,22 +407,13 @@ fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
 }
 
 #[test]
-fn ingress_hostname_intent_is_cluster_domain_or_explicit() {
-    assert_eq!(
-        serde_json::to_value(IngressHostname::cluster_domain()).unwrap(),
-        json!({ "kind": "cluster_domain", "label": null })
-    );
-    assert_eq!(
-        serde_json::to_value(IngressHostname::cluster_domain_label("api").unwrap()).unwrap(),
-        json!({ "kind": "cluster_domain", "label": "api" })
-    );
+fn ingress_hostname_is_explicit_on_the_wire() {
     assert_eq!(
         serde_json::to_value(IngressHostname::explicit("app.example.com").unwrap()).unwrap(),
         json!({ "kind": "explicit", "hostname": "app.example.com" })
     );
     assert!(
-        serde_json::from_value::<IngressHostname>(json!({ "kind": "assign_from_cluster_domain" }))
-            .is_err()
+        serde_json::from_value::<IngressHostname>(json!({ "kind": "cluster_domain" })).is_err()
     );
     assert!(
         serde_json::from_value::<PortPublication>(json!({
@@ -478,40 +433,6 @@ fn ingress_hostname_intent_is_cluster_domain_or_explicit() {
         }))
         .is_err()
     );
-    let assigned: PortPublication = serde_json::from_value(json!({
-        "mode": "ingress",
-        "hostname": { "kind": "cluster_domain" },
-        "load_balancer_port": 80,
-        "container_port": 8080,
-        "http_protocol": "http"
-    }))
-    .unwrap();
-    assert!(matches!(
-        assigned,
-        PortPublication::Ingress {
-            hostname: IngressHostname::ClusterDomain { label: None },
-            http_protocol: HttpProtocol::Http,
-            ..
-        }
-    ));
-    let chosen: PortPublication = serde_json::from_value(json!({
-        "mode": "ingress",
-        "hostname": { "kind": "cluster_domain", "label": "api" },
-        "load_balancer_port": 80,
-        "container_port": 8080,
-        "http_protocol": "http"
-    }))
-    .unwrap();
-    assert_eq!(
-        chosen,
-        PortPublication::Ingress {
-            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
-            load_balancer_port: 80.try_into().unwrap(),
-            container_port: 8080.try_into().unwrap(),
-            http_protocol: HttpProtocol::Http,
-        }
-    );
-    assert!(IngressHostname::cluster_domain_label("a".repeat(64)).is_err());
 }
 
 #[test]
@@ -1132,72 +1053,6 @@ fn publish_certificate_material_contract_is_exact_and_never_prints_the_key() {
             .decode::<op::PublishCertificateMaterial>()
             .unwrap(),
         CertificateMaterialPublished {}
-    );
-}
-
-#[test]
-fn hosted_dns_contract_keeps_credentials_daemon_side_and_records_exact() {
-    let reserve = op::ReserveDomain::into_request(ReserveDomainRequest {
-        endpoint: "https://dns.example/v1".into(),
-    });
-    assert_eq!(
-        reserve.encode().unwrap().decode_request().unwrap().body,
-        RpcRequestBody::ReserveDomain(ReserveDomainRequest {
-            endpoint: "https://dns.example/v1".into(),
-        })
-    );
-
-    let records = vec![
-        DnsRecord {
-            name: "*".into(),
-            record_type: DnsRecordType::A,
-            values: vec!["192.0.2.1".into()],
-        },
-        DnsRecord {
-            name: "*".into(),
-            record_type: DnsRecordType::Aaaa,
-            values: vec!["2001:db8::1".into()],
-        },
-    ];
-    assert_eq!(
-        serde_json::to_value(&records).unwrap(),
-        json!([
-            { "name": "*", "type": "A", "values": ["192.0.2.1"] },
-            { "name": "*", "type": "AAAA", "values": ["2001:db8::1"] }
-        ])
-    );
-    let request = op::CreateDomainRecords::into_request(CreateDomainRecordsRequest {
-        records: records.clone(),
-    });
-    assert_eq!(
-        request.encode().unwrap().decode_request().unwrap().body,
-        RpcRequestBody::CreateDomainRecords(CreateDomainRecordsRequest {
-            records: records.clone(),
-        })
-    );
-
-    assert_eq!(
-        RpcResponse::from(Domain {
-            name: "opaque.ployz.example".into()
-        })
-        .decode::<op::GetDomain>()
-        .unwrap()
-        .name,
-        "opaque.ployz.example"
-    );
-    let created = vec![DnsRecord {
-        name: "*.opaque.ployz.example".into(),
-        record_type: DnsRecordType::A,
-        values: vec!["192.0.2.1".into()],
-    }];
-    assert_eq!(
-        RpcResponse::from(DomainRecords {
-            records: created.clone()
-        })
-        .decode::<op::CreateDomainRecords>()
-        .unwrap()
-        .records,
-        created
     );
 }
 

@@ -23,10 +23,7 @@ use super::{
     ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
     Subscription,
 };
-use crate::{
-    hosted_dns::Reservation,
-    machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner},
-};
+use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner};
 
 #[derive(Clone)]
 pub struct ReplicatedStore {
@@ -244,45 +241,6 @@ impl ReplicatedStore {
         text(value, "Cluster network")?
             .parse()
             .map_err(|error| Error::Protocol(format!("invalid Cluster network: {error}")))
-    }
-
-    pub(crate) async fn domain_reservation(&self) -> Result<Option<Reservation>, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT value FROM cluster WHERE key = 'hosted_dns'",
-                [],
-            ))
-            .await?;
-        let rows = query.rows(["value"])?;
-        let Some([value]) = rows.first() else {
-            return Ok(None);
-        };
-        let document = text(value, "hosted DNS reservation")?;
-        serde_json::from_str(document)
-            .map(Some)
-            .map_err(Error::InvalidDomainReservation)
-    }
-
-    pub(crate) async fn publish_domain_reservation(
-        &self,
-        reservation: &Reservation,
-    ) -> Result<(), Error> {
-        self.api
-            .execute([Statement::new(
-                "INSERT INTO cluster (key, value) VALUES ('hosted_dns', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                [json!(serde_json::to_string(reservation)?)],
-            )])
-            .await
-    }
-
-    pub(crate) async fn remove_domain_reservation(&self) -> Result<(), Error> {
-        self.api
-            .execute([Statement::new(
-                "DELETE FROM cluster WHERE key = 'hosted_dns'",
-                [],
-            )])
-            .await
     }
 
     pub async fn machine(&self, id: &str) -> Result<Option<Machine>, Error> {

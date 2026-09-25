@@ -167,9 +167,7 @@ impl IngressProjection {
                 else {
                     continue;
                 };
-                let Some(hostname) = hostname.as_explicit_host() else {
-                    continue;
-                };
+                let hostname = hostname.host();
                 if owners.get(hostname) == Some(&owner) {
                     sites
                         .entry(hostname.clone())
@@ -197,9 +195,7 @@ impl IngressProjection {
                 else {
                     continue;
                 };
-                let Some(hostname) = hostname.as_explicit_host() else {
-                    continue;
-                };
+                let hostname = hostname.host();
                 if owners.get(hostname) == Some(&owner) {
                     sites
                         .get_mut(hostname)

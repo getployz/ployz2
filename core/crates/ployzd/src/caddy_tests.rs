@@ -704,28 +704,14 @@ fn automatic_sites_exclude_hook_containers() {
 }
 
 #[test]
-fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
+fn automatic_sites_keep_unreachable_hosts_and_omit_host_ports() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
-    let ports = vec![
-        PortPublication::Host {
-            bind: HostBind::All,
-            published_port: 80.try_into().unwrap(),
-            container_port: 80.try_into().unwrap(),
-            transport_protocol: TransportProtocol::Tcp,
-        },
-        PortPublication::Ingress {
-            hostname: IngressHostname::cluster_domain(),
-            load_balancer_port: 80.try_into().unwrap(),
-            container_port: 80.try_into().unwrap(),
-            http_protocol: HttpProtocol::Http,
-        },
-        PortPublication::Ingress {
-            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
-            load_balancer_port: 80.try_into().unwrap(),
-            container_port: 80.try_into().unwrap(),
-            http_protocol: HttpProtocol::Http,
-        },
-    ];
+    let ports = vec![PortPublication::Host {
+        bind: HostBind::All,
+        published_port: 80.try_into().unwrap(),
+        container_port: 80.try_into().unwrap(),
+        transport_protocol: TransportProtocol::Tcp,
+    }];
     let observations = [
         observation(
             7,

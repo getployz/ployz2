@@ -68,9 +68,6 @@ pub struct RuntimeWatchFrame {
     pub volumes: Vec<DockerVolume>,
     #[serde(default)]
     pub certificates: Vec<CertificateObservation>,
-    /// Hosted DNS hostname only; never the renewal token or endpoint.
-    #[serde(default)]
-    pub hosted_dns_hostname: Option<String>,
     #[serde(default)]
     pub incomplete_ids: RuntimeWatchIncompleteIds,
     /// Freshness of the entry-local membership/RTT sample. Not Cluster truth.

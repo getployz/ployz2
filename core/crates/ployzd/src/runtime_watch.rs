@@ -23,7 +23,6 @@ use tonic::Status;
 
 use crate::{
     corrosion::{CertificateRow, Error, ReplicatedObservations, ReplicatedStore},
-    hosted_dns::Reservation,
     logs::RpcStream,
     machine::{LocalMachine, RuntimeWatchTelemetry},
 };
@@ -126,7 +125,6 @@ pub(crate) struct RuntimeWatchSnapshot {
     pub containers: ReplicatedObservations<ContainerObservation, ContainerId>,
     pub volumes: ReplicatedObservations<DockerVolume, DockerVolumeId>,
     pub certificates: ReplicatedObservations<(CertificateHost, CertificateRow), CertificateHost>,
-    pub hosted_dns: Option<Reservation>,
 }
 
 /// Latest entry-local membership/RTT sample used to assemble a frame.
@@ -137,7 +135,7 @@ struct LatestSample {
 }
 
 impl RuntimeWatchSnapshot {
-    /// Read Machines, Containers, Docker Volumes, certificates, and hosted DNS from the store.
+    /// Read Machines, Containers, Docker Volumes, and certificates from the store.
     ///
     /// # Errors
     ///
@@ -148,7 +146,6 @@ impl RuntimeWatchSnapshot {
             containers: store.containers().await?,
             volumes: store.volumes().await?,
             certificates: store.certificate_rows().await?,
-            hosted_dns: store.domain_reservation().await?,
         })
     }
 }
@@ -320,7 +317,6 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         containers,
         volumes,
         certificates,
-        hosted_dns_hostname,
         incomplete_ids,
         observed_at: _,
     } = previous;
@@ -329,7 +325,6 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         containers: next_containers,
         volumes: next_volumes,
         certificates: next_certificates,
-        hosted_dns_hostname: next_hosted_dns_hostname,
         incomplete_ids: next_incomplete_ids,
         observed_at: _,
     } = next;
@@ -337,14 +332,13 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         || containers != next_containers
         || volumes != next_volumes
         || certificates != next_certificates
-        || hosted_dns_hostname != next_hosted_dns_hostname
         || incomplete_ids != next_incomplete_ids
 }
 
 /// Assemble one complete Runtime Watch frame.
 ///
 /// Services can be derived from the replicated Containers. Certificate Material,
-/// HTTP-01 challenge bytes, hosted DNS token/endpoint, Management Capabilities, and Pairing
+/// HTTP-01 challenge bytes, Management Capabilities, and Pairing
 /// credentials are not copied onto the frame. Incomplete IDs are preserved as IDs.
 ///
 /// When `telemetry` is `None`, replicated Machine rows stay and membership is unknown
@@ -373,9 +367,6 @@ pub(crate) fn assemble_runtime_watch_frame(
         containers,
         volumes: snapshot.volumes.observations,
         certificates,
-        hosted_dns_hostname: snapshot
-            .hosted_dns
-            .map(|reservation| reservation.name().to_owned()),
         incomplete_ids: RuntimeWatchIncompleteIds {
             machines: snapshot.machines.incomplete_ids,
             containers: snapshot.containers.incomplete_ids,
