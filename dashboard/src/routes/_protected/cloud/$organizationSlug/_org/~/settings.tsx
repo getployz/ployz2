@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -12,6 +13,7 @@ import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/e
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
+import { ClusterDomainPrototype } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.prototype";
 import { publishClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
 
 export const Route = createFileRoute(
@@ -69,6 +71,14 @@ function EnrollmentSection({ organizationSlug }: { organizationSlug: string }) {
 }
 
 function GeneratedDomainSection({ organizationSlug }: { organizationSlug: string }) {
+  // PROTOTYPE: ?variant= swaps in the throwaway layouts (dev only).
+  const [prototype, setPrototype] = useState(false);
+  useEffect(() => setPrototype(import.meta.env.DEV && new URLSearchParams(window.location.search).has("variant")), []);
+  if (prototype) return <ClusterDomainPrototype />;
+  return <RealClusterDomainSection organizationSlug={organizationSlug} />;
+}
+
+function RealClusterDomainSection({ organizationSlug }: { organizationSlug: string }) {
   const clusterDomain = getClusterDomainCollection(organizationSlug, useCollectionScope());
   const { data: rows } = useLiveSuspenseQuery(clusterDomain);
   const publishNow = useServerFn(publishClusterDomainNowServerFn);
