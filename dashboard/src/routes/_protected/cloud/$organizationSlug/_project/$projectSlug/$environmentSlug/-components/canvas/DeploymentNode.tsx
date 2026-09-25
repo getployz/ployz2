@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+import { Link, useParams } from "@tanstack/react-router";
 import { Handle, Position } from "@xyflow/react";
 import { HardDriveIcon } from "lucide-react";
 import { parseServiceConfig } from "@ployz/sdk/config";
@@ -8,6 +10,10 @@ import { cn } from "#/lib/utils";
 import { nodeOutcomeLabels, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import { getServiceIcon, getServiceSubtitle } from "./service-node-helpers";
 import type { CanvasDeploymentNodeData } from "./types";
+import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+import { useDeploymentMode } from "../deployment-mode";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
 
 export const outcomeBadges = {
   deployed: "success", removed: "secondary", failed: "destructive", not_attempted: "secondary", unchanged: "secondary",
@@ -37,12 +43,23 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
   );
 }
 
+/** Service nodes open the read-only Deployment Mode panel; the retained `deployment` param keeps the mode. */
+export function DeploymentNodeLink({ data, className, children }: { data: CanvasDeploymentNodeData; className?: string; children: ReactNode }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const scope = useCollectionScope();
+  const attempt = useDeploymentMode();
+  if (data.nodeType !== "service") return <div className={className}>{children}</div>;
+  const warm = () => { if (attempt) preloadDeploymentLogs(params.organizationSlug, attempt.deployment.id, scope); };
+  return <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: data.nodeId }} search={(previous) => ({ ...previous, tab: undefined })}
+    onPointerEnter={warm} onFocus={warm} data-canvas-node={data.nodeId} draggable={false} className={cn("block", className)}>{children}</Link>;
+}
+
 export function DeploymentNode({ data }: { data: CanvasDeploymentNodeData }) {
   return (
-    <div className="h-36 w-72">
+    <DeploymentNodeLink data={data} className="h-36 w-72">
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />
       <Handle type="source" position={Position.Top} isConnectable={false} className="opacity-0" />
       <DeploymentNodeCard data={data} className="h-full" />
-    </div>
+    </DeploymentNodeLink>
   );
 }

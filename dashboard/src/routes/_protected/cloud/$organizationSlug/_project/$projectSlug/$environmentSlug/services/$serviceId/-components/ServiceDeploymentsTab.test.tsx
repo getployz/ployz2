@@ -81,7 +81,7 @@ it("shows the deployment still serving the service, its changing history, and op
   const router = await openTab();
   const running = screen.getByText("Running").closest("a");
   expect(running?.textContent).toContain("Ship api");
-  expect(running?.getAttribute("href")).toBe(`/cloud/acme/shop/production/services/${api}?deployment=${first}`);
+  expect(running?.getAttribute("href")).toBe(`/cloud/acme/shop/production/services/${api}?deployment=${first}&tab=deploy-logs`);
   const history = screen.getAllByText(/Bump api|Add worker/).map((title) => title.closest("a")?.textContent);
   expect(history).toEqual([expect.stringContaining("Failed")]);
 

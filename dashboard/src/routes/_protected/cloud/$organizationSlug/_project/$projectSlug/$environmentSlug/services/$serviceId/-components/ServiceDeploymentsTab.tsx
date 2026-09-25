@@ -30,14 +30,15 @@ export function ServiceDeploymentsTab({ organizationSlug, serviceId }: { organiz
   const attempts = useNodeDeployments(organizationSlug, environmentId, serviceId);
   const running = attempts.find(({ node }) => node.outcome === "deployed");
   const history = attempts.filter((attempt) => attempt !== running && attempt.node.outcome !== "unchanged");
-  const open = (deployment: EnvironmentDeploymentSummary) =>
-    <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId }} search={{ deployment: deployment.id }} />;
+  const open = (deployment: EnvironmentDeploymentSummary, tab?: "deploy-logs") =>
+    <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId }} search={{ deployment: deployment.id, tab }} />;
 
   return (
     <TabsContent value="deployments" className="mt-4 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
         {running ? (
-          <Item state="success" render={open(running.deployment)}>
+          // The card is one link (links cannot nest), so it goes where its "View logs" label says.
+          <Item state="success" render={open(running.deployment, "deploy-logs")}>
             <Badge variant="success">Running</Badge>
             <Summary deployment={running.deployment} />
             <ItemActions><span className={buttonVariants({ variant: "outline", size: "sm" })}>View logs</span></ItemActions>
