@@ -423,3 +423,29 @@ async fn child_stream_preserves_half_close_and_reaps_on_cancellation() {
     .await
     .expect("cancelled helper was not reaped");
 }
+
+#[tokio::test]
+async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
+    // systemd's ployz.socket queues connects while ployz.service is still starting.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ployz.sock");
+    let _backlog = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let selected = SelectedConnections {
+        source: ConnectionSource::Direct,
+        connections: vec![Connection::unix(&path).unwrap()],
+    };
+    let error = match tokio::time::timeout(
+        Duration::from_secs(30),
+        connect_selected_with(selected, Arc::new(SystemConnector::default())),
+    )
+    .await
+    .expect("connect must bound its wait for a starting daemon")
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a daemon that never serves must not be confirmed"),
+    };
+    assert!(
+        error.to_string().contains("may still be starting"),
+        "{error}"
+    );
+}

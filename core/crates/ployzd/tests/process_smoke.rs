@@ -118,7 +118,7 @@ fn volume_plugin_requires_exactly_one_systemd_socket() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("requires exactly one systemd socket, received 0")
+            .contains("systemd did not pass the Volume plugin socket")
     );
 }
 
