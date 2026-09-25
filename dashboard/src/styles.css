@@ -40,13 +40,15 @@
   --info-foreground: hsl(0 0% 100%);
   --info-soft: hsl(220 80% 95%);
   --info-border: hsl(220 80% 85%);
-  --changed: hsl(270 60% 52%);
+  /* Intent Pink (DESIGN.md): staged intent and focus. `--changed-deep` is the accessible text on staged surfaces. */
+  --changed: #d0268c;
+  --changed-deep: #a80068;
   --changed-foreground: hsl(0 0% 100%);
-  --changed-soft: hsl(270 80% 96%);
-  --changed-border: hsl(270 56% 85%);
+  --changed-soft: #fff0f7;
+  --changed-border: #efb3ce;
   --border: hsl(246 6% 87%);
   --input: hsl(246 6% 87%);
-  --ring: var(--color-focus);
+  --ring: var(--changed);
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
   --chart-3: hsl(152 38% 42%);
@@ -59,7 +61,7 @@
   --sidebar-accent: var(--muted);
   --sidebar-accent-foreground: hsl(250 24% 9%);
   --sidebar-border: hsl(246 6% 87%);
-  --sidebar-ring: var(--color-focus);
+  --sidebar-ring: var(--changed);
   --z-safe-area: 60;
   --radius: 0.75rem;
   --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
@@ -103,13 +105,14 @@
   --info-foreground: hsl(0 0% 100%);
   --info-soft: hsl(220 55% 13%);
   --info-border: hsl(220 62% 25%);
-  --changed: hsl(270 60% 60%);
+  --changed: hsl(324 69% 60%);
+  --changed-deep: hsl(326 80% 78%);
   --changed-foreground: hsl(0 0% 100%);
-  --changed-soft: hsl(270 28% 18%);
-  --changed-border: hsl(270 32% 28%);
+  --changed-soft: hsl(330 28% 18%);
+  --changed-border: hsl(330 32% 28%);
   --border: hsl(246 11% 22%);
   --input: hsl(246 11% 22%);
-  --ring: var(--color-focus-on-dark);
+  --ring: var(--changed);
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
   --chart-3: hsl(152 38% 42%);
@@ -122,7 +125,7 @@
   --sidebar-accent: var(--muted);
   --sidebar-accent-foreground: hsl(0 0% 100%);
   --sidebar-border: hsl(246 11% 22%);
-  --sidebar-ring: var(--color-focus-on-dark);
+  --sidebar-ring: var(--changed);
   --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
   --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
   --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
@@ -169,6 +172,7 @@
   --color-info-soft: var(--info-soft);
   --color-info-border: var(--info-border);
   --color-changed: var(--changed);
+  --color-changed-deep: var(--changed-deep);
   --color-changed-foreground: var(--changed-foreground);
   --color-changed-soft: var(--changed-soft);
   --color-changed-border: var(--changed-border);

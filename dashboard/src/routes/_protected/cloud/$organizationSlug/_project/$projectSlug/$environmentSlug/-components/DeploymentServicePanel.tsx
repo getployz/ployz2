@@ -50,8 +50,10 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
       <CanvasInspectorHeader params={params}>
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate font-medium">{named[0]?.name ?? config.privateDns}</span>
-          <span aria-hidden className="text-muted-foreground">/</span>
-          <span className="font-mono text-muted-foreground">{shortDeploymentId(deployment.id)}</span>
+          {/* The bar already names the deployment; a phone keeps the width for the service name. */}
+          <span className="whitespace-nowrap text-muted-foreground max-[860px]:hidden">
+            <span aria-hidden>/ </span><span className="font-mono">{shortDeploymentId(deployment.id)}</span>
+          </span>
           <Badge variant={outcomeBadges[view.outcome]}>{nodeOutcomeLabels[view.outcome]}</Badge>
         </div>
       </CanvasInspectorHeader>
@@ -127,7 +129,7 @@ function DeploymentServiceDetails({ view, config, commitSha }: { view: Deploymen
           </AlertDescription>
         </Alert>
       ) : (
-<p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
+        <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
       )}
       <details>
         <summary className="cursor-pointer font-medium">{variables.length} {variables.length === 1 ? "variable" : "variables"} (as deployed)</summary>

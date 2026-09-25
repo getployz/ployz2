@@ -60,6 +60,7 @@ export function BackToLive({ className }: { className?: string }) {
   return (
     <Button
       size="sm"
+      variant="ink"
       className={className}
       nativeButton={false}
       render={<Link to="." search={(previous) => ({ ...previous, deployment: undefined })} />}
