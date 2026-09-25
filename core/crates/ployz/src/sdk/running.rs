@@ -142,17 +142,17 @@ impl<T> Running<T> {
     /// Await the result without draining or blocking on progress consumption.
     ///
     /// # Errors
-    /// Returns typed preparation failure/unknown or rejects a second await.
+    /// Returns the call's typed failure or unknown outcome, or rejects a second await.
     pub async fn finished(&self) -> Result<T, RpcError> {
         let join = self
             .join
             .lock()
             .await
             .take()
-            .ok_or_else(|| invalid_argument("preparation already awaited".into()))?;
+            .ok_or_else(|| invalid_argument("result already awaited".into()))?;
         join.await.map_err(|_| RpcError {
             code: RpcErrorCode::Internal,
-            message: "preparation task failed".into(),
+            message: "SDK call task failed".into(),
             details: Value::Null,
         })?
     }

@@ -22,6 +22,8 @@ pub enum BuildOutcome {
     Built { receipt: BuildReceipt },
 }
 
+/// Build the one Service; withdraw it as `Queued` only if `start_within`
+/// passes before admission and no source has left the client.
 pub(super) async fn run(
     mut client: Client,
     input: PreparationInput,
