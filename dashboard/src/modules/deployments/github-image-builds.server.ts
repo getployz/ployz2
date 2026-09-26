@@ -333,13 +333,17 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
     return skip.kind === "started" ? waiting : skip;
   }
   const ended = yield* endGithubBuild(build, row, timedOut);
+  // Moved already by a retry of this look; the next look finds it on the next Builder.
+  if (ended.kind === "moved") return waiting;
   if (ended.kind !== "move") return ended;
+  const moved = yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
   const report = row.github.report;
-  if (report && !report.platforms) {
-    // No final report closed the runner's open steps: close them, so they don't dangle beside the next Builder's.
+  if (moved.kind === "skipped" && report && !report.platforms) {
+    // No final report closed the runner's open steps: close them, so they don't dangle beside the
+    // next Builder's. Only once moved: a final report that settled it first keeps its own steps.
     yield* persistBuildLog(row.deploymentId, { steps: preparationProgressCollector(undefined, report.collector).finish(), output: [] }, row.image);
   }
-  return yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
+  return moved;
 });
 
 /**

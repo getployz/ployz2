@@ -78,6 +78,8 @@ type Fake = {
   endFails: boolean;
   /** Whether the Machine's ended grant recorded no push. */
   noPush: boolean;
+  /** Runs once when a grant is ended: what lands between a check loading the build and acting on it. */
+  onEnd: (() => Promise<void>) | null;
   /** How many times the walk began waiting for the run. */
   waits: number;
   prepared: BuildReceipts[];
@@ -147,6 +149,9 @@ function fakeClient(fake: Fake) {
     },
     endBuildGrant: async ({ id }: { id: string }) => {
       if (fake.endFails) throw new Error("connection refused");
+      const onEnd = fake.onEnd;
+      fake.onEnd = null;
+      await onEnd?.();
       fake.ended.push(id);
       return { pushed: fake.noPush ? undefined : pushed };
     },
@@ -200,7 +205,7 @@ describe("Image Builds on GitHub Actions", () => {
 
   beforeEach(async () => {
     vi.mocked(inngest.send).mockClear();
-    fake = { github: [], minted: [], mintFails: false, ended: [], endFails: false, noPush: false, waits: 0, prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [], reuses: [], reusableOn: null, reuseFails: false };
+    fake = { github: [], minted: [], mintFails: false, ended: [], endFails: false, noPush: false, onEnd: null, waits: 0, prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [], reuses: [], reusableOn: null, reuseFails: false };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'GitHub builds', 'github-builds');
@@ -539,8 +544,26 @@ describe("Image Builds on GitHub Actions", () => {
     // A late final report is refused, and a report path that loaded the row before the move settles nothing.
     expect(await refused({ from: 3, events: [], platforms: ["linux/amd64"] })).toMatchObject({ _tag: "NotFound" });
     expect(await run(settleGithubImageBuild(await target(), githubRunId, { status: "failed", message: "late", machineId: machine.id })))
-      .toMatchObject({ kind: "settled", result: { status: "building" } });
+      .toEqual({ kind: "moved" });
     expect(await row()).toEqual(moved);
+  });
+
+  it("keeps a final report's failed step when it lands while the walk is moving the build on", async () => {
+    await buildOrder("github-then-servers");
+    await dispatch();
+    await checkIn(oidcToken());
+    await post({ from: 0, events: runnerEvents });
+    fake.runStatus = "completed";
+    const failedStep = { Build: { Step: { id: "s1", name: "RUN make", started: null, completed: null, cached: false, error: "exit code 2" } } };
+    // The walk loaded the build with no final report; the report lands while it ends the grant.
+    fake.onEnd = async () => { await post({ from: 3, events: [{ at: 4_000, event: failedStep }], platforms: [] }); };
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false })))
+      .toMatchObject({ kind: "settled", result: { status: "failed" } });
+    expect(await row()).toMatchObject({ status: "failed", failureMessage: "GitHub: a build step failed.", builder: "github", skips: [] });
+    const log = await buildLog();
+    expect(log.steps.find((step) => step.name === "RUN make")).toMatchObject({ error: "exit code 2" });
+    // The report closed the runner's steps as of its last event; the walk didn't close them again.
+    expect(log.steps.find((step) => step.image === "api" && step.name === "Building")?.completedAt).toEqual(new Date(4_000));
   });
 
   it.each(infrastructureFailures)("fails a GitHub-only build with why when %s", async (_case, arrange, reason) => {

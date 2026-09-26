@@ -213,14 +213,22 @@ export const recordGithubReport = Effect.fn("Deployments.recordGithubReport")(fu
 });
 
 /** Settles a building row once and reports the status it has now. Receipts are private evidence and stored encrypted. */
-export const settleImageBuild = (build: Build, outcome: ImageBuildOutcome) => settleWhere(build, outcome, undefined);
+export const settleImageBuild = (build: Build, outcome: ImageBuildOutcome) =>
+  settleWhere(build, outcome, undefined).pipe(Effect.map((status) => settled(build, status)));
 
 /**
  * Settles a build GitHub's run `runId` still holds. Once the walk moved it on, the row is another
  * Builder's and a late report or check changes nothing.
  */
 export const settleGithubImageBuild = (build: Build, runId: number, outcome: ImageBuildOutcome) =>
-  settleWhere(build, outcome, and(eq(table.builder, "github"), eq(table.githubRunId, runId)));
+  settleWhere(build, outcome, and(eq(table.builder, "github"), eq(table.githubRunId, runId))).pipe(
+    Effect.map((status) => status === "building" ? movedOn : settled(build, status)),
+  );
+
+/** A GitHub settle that lost to the walk moving the build on: it is the next Builder's now. */
+export const movedOn = { kind: "moved" } as const;
+
+/** The status a row has after settling it, whether this update or an earlier one settled it. */
 
 const settleWhere = Effect.fn("Deployments.settleImageBuild")(function* (build: Build, outcome: ImageBuildOutcome, holder: SQL | undefined) {
   const { drizzle } = yield* Database;
@@ -235,7 +243,7 @@ const settleWhere = Effect.fn("Deployments.settleImageBuild")(function* (build: 
     : { status: "cancelled" as const };
   const [updated] = yield* drizzle.update(table).set({ ...patch, finishedAt: now, updatedAt: now })
     .where(and(eq(table.id, build.id), eq(table.status, "building"), holder)).returning({ status: table.status });
-  return settled(build, updated?.status ?? (yield* statusNow(build.id)));
+  return updated?.status ?? (yield* statusNow(build.id));
 });
 
 /** An Image Build is wanted while it builds and its attempt is active and not being cancelled. */
