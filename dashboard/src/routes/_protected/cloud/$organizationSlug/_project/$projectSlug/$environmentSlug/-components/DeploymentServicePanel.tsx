@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { useAttemptServiceConfigs } from "#/modules/deployments/deployment-history.queries";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
-import { builtOnLine, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
+import { nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
   DEPLOYMENT_SERVICE_PAGES, deploymentServicePageSchema, type DeploymentServicePage,
 } from "../services/$serviceId/-components/service-pages";
@@ -160,7 +160,7 @@ function DeploymentServiceDetails({ organizationSlug, deployment, serviceId, vie
         ]
         : [["Source", "None"]]} />
       {source.type === "git" ? <Fields title="Build" fields={[
-        ["Built on", view.builtOn ? builtOnLine(view.builtOn) : null],
+        ["Built on", view.builtOn],
         ["Build method", build.buildMethod === "dockerfile" ? "Dockerfile" : "Railpack"],
         ["Dockerfile", build.dockerfilePath],
       ]} /> : null}

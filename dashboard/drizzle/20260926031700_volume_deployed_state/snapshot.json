@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "1575fc6f-8817-4e92-babb-f3062ea62c0b",
+  "id": "cfe6c6e8-e8ea-446d-a26c-288449ab9a28",
   "prevIds": [
-    "e5a3150a-0675-4aca-8461-1720662c1de9"
+    "a4bbbd3a-2d08-4ed7-ae96-314abb4987b1"
   ],
   "ddl": [
     {
@@ -1617,32 +1617,6 @@
       "table": "environment_resource"
     },
     {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "deployed_name",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_resource"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "removed_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_resource"
-    },
-    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -2371,19 +2345,6 @@
       "table": "environment_deployment"
     },
     {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'{\"version\":1,\"nodes\":[]}'",
-      "generated": null,
-      "identity": null,
-      "name": "target_nodes",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment"
-    },
-    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -2639,6 +2600,19 @@
       "generated": null,
       "identity": null,
       "name": "image",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment_build_step"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "attempt",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment_build_step"
@@ -10336,6 +10310,7 @@
       "columns": [
         "deployment_id",
         "image",
+        "attempt",
         "build",
         "key"
       ],
@@ -10952,6 +10927,32 @@
       "entityType": "checks",
       "schema": "public",
       "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "deployed_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_resource"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_resource"
     }
   ],
   "renames": []
