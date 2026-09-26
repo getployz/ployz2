@@ -16,7 +16,7 @@ import { environmentDeployment, environmentDeploymentImageBuild as table, type I
  * returns what happened, so no caller re-reads a row to learn it:
  *
  *   start ──▶ building ─┬─ claim for GitHub ─▶ check-in with grant ─▶ report …
- *                       ├─ skip (not once started) ─▶ building, next Builder
+ *                       ├─ skip (not once started, but for GitHub's infrastructure) ─▶ building, next Builder
  *                       └─ settle ─▶ built | failed | cancelled
  */
 
@@ -131,14 +131,18 @@ export const claimForGithub = Effect.fn("Deployments.claimImageBuildForGithub")(
 
 /**
  * Adds the current Builder to the skip trail and clears what it left, so the next one starts clean.
- * Refused once the build started (GitHub checked in: `started`) or settled: a started build never moves.
+ * Refused once the build started (GitHub checked in: `started`) or settled. Only `startedRun`, a
+ * GitHub run that checked in and then failed for infrastructure reasons, moves a started build.
  */
-export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(function* (build: Build, reason: SkipReason) {
+export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(function* (build: Build, reason: SkipReason, startedRun?: number) {
   const { drizzle } = yield* Database;
   const [skipped] = yield* drizzle.update(table).set({
     skips: sql`${table.skips} || ${JSON.stringify([reason])}::jsonb`,
-    builder: "server", githubRunId: null, github: null, machineId: null, serverChoice: null, updatedAt: new Date(),
-  }).where(and(eq(table.id, build.id), eq(table.status, "building"), isNull(table.checkedInAt))).returning({ id: table.id });
+    builder: "server", githubRunId: null, checkedInAt: null, github: null, machineId: null, serverChoice: null, updatedAt: new Date(),
+  }).where(and(
+    eq(table.id, build.id), eq(table.status, "building"),
+    startedRun === undefined ? isNull(table.checkedInAt) : eq(table.githubRunId, startedRun),
+  )).returning({ id: table.id });
   if (skipped) return { kind: "skipped", reason } satisfies ImageBuildAttempt;
   const status = yield* statusNow(build.id);
   return status === "building" ? { kind: "started" as const } : settled(build, status);

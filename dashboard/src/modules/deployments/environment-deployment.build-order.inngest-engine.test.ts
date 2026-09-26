@@ -191,7 +191,15 @@ describe("walking the Build Order", () => {
     expect(fake.serverLimits.length).toBeGreaterThan(0);
   });
 
-  it("keeps a GitHub run that checked in before the limit, and never moves it when it fails", async () => {
+  it("moves a started GitHub run that failed for infrastructure reasons on to the servers", async () => {
+    fake.candidates = imageBuildWalk("github-then-servers", undefined);
+    fake.runCompletes = [false, true];
+    fake.checks = [{ kind: "waiting" }, skipped({ builder: "github", kind: "runner_stopped" })];
+    expect(await outcome()).toMatchObject({ deployed: true });
+    expect(fake.serverLimits.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a GitHub run that checked in before the limit, and never moves it when a build step fails", async () => {
     fake.candidates = imageBuildWalk("github-then-servers", undefined);
     fake.runCompletes = [false, true];
     fake.checks = [{ kind: "waiting" }, settled("failed")];

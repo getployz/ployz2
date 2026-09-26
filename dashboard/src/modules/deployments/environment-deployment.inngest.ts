@@ -181,8 +181,8 @@ const BUILDERS = { servers: walkServers, github: walkGithub } satisfies Record<B
 /**
  * One Image Build walks its Builders in turn: its Service's Preferred Builder, then the Build Order.
  * Each but the last has "start within" to start it, else the next gets it; the last waits. A Builder
- * that can't take it is skipped at once. A build that started never moves. Every skip lands on the
- * Image Build's trail.
+ * that can't take it is skipped at once. A build that started moves on only when GitHub fails it for
+ * infrastructure reasons, never for a failed Build Step. Every skip lands on the Image Build's trail.
  *
  *   candidates ─▶ [servers | github] ─ skipped ─▶ next ─ … ─▶ none left: failed
  *                        └─ settled (built / failed / cancelled) ─▶ done
