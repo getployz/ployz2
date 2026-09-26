@@ -118,6 +118,7 @@ function StepRow({ step, time, lines, now, open: toggledOpen, onToggle }: {
 function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress: DeploymentProgress }[], serviceId: string): ContainerLogRow[] {
   const previous = new Map<number, string>();
   const logs: ContainerLogRow[] = [];
+  let sending: string | null = null;
   for (const event of events) {
     for (const row of event.progress.rows) {
       if (row.serviceId !== serviceId && row.serviceId !== null) continue;
@@ -126,6 +127,12 @@ function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress:
       if (previous.get(row.index) === label) continue;
       previous.set(row.index, label);
       logs.push({ id: `lifecycle:${event.id}:${row.index}`, timestamp: String(BigInt(event.createdAt.getTime()) * 1_000_000n), channel: "lifecycle", machineId: row.machineId, machineName: row.machineName ?? row.machineId, containerId: row.target ?? "", serviceName: row.serviceName ?? "Environment", message: label });
+    }
+    // Sending the image to the Machines that run it happens at deploy time, so it reads here.
+    const preparation = event.progress.preparation;
+    if (preparation?.phase === "transfer" && preparation.serviceId === serviceId && preparation.message && sending !== preparation.message) {
+      sending = preparation.message;
+      logs.push({ id: `lifecycle:${event.id}:transfer`, timestamp: String(BigInt(event.createdAt.getTime()) * 1_000_000n), channel: "lifecycle", machineId: "", machineName: "", containerId: "", serviceName: "Deployment", message: preparation.message });
     }
     event.progress.compensation.forEach((message, i) => logs.push({ id: `lifecycle:${event.id}:recovery:${i}`, timestamp: String(BigInt(event.createdAt.getTime()) * 1_000_000n), channel: "lifecycle", machineId: "", machineName: "", containerId: "", serviceName: "Deployment", message }));
   }

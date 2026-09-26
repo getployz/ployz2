@@ -97,8 +97,8 @@ it("tells each Builder's go as a plain line above its steps", () => {
   const html = renderToStaticMarkup(createElement(BuildLogs, { timeZone: "UTC",
     finished: false, output: [], now: at(9).getTime(),
     steps: [
-      step(1, "GitHub Actions", { image: "web", key: "stage:Builder", completedAt: at(1) }), step(2, "Waiting for a runner", { image: "web", key: "runner", completedAt: at(4) }),
-      step(5, "hel-1", { image: "web", attempt: 1, key: "stage:Builder", completedAt: at(5) }), step(6, "Uploading source", { image: "web", attempt: 1, key: "stage:Upload" }),
+      step(2, "Waiting for a runner", { image: "web", key: "runner", completedAt: at(4) }),
+      step(6, "Uploading source", { image: "web", attempt: 1, key: "stage:Upload" }),
     ],
     evidence: { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } }, github: null, skips: [{ builder: "github", kind: "not_started", minutes: 3 }] },
   }));

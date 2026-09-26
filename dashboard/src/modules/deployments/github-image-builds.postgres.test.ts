@@ -23,12 +23,13 @@ import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.ser
 import { noPairingChanges } from "#/test/organization-runtime";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
-import { loadDeploymentBuildLog } from "./deployment-events.server";
+import { loadDeploymentBuildLog, openBuildStep } from "./deployment-events.server";
 import { createMarkCancelledRowBackedWorkflow, createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 import type { BuildOrder } from "./build-order";
 import { skipReasonText, type SkipReason } from "./image-build";
 import { planImageBuildWalk } from "./build-order.server";
 import { buildLogSections, builtOn } from "./deployment-view";
+import { ployzStep } from "./preparation-progress";
 import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps, settleOrMoveReportedGithubBuild } from "./github-image-builds.server";
 import { settleGithubImageBuild } from "./image-builds.server";
 import { persistDeploymentSourcePin } from "./source-pins.server";
@@ -449,9 +450,9 @@ describe("Image Builds on GitHub Actions", () => {
     expect(fake.prepared.at(-1)).toEqual({ api: receipt });
 
     const log = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId, after: 0, limit: 50 }));
-    // Cloud heads GitHub's section and times the wait for a runner; the runner reports the rest.
+    // Cloud times the wait for a runner; the runner reports the rest.
     expect(log.steps.filter((step) => step.image === "api").map((step) => [step.name, step.attempt])).toEqual([
-      ["Building", 0], ["GitHub Actions", 0], ["Waiting for a runner", 0], ["RUN make", 0],
+      ["Building", 0], ["Waiting for a runner", 0], ["RUN make", 0],
     ]);
     expect(log.steps.find((step) => step.name === "Waiting for a runner")?.completedAt).not.toBeNull();
     expect(log.output.map((line) => line.text)).toEqual(["ok\n"]);
@@ -468,8 +469,11 @@ describe("Image Builds on GitHub Actions", () => {
     // Until check-in, the log waits for a runner.
     expect((await buildLog()).steps.find((step) => step.name === "Waiting for a runner")?.completedAt).toBeNull();
     await checkIn(oidcToken());
+    // A retried start never reopens the wait the check-in closed.
+    await run(openBuildStep(deploymentId, { image: "api", attempt: 0 }, ployzStep("runner", "Waiting for a runner", new Date(), null)));
+    expect((await buildLog()).steps.find((step) => step.name === "Waiting for a runner")?.completedAt).not.toBeNull();
     expect(await post({ from: 0, events: runnerEvents.slice(0, 2) })).toEqual({ received: 2 });
-    expect((await buildLog()).steps.filter((step) => step.image === "api" && step.key !== "stage:Builder" && step.key !== "runner").map((step) => step.name))
+    expect((await buildLog()).steps.filter((step) => step.image === "api" && step.key !== "runner").map((step) => step.name))
       .toEqual(["Building", "RUN make"]);
     // A retried batch repeats lines already taken; only the new one is filed.
     expect(await post({ from: 1, events: runnerEvents.slice(1) })).toEqual({ received: 3 });
@@ -762,24 +766,24 @@ describe("Image Builds on GitHub Actions", () => {
 
     it("defaults to GitHub first once a repository has the build workflow, and to the servers until then", async () => {
       await harness.db.delete(schema.organizationBuildOrder);
-      expect(await plan()).toEqual([{ builder: "servers", reason: "first_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "servers", reason: "first_in_build_order", attempt: 0 }]);
       // The latest Saved State builds from owner/repo through the GitHub App, whose workflow is ready.
       await harness.pool.query(`update environment_saved_state_snapshot set intent = jsonb_set(intent, '{services}',
         '[{"config":{"source":{"type":"git","repository":"owner/repo","repositoryId":42,"access":{"type":"github-installation","installationId":7}}}}]')`);
-      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order" }, { builder: "servers", reason: "next_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order", attempt: 0 }, { builder: "servers", reason: "next_in_build_order", attempt: 1 }]);
       fake.githubErrors.set("fetch_workflow", githubError("fetch_workflow", 404, "not_found"));
-      expect(await plan()).toEqual([{ builder: "servers", reason: "first_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "servers", reason: "first_in_build_order", attempt: 0 }]);
     });
 
     it("walks the Build Order alone on Auto", async () => {
       await buildOrder("github-then-servers");
-      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order" }, { builder: "servers", reason: "next_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order", attempt: 0 }, { builder: "servers", reason: "next_in_build_order", attempt: 1 }]);
     });
 
     it("tries GitHub first, then the Build Order without it, and records that GitHub was preferred", async () => {
       await buildOrder("servers-then-github");
       await prefer("github");
-      expect(await plan()).toEqual([{ builder: "github", reason: "preferred" }, { builder: "servers", reason: "first_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "github", reason: "preferred", attempt: 0 }, { builder: "servers", reason: "first_in_build_order", attempt: 1 }]);
       await dispatch();
       expect(await github()).toMatchObject({ reason: "preferred" });
     });
@@ -788,7 +792,7 @@ describe("Image Builds on GitHub Actions", () => {
       fake.machines = [machine, fast];
       await buildOrder("github-only");
       await prefer(fast.id);
-      expect(await plan()).toEqual([{ builder: "servers", reason: "preferred", machineId: fast.id }, { builder: "github", reason: "first_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "servers", reason: "preferred", machineId: fast.id, attempt: 0 }, { builder: "github", reason: "first_in_build_order", attempt: 1 }]);
       // The whole walk: the preferred Server's go has a start limit, then GitHub gets it.
       await harness.db.delete(schema.environmentDeploymentImageBuild);
       await queued();
@@ -803,11 +807,11 @@ describe("Image Builds on GitHub Actions", () => {
       await buildOrder("github-only");
       await prefer(fast.id);
       fake.machines = [machine, { ...fast, accepts_builds: false }];
-      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order", attempt: 1 }]);
       expect(await row()).toMatchObject({ skips: [{ builder: "servers", kind: "preferred_unavailable", machineId: fast.id, name: "fast" }] });
       fake.machines = [machine];
       // GitHub only: a gone preferred Server never puts the build on your servers.
-      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order" }]);
+      expect(await plan()).toEqual([{ builder: "github", reason: "first_in_build_order", attempt: 1 }]);
       expect(await row()).toMatchObject({ skips: [{ builder: "servers", kind: "preferred_unavailable", machineId: fast.id, name: null }] });
       expect((await buildLog()).imageBuilds).toEqual([expect.objectContaining({ skips: [expect.objectContaining({ kind: "preferred_unavailable" })] })]);
     });

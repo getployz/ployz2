@@ -33,7 +33,7 @@ type ClusterBuild =
  * row on every exit. It stops when its attempt ends or is cancelled.
  */
 export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* (
-  build: ImageBuildTarget, candidate: Pick<BuildCandidate, "machineId">, startWithinMs?: number,
+  build: ImageBuildTarget, candidate: Pick<BuildCandidate, "machineId" | "attempt">, startWithinMs?: number,
 ) {
   const cancellation = new AbortController();
   const collector = preparationProgressCollector();
@@ -42,7 +42,7 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
   let logged = false;
   const log = (writes: { steps: BuildStepWrite[]; output: { build: number; step: string; stderr: boolean; text: string }[] }) => {
     logged ||= writes.steps.length > 0;
-    return reporting.write(persistBuildLog(build.deploymentId, writes, build.image));
+    return reporting.write(persistBuildLog(build.deploymentId, writes, { image: build.image, attempt: candidate.attempt }));
   };
   const outcome: ClusterBuild = yield* Effect.gen(function* () {
     const context = yield* loadDeploymentContext(build.deploymentId);

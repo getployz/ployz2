@@ -5,7 +5,7 @@ import { decodeStrict } from "#/modules/environment-design/schema";
 import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
 import { preferredServerUnavailableText, skipReasonText, type SkipReason } from "./image-build";
-import { BUILDER_KEY, BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
+import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
 import { isActiveDeployment } from "./runtime-contract";
 
@@ -60,22 +60,31 @@ export function builtOn(log: Pick<BuildLog, "imageBuilds"> | null | undefined, i
   return row?.serverChoice?.machineName ?? null;
 }
 
+/** Who took one go at an Image Build: the Builder its skip names, or the one that holds the build now. Null for a reused image. */
+function goBuilder(skipped: SkipReason | undefined, evidence: ImageBuildEvidence | undefined): string | null {
+  if (skipped) return skipped.builder === "github" ? "GitHub Actions" : "your servers";
+  if (evidence?.github) return "GitHub Actions";
+  const choice = evidence?.serverChoice;
+  return choice && choice.reason.kind !== "reused" ? choice.machineName : null;
+}
+
 /** One Builder's go at an Image Build, as its log tells it: one plain line, then its steps. */
 export type BuildLogSection<Step> = { title: string | null; runUrl: string | null; steps: Step[] };
 
 /**
  * An Image Build's log as one timeline: a section per Builder's go, in order. The first says where it
  * builds; each later one first says, from the skip trail, why the build moved: "GitHub couldn't
- * finish this build: its runner stopped. Building on hel-1 instead." A Builder skipped before it
- * wrote a step leaves only that sentence. The deploy step's own rows happened after every go, so
- * they join the last.
+ * finish this build: its runner stopped. Building on hel-1 instead." A go's Builder is the one its
+ * skip names, or the current holder for the last; a Server go that moved on no longer names its
+ * Server. A Builder skipped before it wrote a step leaves only that sentence. The deploy step's own
+ * rows happened after every go, so they join the last.
  */
 export function buildLogSections<Step extends BuildStep>(steps: readonly Step[], evidence: ImageBuildEvidence | undefined): BuildLogSection<Step>[] {
   const skips = evidence?.skips ?? [];
   const last = Math.max(skips.length, ...steps.map((step) => step.image === null ? 0 : step.attempt));
   const sections = Array.from({ length: last + 1 }, (_, attempt): BuildLogSection<Step> => {
     const own = steps.filter((step) => (step.image === null ? last : step.attempt) === attempt);
-    const builder = own.find((step) => step.key === BUILDER_KEY)?.name ?? null;
+    const builder = own.length ? goBuilder(attempt < skips.length ? skips[attempt] : undefined, evidence) : null;
     const skipped = attempt > 0 ? skips[attempt - 1] : undefined;
     const lead = skipped ? [skipReasonText(skipped)] : [];
     const choice = attempt === last ? evidence?.serverChoice?.reason : undefined;
@@ -83,7 +92,7 @@ export function buildLogSections<Step extends BuildStep>(steps: readonly Step[],
     if (choice?.kind === "preferred_unavailable") lead.push(preferredServerUnavailableText(choice.name));
     const moved = lead.join(" ");
     const title = builder === null ? moved || null : moved ? `${moved} Building on ${builder} instead.` : `Building on ${builder}`;
-    return { title, runUrl: attempt === last ? evidence?.github?.runUrl ?? null : null, steps: own.filter((step) => step.key !== BUILDER_KEY) };
+    return { title, runUrl: attempt === last ? evidence?.github?.runUrl ?? null : null, steps: own };
   });
   return sections.filter((section) => section.title !== null || section.steps.length > 0);
 }
@@ -241,8 +250,8 @@ type AttemptFacts = {
 function attemptBuildStage({ deployment, progress, nodes }: DeploymentViewInput, succeeded: boolean, building: boolean): StageState {
   // Prebuilt images only: nothing to build.
   if (!nodes.some((node) => node.image)) return "none";
-  // Preparation said ready, the Engine planned the rollout, or the attempt succeeded: every image exists.
-  if (progress?.preparation?.phase === "ready" || deployment.deployPreview || succeeded) return "done";
+  // Preparation said ready or is delivering images, the Engine planned the rollout, or the attempt succeeded: every image exists.
+  if (progress?.preparation?.phase === "ready" || progress?.preparation?.phase === "transfer" || deployment.deployPreview || succeeded) return "done";
   if (deployment.status === "failed") return "failed";
   if (deployment.status === "cancelled") return "skipped";
   // Image Builds report steps from admission, and preparation reports progress once deploy starts; until then the attempt waits.

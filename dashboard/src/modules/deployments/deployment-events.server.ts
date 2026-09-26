@@ -58,45 +58,47 @@ export const loadDeploymentBuildLog = Effect.fn("Deployments.buildLog")(function
   return { steps, output, imageBuilds, finished: deployment.finishedAt !== null, nextSequence: input.tail === undefined && output.length === input.limit && last ? String(last.id) : null };
 });
 
-/**
- * Upsert steps by key and append output. Output may precede its step; a placeholder holds its place.
- * Each Image Build files its steps under its image, in the section of the Builder that holds it now
- * unless `attempt` names one; the deploy step's own preparation under none.
- */
-export const persistBuildLog = Effect.fn("Deployments.persistBuildLog")(function* (deploymentId: string, writes: { steps: readonly BuildStepWrite[]; output: readonly BuildOutputWrite[] }, image: string | null = null, attempt?: number) {
+/** Whose Build Steps a write files: one Builder's go (`attempt`) at one Image Build (`image`); null is the deploy step's own. */
+export type BuildStepOwner = { image: string; attempt: number } | null;
+
+/** Upsert steps by key and append output. Output may precede its step; a placeholder holds its place. */
+export const persistBuildLog = Effect.fn("Deployments.persistBuildLog")(function* (deploymentId: string, writes: { steps: readonly BuildStepWrite[]; output: readonly BuildOutputWrite[] }, owner: BuildStepOwner = null) {
   if (!writes.steps.length && !writes.output.length) return;
   const database = yield* Database;
-  const builds = environmentDeploymentImageBuild;
-  const attemptOf = (of: string | null, given?: number) => of === null ? 0 : given ?? sql<number>`coalesce((select jsonb_array_length(${builds.skips}) from ${builds} where ${builds.deploymentId} = ${deploymentId} and ${builds.image} = ${of}), 0)`;
+  const filed = { organizationId: organizationIdForDeployment(deploymentId), deploymentId, image: owner?.image ?? null, attempt: owner?.attempt ?? 0 };
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const table = environmentDeploymentBuildStep;
     const target = [table.deploymentId, table.image, table.attempt, table.build, table.key];
-    const organizationId = organizationIdForDeployment(deploymentId);
     const ids = new Map<string, number>();
     if (writes.steps.length) {
       const excluded = (column: { name: string }) => sql.raw(`excluded."${column.name}"`);
-      const steps = new Map(writes.steps.map((step) => [`${step.image ?? image}:${step.build}:${step.key}`, step]));
-      const upserted = yield* drizzle.insert(table).values([...steps.values()].map(({ image: own, ...step }) => own === undefined
-        ? { organizationId, deploymentId, image, attempt: attemptOf(image, attempt), ...step }
-        : { organizationId, deploymentId, image: own, attempt: attemptOf(own), ...step }))
+      const steps = new Map(writes.steps.map((step) => [`${step.build}:${step.key}`, step]));
+      const upserted = yield* drizzle.insert(table).values([...steps.values()].map((step) => ({ ...filed, ...step })))
         .onConflictDoUpdate({ target, set: { name: excluded(table.name), startedAt: excluded(table.startedAt), completedAt: excluded(table.completedAt), cached: excluded(table.cached), error: excluded(table.error), updatedAt: new Date() } })
-        .returning({ id: table.id, image: table.image, build: table.build, key: table.key });
-      for (const step of upserted) if (step.image === image) ids.set(`${step.build}:${step.key}`, step.id);
+        .returning({ id: table.id, build: table.build, key: table.key });
+      for (const step of upserted) ids.set(`${step.build}:${step.key}`, step.id);
     }
     if (!writes.output.length) return;
     const unknown = new Map(writes.output.filter((row) => !ids.has(`${row.build}:${row.step}`)).map((row) => [`${row.build}:${row.step}`, row]));
     if (unknown.size) {
-      const found = yield* drizzle.insert(table).values([...unknown.values()].map((row) => ({ organizationId, deploymentId, image, attempt: attemptOf(image, attempt), build: row.build, key: row.step, name: row.step })))
+      const found = yield* drizzle.insert(table).values([...unknown.values()].map((row) => ({ ...filed, build: row.build, key: row.step, name: row.step })))
         .onConflictDoUpdate({ target, set: { key: table.key } })
         .returning({ id: table.id, build: table.build, key: table.key });
       for (const step of found) ids.set(`${step.build}:${step.key}`, step.id);
     }
     yield* drizzle.insert(environmentDeploymentBuildOutput).values(writes.output.flatMap((row) => {
       const stepId = ids.get(`${row.build}:${row.step}`);
-      return stepId === undefined ? [] : [{ organizationId, deploymentId, stepId, stderr: row.stderr, text: row.text }];
+      return stepId === undefined ? [] : [{ organizationId: filed.organizationId, deploymentId, stepId, stderr: row.stderr, text: row.text }];
     }));
   }));
+});
+
+/** Opens a step once: a retried write leaves it as it is, even closed since. */
+export const openBuildStep = Effect.fn("Deployments.openBuildStep")(function* (deploymentId: string, owner: NonNullable<BuildStepOwner>, step: BuildStepWrite) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(environmentDeploymentBuildStep)
+    .values({ organizationId: organizationIdForDeployment(deploymentId), deploymentId, ...owner, ...step }).onConflictDoNothing();
 });
 
 export const persistDeploymentProgress = Effect.fn("Deployments.persistProgress")(function* (deploymentId: string, progress: typeof environmentDeploymentEvent.$inferInsert.progress) {

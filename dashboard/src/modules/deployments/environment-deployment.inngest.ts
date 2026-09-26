@@ -205,8 +205,9 @@ async function runImageBuild(
   const message = skipped ? skipReasonText(skipped) : "No Builder can take this build.";
   // The trail's last sentence says what happened; this step, that nothing else will take it.
   const noBuilder = { ...ployzStep("stage:NoBuilder", "Couldn't start the build"), error: "No other Builder in your Build Order can take it." };
+  const attempt = (candidates.at(-1)?.attempt ?? -1) + 1;
   const failed = await step.run(`fail-image-build-${build.serviceId}`, () => runEffect(
-    persistBuildLog(build.deploymentId, { steps: [noBuilder], output: [] }, build.image).pipe(
+    persistBuildLog(build.deploymentId, { steps: [noBuilder], output: [] }, { image: build.image, attempt }).pipe(
       Effect.andThen(settleImageBuild(build, { status: "failed", message, machineId: null })))));
   return failed.result;
 }

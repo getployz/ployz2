@@ -10,16 +10,16 @@ import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import type { BuildCandidate } from "./build-order";
 import { githubSkipReason, installFailedSchema, type GithubImageBuild } from "./image-build";
-import { persistBuildLog } from "./deployment-events.server";
+import { openBuildStep, persistBuildLog } from "./deployment-events.server";
 import {
   awaitsCheckIn, checkInImageBuild, closeOpenSteps, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, imageBuildNow, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild,
   moveStartedGithubBuild, skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
-import { builderStep, ployzStep, preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
+import { ployzStep, preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
 import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
-import { connectedRuntime, oneServiceDeployment } from "./runtime-session.server";
+import { connectedRuntime, DeploymentRuntimeUnavailable, oneServiceDeployment } from "./runtime-session.server";
 import { pinSourceCommit } from "./runtime-sources.server";
 import { reusedImageStep } from "./server-image-builds.server";
 
@@ -69,7 +69,8 @@ const grantRepository = (image: string) => `ployz-build/${image}`;
  * through the GitHub App or lacks permission, has no workflow, needs several platforms, or the
  * dispatch fails.
  */
-export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuild")(function* (build: ImageBuildTarget, candidate: Pick<BuildCandidate, "reason">) {
+export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuild")(function* (build: ImageBuildTarget, candidate: Pick<BuildCandidate, "reason" | "attempt">) {
+  const owner = { image: build.image, attempt: candidate.attempt };
   const context = yield* loadDeploymentContext(build.deploymentId);
   const snapshot = context?.snapshots.find((candidate) => candidate.serviceId === build.serviceId);
   const source = installedSource(snapshot);
@@ -94,7 +95,7 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   }).pipe(Effect.scoped);
   if (outside.kind === "reuse") {
     yield* recordServerChoice(build.id, outside.receipt.machine_id, { machineName: outside.machine_name, reason: { kind: "reused" } });
-    yield* persistBuildLog(build.deploymentId, { steps: [reusedImageStep()], output: [] }, build.image);
+    yield* persistBuildLog(build.deploymentId, { steps: [reusedImageStep()], output: [] }, owner);
     return yield* settleImageBuild(build, { status: "built", receipt: outside.receipt });
   }
   const { platforms } = outside;
@@ -104,6 +105,9 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   // With no visible placement, deploy's coverage check decides, as it does after a server build.
   const runner = platforms[0] === "linux/arm64" ? "ubuntu-24.04-arm" : "ubuntu-latest";
   const config = yield* AppConfig;
+  // Cloud sees both ends of the wait for a runner. It opens before the dispatch, so even the fastest
+  // check-in finds it to close, and only once, so a retried start never reopens a closed wait.
+  yield* openBuildStep(build.deploymentId, owner, ployzStep("runner", "Waiting for a runner", new Date(), null));
   const run = yield* dispatchGithubBuildWorkflow({
     installationId: source.installationId, fullName: workflow.fullName, defaultBranch: workflow.defaultBranch,
     inputs: { build: build.id, cloud: config.app.url.origin, runner },
@@ -114,11 +118,10 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
   if (claim.kind === "settled") {
     // Settled (cancelled) while dispatching: the run must not build.
     yield* cancelGithubRun({ installationId: source.installationId, fullName: workflow.fullName, runId: run.runId }).pipe(Effect.ignore);
+    // It settled before the wait opened: nothing else closes it.
+    yield* closeOpenSteps(build.id);
     return claim satisfies GithubBuildStart;
   }
-  // Cloud sees both ends of the wait for a runner: this dispatch and the check-in, which closes it.
-  const now = new Date();
-  yield* persistBuildLog(build.deploymentId, { steps: [builderStep(GITHUB_BUILDER, now), { ...ployzStep("runner", "Waiting for a runner", now), completedAt: null }], output: [] }, build.image);
   return { kind: "dispatched", runId: run.runId } satisfies GithubBuildStart;
 }, (effect, build) => effect.pipe(
   // A GitHub or SDK failure before dispatch is GitHub being unusable, not the build failing.
@@ -126,9 +129,6 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
 ));
 
 type GithubRow = Extract<ImageBuildRow, { builder: "github" }>;
-
-/** GitHub as its build log section names it. */
-const GITHUB_BUILDER = "GitHub Actions";
 
 /**
  * One look at a dispatched build, after the Workflow run webhook reported its run `ended` or a wait
@@ -237,7 +237,7 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
       Effect.mapError((cause) => new BuildGrantUnavailable({ cause })),
     );
     return { minted, machine };
-  }).pipe(Effect.scoped, Effect.tapError(() => checkInFailed(row)));
+  }).pipe(Effect.scoped, Effect.tapError((error) => checkInFailed(row, error)));
   const grant = { id: minted.id, fingerprint };
   const checkedIn = yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant });
   if (!checkedIn) {
@@ -254,16 +254,20 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
   return { grant: minted.grant, commit, fingerprint, ployzVersion: ployzVersion(), deployment };
 });
 
+/** Why Cloud couldn't start a build its runner checked in for, in the words the log shows. */
+const checkInFailure = (error: Error) => error instanceof BuildGrantUnavailable ? "Your Machine couldn't issue a grant to receive the image."
+  : error instanceof DeploymentRuntimeUnavailable ? "Cloud couldn't reach your Machine to receive the image."
+  : "Cloud couldn't start the build on GitHub.";
+
 /**
  * A check-in the runner arrived for but Cloud couldn't start: the one internal GitHub step the log
- * shows, and only failed. Best effort; the run then ends and the walk moves on or fails.
+ * shows, and only failed. Best effort; the run then ends and the walk moves on or fails. While
+ * GitHub holds the build, its go is the skip trail's length.
  */
-const checkInFailed = (row: GithubRow) => Effect.gen(function* () {
+const checkInFailed = (row: GithubRow, error: Error) => Effect.gen(function* () {
   yield* closeOpenSteps(row.id);
-  const now = new Date();
-  yield* persistBuildLog(row.deploymentId, {
-    steps: [{ ...ployzStep("check-in", "Starting the build", now), error: "Your servers couldn't be reached to receive the image." }], output: [],
-  }, row.image, row.skips.length);
+  yield* persistBuildLog(row.deploymentId, { steps: [{ ...ployzStep("check-in", "Starting the build"), error: checkInFailure(error) }], output: [] },
+    { image: row.image, attempt: row.skips.length });
 }).pipe(Effect.catch((error) => Effect.logWarning("Could not log a failed GitHub check-in.", error)));
 
 const buildStepSchema = Schema.Struct({
@@ -321,8 +325,8 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
   const platforms = report.platforms ?? null;
   // A failed Build Step already shows in its row; a build GitHub failed moves on without one.
   if (platforms) steps.push(...collector.finish());
-  // Filed under this run's section even if the walk moved the build on meanwhile.
-  yield* persistBuildLog(row.deploymentId, { steps, output }, row.image, row.skips.length);
+  // GitHub's go, which holds the build as long as it takes reports: filed there even if the walk moves it on meanwhile.
+  yield* persistBuildLog(row.deploymentId, { steps, output }, { image: row.image, attempt: row.skips.length });
   const taken = Math.max(received, report.from + report.events.length);
   const recorded: Types.Mutable<NonNullable<GithubImageBuild["report"]>> = { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] };
   if (platforms && report.installFailed !== undefined) recorded.installFailed = report.installFailed;

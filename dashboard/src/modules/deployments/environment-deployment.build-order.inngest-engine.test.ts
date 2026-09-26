@@ -136,7 +136,7 @@ describe("walking the Build Order", () => {
 
   it("tells GitHub why it is in the walk, so it records the reason when it takes the build", async () => {
     fake.candidates = imageBuildWalk("servers-then-github", "github");
-    expect(fake.candidates).toEqual([{ builder: "github", reason: "preferred" }, { builder: "servers", reason: "first_in_build_order" }]);
+    expect(fake.candidates).toEqual([{ builder: "github", reason: "preferred", attempt: 0 }, { builder: "servers", reason: "first_in_build_order", attempt: 1 }]);
     fake.runCompletes = [true];
     expect(await outcome()).toMatchObject({ deployed: true });
     expect(fake.githubReasons).toEqual(["preferred"]);

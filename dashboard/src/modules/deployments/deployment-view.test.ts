@@ -114,30 +114,30 @@ describe("deployment view projection", () => {
   });
 
   it("tells one timeline per Image Build: a section per Builder, each move one sentence", () => {
-    const github = [
-      step(1, 0, "stage:Builder", "GitHub Actions", 0, 0, null, "web", 1), step(2, 0, "runner", "Waiting for a runner", 0, 20, null, "web", 1),
-      step(3, 1, "stage:Building", "web", 20, 60, null, "web", 1),
-    ];
-    const hel1 = step(4, 0, "stage:Builder", "hel-1", 61, 61, null, "web", 2);
-    const servers = [hel1, step(5, 1, "stage:Building", "web", 62, null, null, "web", 2)];
+    const github = [step(2, 0, "runner", "Waiting for a runner", 0, 20, null, "web", 1), step(3, 1, "stage:Building", "web", 20, 60, null, "web", 1)];
+    const servers = [step(5, 1, "stage:Building", "web", 62, null, null, "web", 2)];
     const steps = [...github, ...servers];
     const evidence = { image: "web", github: null, serverChoice: { machineName: "hel-1", reason: { kind: "spread" as const } }, skips: [
       { builder: "servers" as const, kind: "preferred_unavailable" as const, machineId: "e".repeat(32) as MachineId, name: "hel-2" },
       { builder: "github" as const, kind: "runner_stopped" as const },
     ] };
+    // Each go's Builder comes from its skip, or the holder for the last; the planning skip wrote no step.
     expect(buildLogSections(steps, evidence).map(({ title, steps: own }) => [title, own.map((row) => row.id)])).toEqual([
       ["Your preferred server hel-2 is offline or no longer builds. Building on GitHub Actions instead.", [2, 3]],
       ["GitHub couldn't finish this build: its runner stopped. Building on hel-1 instead.", [5]],
     ]);
     // A Builder skipped before it wrote a step leaves its sentence alone; the first section names its Builder plainly.
-    expect(buildLogSections([step(1, 0, "stage:Builder", "hel-1", 0, 0, null, "web", 1)], { ...evidence, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }] })
+    expect(buildLogSections([step(1, 1, "stage:Building", "web", 0, null, null, "web", 1)], { ...evidence, skips: [{ builder: "github", kind: "no_workflow", repository: "o/r" }] })
       .map((section) => section.title)).toEqual(["o/r has no Ployz build workflow. Building on hel-1 instead."]);
-    expect(buildLogSections([step(1, 0, "stage:Builder", "GitHub Actions", 0, 0, null, "web")], { ...evidence, serverChoice: null, skips: [] })
+    expect(buildLogSections([step(1, 0, "runner", "Waiting for a runner", 0, null, null, "web")], { ...evidence, serverChoice: null, github: { runUrl: "u" }, skips: [] })
       .map((section) => section.title)).toEqual(["Building on GitHub Actions"]);
+    // A Server go that moved on no longer knows its Server.
+    expect(buildLogSections([step(1, 0, "stage:Queued", "Waiting for a free build slot", 0, 180, null, "web")], { ...evidence, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] })
+      .map((section) => section.title)).toEqual(["Building on your servers", "No server started the build within 3 min."]);
     // Only the last Builder's go decides the node: GitHub's earlier failure moved on, hel-1 still builds.
     const view = deploymentView({
       deployment: deployment("queued"), progress: null, nodes: [node({ nodeId: "web", changed: true, image: "web" })],
-      buildLog: { steps: [...github, step(6, 0, "install", "Installing ployz", 1, 2, "no such version", "web", 1), hel1], output: [], imageBuilds: [evidence] },
+      buildLog: { steps: [...github, step(6, 0, "install", "Installing ployz", 1, 2, "no such version", "web", 1), ...servers], output: [], imageBuilds: [evidence] },
     });
     expect(view.nodes[0]).toMatchObject({ outcome: "building", build: { state: "running" }, builtOn: "hel-1" });
   });
