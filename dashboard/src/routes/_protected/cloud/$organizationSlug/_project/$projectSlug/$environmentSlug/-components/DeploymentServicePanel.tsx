@@ -12,7 +12,6 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { useAttemptServiceConfigs } from "#/modules/deployments/deployment-history.queries";
-import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { builtOnLine, imageName, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
@@ -88,7 +87,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             {view.outcome === "not_attempted" || view.outcome === "unchanged" ? <p className="mb-3 text-muted-foreground">{outcomeSentences[view.outcome]}</p> : null}
-            <ServiceDeployLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} serviceId={serviceId} finished={!isActiveDeployment(deployment.status)} />
+            <ServiceDeployLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} serviceId={serviceId} />
           </TabsContent>
         </Tabs>
       </div>

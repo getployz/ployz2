@@ -23,7 +23,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
   });
   vi.stubGlobal("fetch", fetchHistory);
   const client = new QueryClient();
-  const root = createRootRoute();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
   const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
   const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
@@ -56,9 +56,12 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await act(async () => { await stream.loadOlder(); });
     expect(fetchHistory).toHaveBeenCalledTimes(1);
     expect(sources).toHaveLength(opened);
+    // Only an offline organization is said; the stream stays open and the lines stay.
+    await act(async () => source.dispatchEvent(new Event("offline")));
+    expect(screen.getByText(/Your servers are offline/)).toBeTruthy();
+    await act(async () => source.dispatchEvent(new Event("live")));
+    expect(screen.queryByText(/Your servers are offline/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
-    await act(async () => source.dispatchEvent(new Event("unavailable")));
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(stream.collection.size).toBe(1);
     expect(sources.filter(source => !source.closed)).toHaveLength(1);
     expect(getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" })).toBe(stream);

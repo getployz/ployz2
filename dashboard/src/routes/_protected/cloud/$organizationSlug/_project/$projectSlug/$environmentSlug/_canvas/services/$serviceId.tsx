@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
+import { prefetchRemote, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
+import { deploymentBuildLogQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
 import { nodeDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import {
   CanvasInspectorError,
@@ -15,8 +16,10 @@ export const Route = createFileRoute(
 )({
   validateSearch: Schema.toStandardSchemaV1(serviceSearchSchema),
   // Switching tabs navigates, so the Deployments tab's first page starts loading as it opens.
-  loaderDeps: ({ search }) => ({ tab: search.tab }),
+  // Deployment Mode's Build logs tab reads the whole log; SSR renders it, and hovering a node warms it.
+  loaderDeps: ({ search }) => ({ deployment: search.deployment, tab: search.tab }),
   loader: async ({ params, context, deps }) => {
+    if (deps.deployment && deps.tab === "build-logs") await prefetchRemote(context, deploymentBuildLogQueryOptions(params.organizationSlug, deps.deployment));
     if (deps.tab !== "deployments") return;
     const environment = await requireEnvironment(context, params);
     await prefetchRemotePages(context, nodeDeploymentsQueryOptions(params.organizationSlug, environment.id, params.serviceId));

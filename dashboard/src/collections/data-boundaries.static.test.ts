@@ -39,6 +39,7 @@ const SPINNER_FILES = {
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
@@ -78,7 +79,6 @@ const DOCUMENT_COMMAND_FILES = {
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
-  deploymentBuildLogQueryOptions: "warmed when the user reaches for a deployment's logs",
   deploymentServiceVariablesQueryOptions: "read when the user opens a deployed service's variables",
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",

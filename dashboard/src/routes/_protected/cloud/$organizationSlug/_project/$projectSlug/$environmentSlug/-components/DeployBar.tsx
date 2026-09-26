@@ -19,7 +19,7 @@ import { useDeploymentList, useEnvironmentDeployments } from "#/modules/deployme
 import { environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import { deploymentStatusLabel, shortDeploymentId, type DeploymentView } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
-import { formatRelativeTime } from "#/utils/relative-time";
+import { RelativeTime } from "#/components/relative-time";
 import { CANVAS_ROUTE_ID, useDeploymentMode, usePendingDeploymentId } from "./deployment-mode";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
@@ -183,14 +183,14 @@ function DeploymentRows({ organizationSlug, environmentId, viewedId }: { organiz
       <ListRow key={deployment.id} current={deployment.id === viewedId} search={{ deployment: deployment.id }}
         icon={<StatusIcon view={view} />}
         title={<><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</>}
-        detail={`${deploymentStatusLabel(view)} · ${formatRelativeTime(deployment.createdAt)}`} />
+        detail={<>{deploymentStatusLabel(view)} · <RelativeTime date={deployment.createdAt} /></>} />
     ))}
     <ShowMore hasMore={hasMore} loading={loadingMore} onShowMore={showMore} />
   </>;
 }
 
 function ListRow({ current, search, icon, title, detail }: {
-  current: boolean; search: { deployment: string | undefined }; icon: ReactElement; title: ReactNode; detail: string;
+  current: boolean; search: { deployment: string | undefined }; icon: ReactElement; title: ReactNode; detail: ReactNode;
 }) {
   return (
     <Item size="xs" variant={current ? "muted" : "default"} data-current={current}
