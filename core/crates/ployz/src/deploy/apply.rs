@@ -31,7 +31,6 @@ pub(crate) async fn apply_requested(
     let preview = crate::setup_retry::run(
         client,
         "Preparing service deployment",
-        None,
         crate::setup_retry::WAIT,
         |error| matches!(error, DeployError::Connect(error) if error.is_setup_retryable()),
         async |client| {

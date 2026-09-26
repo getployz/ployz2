@@ -15,6 +15,9 @@ use super::super::{Error, leaf_matches, string_values, with_client};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+// The daemon restarts itself mid-upgrade; its socket vanishing is expected.
+const RESTART: crate::setup_retry::Expected =
+    crate::setup_retry::Expected("Waiting for ployzd to restart…");
 
 trait UpgradeRequests {
     async fn request_upgrade(
@@ -52,7 +55,7 @@ impl UpgradeRequests for Client {
         self.call_repeatable_for::<op::InspectMachineUpgrade>(
             request,
             Some(target),
-            Some("Waiting for ployzd to restart…"),
+            Some(RESTART),
             wait,
         )
         .await
@@ -390,106 +393,83 @@ mod tests {
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
     }
 
-    /// One ployzd generation on a real Unix socket. Its runtime stands in for the process.
-    /// An absent `inspect` outcome answers with an Unknown gRPC status.
+    /// A ployzd generation that accepts upgrades. The first inspect with `hang`
+    /// signals and never answers. An absent `inspect` outcome answers with an
+    /// Unknown gRPC status.
     fn daemon(
         path: &std::path::Path,
         inspect: Option<MachineUpgradeOutcome>,
-        hung: Option<tokio::sync::oneshot::Sender<()>>,
+        hang: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> tokio::runtime::Runtime {
-        use ployz_core::{OpaquePayload, RpcRequestBody, RpcResponse};
-        use tonic::{Response, Status};
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .unwrap();
-        let listener = {
-            let _entered = runtime.enter();
-            tokio::net::UnixListener::bind(path).unwrap()
-        };
-        let hung = std::sync::Arc::new(std::sync::Mutex::new(hung));
+        use ployz_core::{RpcRequestBody, RpcResponse};
+        let hang = std::sync::Arc::new(std::sync::Mutex::new(hang));
         let target = ployz_core::MachineVersion::parse("1.2.3").unwrap();
-        let rpc = tower::service_fn(move |request: tonic::Request<OpaquePayload>| {
-            let (hung, inspect, target) = (hung.clone(), inspect.clone(), target.clone());
+        crate::connect::test_support::unix_daemon(path, move |body| {
+            let (hang, inspect, target) = (hang.clone(), inspect.clone(), target.clone());
             async move {
                 #[expect(
                     clippy::wildcard_enum_match_arm,
-                    reason = "this fixture serves confirmation and upgrade RPCs"
+                    reason = "this fixture serves only upgrade RPCs"
                 )]
-                let response = match request.into_inner().decode_request().unwrap().body {
-                    RpcRequestBody::DescribeContract(_) => {
-                        RpcResponse::from(ployz_core::ContractDescription {
-                            machine_id: MachineId::random(),
-                            protocol_major: ployz_core::PROTOCOL_MAJOR,
-                            daemon_version: "fixture".into(),
-                            capabilities: Default::default(),
-                        })
-                    }
+                let (attempt_id, outcome) = match body {
                     RpcRequestBody::RequestMachineUpgrade(request) => {
-                        RpcResponse::from(MachineUpgradeAttempt {
-                            attempt_id: request.attempt_id,
-                            target,
-                            outcome: MachineUpgradeOutcome::Accepted,
-                        })
+                        (request.attempt_id, MachineUpgradeOutcome::Accepted)
                     }
                     RpcRequestBody::InspectMachineUpgrade(request) => {
-                        let hung = hung.lock().unwrap().take();
-                        if let Some(hung) = hung {
-                            hung.send(()).unwrap();
+                        let hang = hang.lock().unwrap().take();
+                        if let Some(hang) = hang {
+                            hang.send(()).unwrap();
                             std::future::pending::<()>().await;
                         }
                         let Some(outcome) = inspect else {
-                            return Err(Status::unknown("upgrade record is unreadable"));
+                            return Err(tonic::Status::unknown("upgrade record is unreadable"));
                         };
-                        RpcResponse::from(MachineUpgradeAttempt {
-                            attempt_id: request.attempt_id.unwrap(),
-                            target,
-                            outcome,
-                        })
+                        (request.attempt_id.unwrap(), outcome)
                     }
-                    request => panic!("unexpected request: {request:?}"),
+                    body => panic!("unexpected request: {body:?}"),
                 };
-                Ok::<_, Status>(Response::new(response.encode().unwrap()))
+                Ok(RpcResponse::from(MachineUpgradeAttempt {
+                    attempt_id,
+                    target,
+                    outcome,
+                }))
             }
-        });
-        let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
-            let rpc = rpc.clone();
-            async move {
-                Ok::<_, std::convert::Infallible>(
-                    tonic::server::Grpc::new(tonic::codec::ProstCodec::default())
-                        .unary(rpc, request)
-                        .await,
-                )
-            }
-        });
-        runtime.spawn(tonic::transport::Server::builder().serve_with_incoming(
-            service,
-            tokio_stream::wrappers::UnixListenerStream::new(listener),
-        ));
-        runtime
+        })
     }
 
-    async fn local_client(path: &std::path::Path) -> Client {
-        let selected = crate::context::SelectedConnections {
-            source: crate::context::ConnectionSource::Direct,
-            connections: vec![crate::context::Connection::unix(path).unwrap()],
-        };
-        crate::connect::connect_selected_with(
-            selected,
-            std::sync::Arc::new(crate::connect::SystemConnector::default()),
-        )
-        .await
-        .unwrap()
+    #[test]
+    fn daemon_restart_during_the_upgrade_is_waited_out() {
+        // libtest captures eprintln!, so observe the notice from a child run.
+        const CHILD: &str = "PLOYZ_UPGRADE_RESTART_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            return tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(restart_during_upgrade());
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "handlers::machine::upgrade::tests::daemon_restart_during_the_upgrade_is_waited_out",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains("Waiting for ployzd to restart…"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("firewall"), "{stderr}");
     }
 
-    #[tokio::test]
-    async fn daemon_restart_during_the_upgrade_is_waited_out() {
+    async fn restart_during_upgrade() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
         let (hung, restarting) = tokio::sync::oneshot::channel();
         let old = daemon(&path, Some(MachineUpgradeOutcome::Accepted), Some(hung));
-        let mut client = local_client(&path).await;
+        let mut client = crate::connect::test_support::unix_client(&path).await;
         let machine = machine('e', 5);
         let restart = async {
             restarting.await.unwrap();
@@ -527,7 +507,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
         let daemon = daemon(&path, None, None);
-        let mut client = local_client(&path).await;
+        let mut client = crate::connect::test_support::unix_client(&path).await;
         let started = Instant::now();
         let error = run_one(
             &mut client,

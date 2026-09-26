@@ -39,7 +39,6 @@ async fn discover_image(
     let response = crate::setup_retry::run(
         client,
         "Discovering Caddy image at Docker Hub",
-        None,
         crate::setup_retry::WAIT,
         |error| {
             matches!(error, oci_client::errors::OciDistributionError::RequestError(error)

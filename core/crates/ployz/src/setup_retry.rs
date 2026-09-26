@@ -22,14 +22,28 @@ impl<E: Display> From<Error<E>> for Failure {
     }
 }
 
+/// What to print on the first failure when the caller anticipates the outage.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Expected(pub(crate) &'static str);
+
 /// Only pass reads or operations known to be safe to repeat. The deadline also
 /// bounds any retries inside the operation; it must not wrap a whole setup flow.
-/// `expected` replaces the first-failure warning when the caller anticipates
-/// the outage, such as a daemon restart.
 pub(crate) async fn run<C, T, E: Display>(
     context: &mut C,
     operation: &str,
-    expected: Option<&str>,
+    wait: Duration,
+    retryable: impl Fn(&E) -> bool,
+    attempt: impl AsyncFnMut(&mut C) -> Result<T, E>,
+) -> Result<T, Error<E>> {
+    run_expecting(context, operation, None, wait, retryable, attempt).await
+}
+
+/// [`run`], announcing an anticipated outage, such as a daemon restart, in
+/// place of the connectivity warning.
+pub(crate) async fn run_expecting<C, T, E: Display>(
+    context: &mut C,
+    operation: &str,
+    expected: Option<Expected>,
     wait: Duration,
     retryable: impl Fn(&E) -> bool,
     mut attempt: impl AsyncFnMut(&mut C) -> Result<T, E>,
@@ -45,7 +59,7 @@ pub(crate) async fn run<C, T, E: Display>(
             Ok(Err(error)) => {
                 if last.is_none() {
                     match expected {
-                        Some(expected) => eprintln!("{expected}"),
+                        Some(Expected(notice)) => eprintln!("{notice}"),
                         None => eprintln!(
                             "{operation}: {error}; retrying for up to {}s. Check outbound firewall access if this connection is blocked.",
                             deadline.saturating_duration_since(Instant::now()).as_secs()
@@ -196,7 +210,6 @@ mod tests {
         let result = run(
             &mut calls,
             "probe",
-            None,
             WAIT,
             |_| true,
             async |calls| {
@@ -216,7 +229,6 @@ mod tests {
         let error = run(
             &mut calls,
             "probe",
-            None,
             WAIT,
             |_| false,
             async |calls| {
@@ -233,7 +245,6 @@ mod tests {
         let error = run(
             &mut (),
             "probe",
-            None,
             WAIT,
             |_| true,
             async |_| Err::<(), _>("connection refused"),
@@ -247,7 +258,6 @@ mod tests {
         let error = run(
             &mut (),
             "probe",
-            None,
             WAIT,
             |_| true,
             async |_| std::future::pending::<Result<(), &str>>().await,

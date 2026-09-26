@@ -84,7 +84,6 @@ pub(super) async fn reconnect_direct(
     crate::setup_retry::run(
         &mut (),
         &format!("Reconnecting to {connection}"),
-        None,
         crate::setup_retry::WAIT,
         ConnectError::is_setup_retryable,
         async |_| connect_direct(matches, connection).await,
@@ -101,7 +100,6 @@ pub(super) async fn wait_direct_participating(
     crate::setup_retry::run(
         &mut (),
         &format!("Waiting for {connection} to participate"),
-        None,
         MACHINE_START_WAIT,
         ConnectError::is_setup_retryable,
         async |_| {
@@ -238,7 +236,7 @@ async fn observe_mutation(
     wait: std::time::Duration,
     observed: impl Fn(&ployz_core::MachineDetails) -> bool,
 ) -> Result<ployz_core::MachineDetails, Error> {
-    crate::setup_retry::run(client, &format!("Checking {operation} outcome"), None, wait,
+    crate::setup_retry::run(client, &format!("Checking {operation} outcome"), wait,
         ConnectError::is_setup_retryable,
         async |client| {
             let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;

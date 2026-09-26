@@ -166,12 +166,12 @@ impl Client {
     }
 
     /// Retry a read or stable-identity request for the caller's remaining time budget.
-    /// `expected` names an anticipated outage in place of the generic warning.
+    /// `expected` announces an anticipated outage in place of the connectivity warning.
     pub(crate) async fn call_repeatable_for<T: Rpc>(
         &mut self,
         request: T::Request,
         target: Option<&MachineTarget>,
-        expected: Option<&str>,
+        expected: Option<crate::setup_retry::Expected>,
         wait: Duration,
     ) -> Result<T::Response, crate::setup_retry::Error<ConnectError>> {
         let payload = T::into_request(request)
@@ -185,7 +185,7 @@ impl Client {
             |target| format!("{} via {}", target.as_str().escape_debug(), self.connection),
         );
         let progress = format!("{operation} on {destination}");
-        crate::setup_retry::run(
+        crate::setup_retry::run_expecting(
             self,
             &progress,
             expected,
