@@ -30,6 +30,7 @@ import { skipReasonText, type SkipReason } from "./image-build";
 import { planImageBuildWalk } from "./build-order.server";
 import { builtOn, builtOnLine } from "./deployment-view";
 import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps } from "./github-image-builds.server";
+import { settleGithubImageBuild } from "./image-builds.server";
 import { persistDeploymentSourcePin } from "./source-pins.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
@@ -520,6 +521,27 @@ describe("Image Builds on GitHub Actions", () => {
     // GitHub's go shows no failed step: the servers took over.
     expect(log.steps.filter((step) => step.error !== null)).toEqual([]);
   }, 30_000);
+
+  it("leaves a build the walk moved to the servers alone when a late GitHub report or settle arrives", async () => {
+    await buildOrder("github-then-servers");
+    await dispatch();
+    await checkIn(oidcToken());
+    await post({ from: 0, events: runnerEvents });
+    fake.runStatus = "completed";
+    expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false })))
+      .toEqual({ kind: "skipped", reason: { builder: "github", kind: "runner_stopped" } });
+    const moved = await row();
+    expect(moved).toMatchObject({ status: "building", builder: "server", githubRunId: null });
+    // The runner's open "Building" phase was closed without an error row.
+    const log = await buildLog();
+    expect(log.steps.find((step) => step.image === "api" && step.name === "Building")?.completedAt).not.toBeNull();
+    expect(log.steps.filter((step) => step.error !== null)).toEqual([]);
+    // A late final report is refused, and a report path that loaded the row before the move settles nothing.
+    expect(await refused({ from: 3, events: [], platforms: ["linux/amd64"] })).toMatchObject({ _tag: "NotFound" });
+    expect(await run(settleGithubImageBuild(await target(), githubRunId, { status: "failed", message: "late", machineId: machine.id })))
+      .toMatchObject({ kind: "settled", result: { status: "building" } });
+    expect(await row()).toEqual(moved);
+  });
 
   it.each(infrastructureFailures)("fails a GitHub-only build with why when %s", async (_case, arrange, reason) => {
     await queued();

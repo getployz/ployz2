@@ -41,7 +41,7 @@ import {
   cancelGithubImageBuilds,
   checkGithubImageBuild,
   GITHUB_CHECK_INTERVAL,
-  settledGithubImageBuild,
+  settleOrMoveReportedGithubBuild,
   startGithubImageBuild,
 } from "#/modules/deployments/github-image-builds.server";
 import { markCancelledByInngestRunId } from "#/modules/deployments/runtime-cancellation.repository.server";
@@ -167,7 +167,7 @@ const walkGithub: Builder = async (build, candidate, { key, last, step, runEffec
   if (started.kind !== "dispatched") return started;
   const run = { event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}` };
   for (let check = 0; ; check += 1) {
-    const before = await step.run(`settled-github-build-${key}-${check}`, () => runEffect(settledGithubImageBuild(build)));
+    const before = await step.run(`settled-github-build-${key}-${check}`, () => runEffect(settleOrMoveReportedGithubBuild(build)));
     if (before) return before;
     const startLimit = check === 0 && !last;
     const ended = await step.waitForEvent(`wait-github-run-${key}-${check}`, { ...run, timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL });

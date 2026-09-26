@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { BuildGrantId, BuildReceipt, BuildReceipts, MachineId } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { organizationIdForDeployment } from "#/db/scope-values.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -157,7 +157,11 @@ export const moveStartedGithubBuild = Effect.fn("Deployments.moveStartedGithubBu
   const { drizzle } = yield* Database;
   const [moved] = yield* drizzle.update(table).set(skipPatch(reason))
     .where(and(eq(table.id, build.id), eq(table.status, "building"), eq(table.githubRunId, runId))).returning({ id: table.id });
-  return moved ? { kind: "skipped", reason } satisfies ImageBuildAttempt : settled(build, yield* statusNow(build.id));
+  const skipped = { kind: "skipped", reason } satisfies ImageBuildAttempt;
+  if (moved) return skipped;
+  const status = yield* statusNow(build.id);
+  // Still building without this run: a retry of this move already moved it.
+  return status === "building" ? skipped : settled(build, status);
 });
 
 /** Skips a Builder that cannot have started the build: nothing checked in for it. */
@@ -209,7 +213,16 @@ export const recordGithubReport = Effect.fn("Deployments.recordGithubReport")(fu
 });
 
 /** Settles a building row once and reports the status it has now. Receipts are private evidence and stored encrypted. */
-export const settleImageBuild = Effect.fn("Deployments.settleImageBuild")(function* (build: Build, outcome: ImageBuildOutcome) {
+export const settleImageBuild = (build: Build, outcome: ImageBuildOutcome) => settleWhere(build, outcome, undefined);
+
+/**
+ * Settles a build GitHub's run `runId` still holds. Once the walk moved it on, the row is another
+ * Builder's and a late report or check changes nothing.
+ */
+export const settleGithubImageBuild = (build: Build, runId: number, outcome: ImageBuildOutcome) =>
+  settleWhere(build, outcome, and(eq(table.builder, "github"), eq(table.githubRunId, runId)));
+
+const settleWhere = Effect.fn("Deployments.settleImageBuild")(function* (build: Build, outcome: ImageBuildOutcome, holder: SQL | undefined) {
   const { drizzle } = yield* Database;
   const encryption = yield* SecretEncryption;
   const now = new Date();
@@ -221,7 +234,7 @@ export const settleImageBuild = Effect.fn("Deployments.settleImageBuild")(functi
     : outcome.status === "failed" ? { status: "failed" as const, machineId: outcome.machineId, failureMessage: outcome.message }
     : { status: "cancelled" as const };
   const [updated] = yield* drizzle.update(table).set({ ...patch, finishedAt: now, updatedAt: now })
-    .where(and(eq(table.id, build.id), eq(table.status, "building"))).returning({ status: table.status });
+    .where(and(eq(table.id, build.id), eq(table.status, "building"), holder)).returning({ status: table.status });
   return settled(build, updated?.status ?? (yield* statusNow(build.id)));
 });
 

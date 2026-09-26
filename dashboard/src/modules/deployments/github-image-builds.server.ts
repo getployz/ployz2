@@ -12,7 +12,7 @@ import type { BuildCandidate } from "./build-order";
 import { githubSkipReason, installFailedSchema, type GithubImageBuild } from "./image-build";
 import { persistBuildLog } from "./deployment-events.server";
 import {
-  awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, loadImageBuild, recordGithubReport, recordServerChoice, settleImageBuild, settled,
+  awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild, settled,
   moveStartedGithubBuild, skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
@@ -146,10 +146,11 @@ const overBudget = (row: GithubRow) => row.checkedInAt !== null && Date.now() - 
 
 /**
  * The build's result once it settled, which a final report may do before the walk begins a wait;
- * null while it still builds. A final report that left the build unsettled (GitHub failed it) is
- * acted on here, so the walk moves on without waiting for a wake it may have missed.
+ * null while it still builds. A final report that left the build unsettled is acted on here: it
+ * ends the grant and settles the build, or moves it on when GitHub failed it, so the walk doesn't
+ * wait for a wake it may have missed.
  */
-export const settledGithubImageBuild = Effect.fn("Deployments.settledGithubImageBuild")(function* (build: ImageBuildTarget) {
+export const settleOrMoveReportedGithubBuild = Effect.fn("Deployments.settleOrMoveReportedGithubBuild")(function* (build: ImageBuildTarget) {
   const row = yield* loadImageBuild(build.id);
   if (row?.status !== "building" || row.builder !== "github") return settled(build, row?.status ?? "failed");
   if (!row.github.report?.platforms) return null;
@@ -297,8 +298,8 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
     output.push(...writes.output);
   }
   const platforms = report.platforms ?? null;
-  // Only a failed Build Step fails the build; a build GitHub failed moves on, so its log shows no failure.
-  if (platforms) steps.push(...collector.finish(platforms.length || !collector.checkpoint().stepFailed ? null : "The build failed on GitHub; see its run."));
+  // A failed Build Step already shows in its row; a build GitHub failed moves on without one.
+  if (platforms) steps.push(...collector.finish());
   yield* persistBuildLog(row.deploymentId, { steps, output }, row.image);
   const taken = Math.max(received, report.from + report.events.length);
   const recorded: Types.Mutable<NonNullable<GithubImageBuild["report"]>> = { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] };
@@ -332,7 +333,13 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
     return skip.kind === "started" ? waiting : skip;
   }
   const ended = yield* endGithubBuild(build, row, timedOut);
-  return ended.kind === "move" ? yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason) : ended;
+  if (ended.kind !== "move") return ended;
+  const report = row.github.report;
+  if (report && !report.platforms) {
+    // No final report closed the runner's open steps: close them, so they don't dangle beside the next Builder's.
+    yield* persistBuildLog(row.deploymentId, { steps: preparationProgressCollector(undefined, report.collector).finish(), output: [] }, row.image);
+  }
+  return yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
 });
 
 /**
@@ -342,7 +349,7 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
  */
 const endGithubBuild = Effect.fn("Deployments.endGithubBuild")(function* (build: Pick<ImageBuildTarget, "id" | "image">, row: GithubRow, timedOut: boolean) {
   if (timedOut) yield* cancelGithubBuildRun(row);
-  const failed = (message: string) => settleImageBuild(build, { status: "failed", message, machineId: row.machineId });
+  const failed = (message: string) => settleGithubImageBuild(build, row.githubRunId, { status: "failed", message, machineId: row.machineId });
   const grant = row.github.grant;
   if (!grant || !row.machineId) return yield* failed("GitHub: the run ended before it received its grant.");
   // Only the Machine's answer decides; while it can't be reached the build stays unsettled and the
@@ -365,7 +372,7 @@ const endGithubBuild = Effect.fn("Deployments.endGithubBuild")(function* (build:
     fingerprint: grant.fingerprint, machine_id: row.machineId,
     image: { reference: pushed, tags: [buildGrantTag(grantRepository(row.image), pushed)], platforms: [...platforms], location: "build-grant" },
   };
-  return yield* settleImageBuild(build, { status: "built", receipt });
+  return yield* settleGithubImageBuild(build, row.githubRunId, { status: "built", receipt });
 });
 
 /** Best effort: cancel the run and end its grant, so the grant refuses any further push. */
