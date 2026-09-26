@@ -11,8 +11,9 @@ import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-pro
 import { buildLogSections, imageBuildSteps, stripAnsi, type ImageBuildEvidence } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
-import { BuildLogViewer } from "./log-scroll";
+import { BuildLogViewer, LogSkeleton } from "./log-scroll";
 import { cn } from "#/lib/utils";
+import { clock, useTimeZone } from "#/utils/time-zone";
 
 /** BuildKit names steps `[stage n/m] instruction`; Ployz-owned steps are plain. */
 export function splitStepName(name: string): { stage: string | null; title: string } {
@@ -36,7 +37,6 @@ function useNow(active: boolean) {
   return now;
 }
 
-export const clock = (date: Date) => date.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 const lastLine = (rows: readonly BuildOutputRow[]) => {
   const lines = stripAnsi(rows.map((row) => row.text).join("")).split("\n").filter((line) => line.trim());
@@ -44,8 +44,8 @@ const lastLine = (rows: readonly BuildOutputRow[]) => {
 };
 
 /** One Image Build's log: a section per Builder's go, each a plain line and then its steps. */
-export function BuildLogs({ steps, output, finished, evidence, now = Date.now() }: {
-  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; finished: boolean; evidence?: ImageBuildEvidence; now?: number;
+export function BuildLogs({ steps, output, finished, evidence, timeZone, now = Date.now() }: {
+  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; finished: boolean; evidence?: ImageBuildEvidence; timeZone: string; now?: number;
 }) {
   // Rows the user toggled; failed rows open by default until toggled.
   const [toggled, setToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
@@ -62,6 +62,7 @@ export function BuildLogs({ steps, output, finished, evidence, now = Date.now() 
   // One attempt may run BuildKit several times; the run's heading matters only then, or when it failed.
   const runs = new Set(started.map((step) => step.build).filter((build) => build > 0)).size;
   const failedRuns = new Set(steps.filter((step) => step.error !== null).map((step) => step.build));
+  const time = clock(timeZone);
   const shown = (section: readonly BuildStepRow[]) => section.filter((step) => step.startedAt !== null
     && (step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build)))));
   const heading = "mt-2 flex items-center gap-3 px-1 font-medium";
@@ -74,14 +75,14 @@ export function BuildLogs({ steps, output, finished, evidence, now = Date.now() 
       </li>],
       shown(section.steps).map((step) => step.key === BUILDING_KEY && step.error === null
         ? <li key={step.id} className={heading}><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
-        : <StepRow key={step.id} step={step} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
+        : <StepRow key={step.id} step={step} time={time.format(step.startedAt ?? step.createdAt)} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
             onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />),
     ].flat())}
   </ol>;
 }
 
-function StepRow({ step, lines, now, open: toggledOpen, onToggle }: {
-  step: BuildStepRow; lines: readonly BuildOutputRow[]; now: number; open: boolean | undefined; onToggle: (open: boolean) => void;
+function StepRow({ step, time, lines, now, open: toggledOpen, onToggle }: {
+  step: BuildStepRow; time: string; lines: readonly BuildOutputRow[]; now: number; open: boolean | undefined; onToggle: (open: boolean) => void;
 }) {
   const { stage, title } = splitStepName(step.name);
   const failed = step.error !== null;
@@ -90,13 +91,14 @@ function StepRow({ step, lines, now, open: toggledOpen, onToggle }: {
   const elapsed = step.startedAt ? (step.completedAt?.getTime() ?? now) - step.startedAt.getTime() : 0;
   const tail = running && !open ? lastLine(lines) : null;
   const summary = <>
-    <span className="w-16 shrink-0 text-muted-foreground">{clock(step.startedAt ?? step.createdAt)}</span>
+    <span className="w-16 shrink-0 text-muted-foreground">{time}</span>
     <span className="flex w-4 shrink-0 justify-center">
       {failed ? <TriangleAlertIcon className="size-4 text-destructive" aria-label="Failed" /> : running ? <Spinner /> : <CheckIcon className="size-4 text-muted-foreground" aria-label="Completed" />}
     </span>
     {stage ? <span className="w-16 shrink-0 truncate text-muted-foreground">{stage}</span> : null}
     <span className={cn("min-w-0 flex-1 truncate", failed && "text-destructive")}>{title}{step.cached ? <span className="ml-2 text-muted-foreground">cached</span> : null}</span>
-    <span className="shrink-0 text-muted-foreground">{formatDuration(elapsed)}</span>
+    {/* A running step's elapsed time reads the clock, which moves between SSR and hydration. */}
+    <span className="shrink-0 text-muted-foreground" suppressHydrationWarning>{formatDuration(elapsed)}</span>
   </>;
   const row = "flex items-center gap-3 rounded px-1";
   if (!lines.length && !failed) return <li><div className={row}>{summary}</div></li>;
@@ -133,14 +135,15 @@ function lifecycleLogs(events: readonly { id: number; createdAt: Date; progress:
 /** One service's Build logs in an attempt: only its own Image Build, which the engine names after the service's private DNS name. */
 export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { organizationSlug: string; deploymentId: string; image: string }) {
   const build = useBuildLog(organizationSlug, deploymentId);
+  const timeZone = useTimeZone();
   const now = useNow(build.data?.finished === false);
   const steps = imageBuildSteps(build.data?.steps ?? [], image);
   const ids = new Set(steps.map((step) => step.id));
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
-      {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))}
-        finished={build.data?.finished ?? true} evidence={build.data?.imageBuilds.find((row) => row.image === image)} now={now} />}
+      {build.isPending ? <LogSkeleton label="Loading build logs" /> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))}
+        finished={build.data?.finished ?? true} evidence={build.data?.imageBuilds.find((row) => row.image === image)} timeZone={timeZone} now={now} />}
     </BuildLogViewer>
   </>;
 }
