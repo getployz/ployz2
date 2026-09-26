@@ -388,6 +388,22 @@ describe("the deploy bar", () => {
     await waitFor(() => expect(router.state.location.search).toEqual({ deployment: retried }));
   });
 
+  it("draws the deploy bar and opens the running attempt from the Org Store alone", async () => {
+    vi.clearAllMocks();
+    const router = await openCanvas({ extra: {
+      environment_deployment: [deployment(runningId, 4, null, "deploying", runningTarget)],
+      environment_node_config_snapshot: [snapshot(runningId, api, "api"), snapshot(runningId, worker, "worker")],
+    } });
+    const attemptRead = vi.mocked(deploymentFunctions.getDeploymentAttemptServerFn);
+    await click(bar().getByRole("link", { name: /Deploying 0\/3/ }));
+    expect(router.state.location.search).toEqual({ deployment: runningId });
+    expect((await screen.findAllByText("Back to editor")).length).toBeGreaterThan(0);
+    expect(deploymentFunctions.listEnvironmentDeploymentsServerFn).not.toHaveBeenCalled();
+    // The row and its outcomes come from the Org Store; only card details (the attempt's service configs) are read.
+    expect(attemptRead).toHaveBeenCalledTimes(1);
+    expect(card("api")?.textContent).toContain("Unchanged");
+  });
+
   it("remembers leaving your own running attempt and reopening it", async () => {
     const router = await openCanvas({ extra: {
       environment_deployment: [deployment(runningId, 4, null, "deploying", runningTarget)],

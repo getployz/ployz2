@@ -130,7 +130,7 @@ export function useDeploymentAttempt(organizationSlug: string, environmentId: st
   return deployment ? { ...projectAttempt(deployment, tail.data), buildPending: tailId !== null && tail.isPending } : null;
 }
 
-/** Every Cloud Deployment Attempt of an environment in the Org Store through the deployment view projection, newest first. */
+/** The attempts of an environment the Org Store holds (active ones plus the latest) through the deployment view projection, newest first. */
 export function useEnvironmentDeployments(organizationSlug: string, environmentId: string): DeploymentAttempt[] {
   return useStoredAttempts(organizationSlug, environmentId).map((deployment) => projectAttempt(deployment));
 }
