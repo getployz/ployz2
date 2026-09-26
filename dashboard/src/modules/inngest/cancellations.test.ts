@@ -4,6 +4,7 @@ import type { GithubIngestionEffectRunner } from "#/modules/github/inngest-inges
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { InngestClient, type PloyzStepTools } from "#/modules/inngest/client";
 import { executeCancelGithubRowBackedWorkflow } from "./cancellations";
 
@@ -20,6 +21,8 @@ describe("row-backed Inngest cancellation handling", () => {
         Effect.provideService(InngestClient, undefined as never),
         // SAFETY: This runner is asserted unused by the malformed-event test.
         Effect.provideService(GithubApi, undefined as never),
+        // SAFETY: This runner is asserted unused by the malformed-event test.
+        Effect.provideService(SecretEncryption, undefined as never),
       ));
     };
 

@@ -26,10 +26,13 @@ const worker = "00000000-0000-4000-8000-000000000022";
 const createdAt = new Date("2026-09-01T00:00:00Z");
 const config = (image: string, privateDns: string) => parseServiceConfig({ version: 2, source: { version: 1, type: "image", image, credentials: { type: "none" } },
   healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns });
-const deployment = (id: string, minute: number, message: string, status: "applied" | "failed", runtimeProgress: DeploymentProgress | null) => ({
+/** A service in an attempt's frozen target list. */
+const target = (nodeId: string, name: string, changed: boolean) => ({ nodeId, nodeType: "service", name, changed, removed: false, needsBuild: false });
+const deployment = (id: string, minute: number, message: string, status: "applied" | "failed", runtimeProgress: DeploymentProgress | null,
+  nodes: ReturnType<typeof target>[]) => ({
   id, organizationId, environmentId, triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: id, serviceActionPolicy: null,
   status, inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, sourcePins: {}, variableProducers: null, deployManifest: null,
-  deployPreview: null, runtimeProgress, failureCode: null, failureMessage: null, message, cancellationRequestedAt: null, dispatchRequestedAt: null,
+  deployPreview: null, runtimeProgress, targetNodes: { version: 1, nodes }, failureCode: null, failureMessage: null, message, cancellationRequestedAt: null, dispatchRequestedAt: null,
   startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt, canRetry: status === "failed",
 });
 const snapshot = (deploymentId: string, nodeId: string, image: string, privateDns: string) => ({ id: `${deploymentId}:${nodeId}`, organizationId, environmentId,
@@ -42,8 +45,9 @@ const rows = new Map<string, unknown[]>(Object.entries({
   project: [{ id: projectId, organizationId, name: "Shop", slug: "shop", createdAt, updatedAt: createdAt }],
   environment: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt, updatedAt: createdAt,
     intent: { version: 1, environmentSlug: "production", services: [], volumes: [] } }],
-  environment_deployment: [deployment(first, 1, "Ship api", "applied", null), deployment(second, 2, "Add worker", "applied", null),
-    deployment(third, 3, "Bump api", "failed", failed)],
+  environment_deployment: [deployment(first, 1, "Ship api", "applied", null, [target(api, "api", true)]),
+    deployment(second, 2, "Add worker", "applied", null, [target(api, "api", false), target(worker, "worker", true)]),
+    deployment(third, 3, "Bump api", "failed", failed, [target(api, "api", true), target(worker, "worker", false)])],
   environment_node_config_snapshot: [snapshot(first, api, "nginx:1", "api"), snapshot(second, api, "nginx:1", "api"), snapshot(second, worker, "busybox", "worker"),
     snapshot(third, api, "nginx:2", "api"), snapshot(third, worker, "busybox", "worker")],
 }));

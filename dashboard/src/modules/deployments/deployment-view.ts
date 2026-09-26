@@ -1,9 +1,7 @@
 import type { DeployEvent, DeployOperation, OperationRow } from "@ployz/sdk";
-import { parseServiceConfig, type ServiceConfig } from "@ployz/sdk/config";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
-import { decodeStrict } from "#/modules/environment-design/schema";
-import { persistedVolumeConfigSchema, type VolumeConfig } from "#/modules/environment-design/volume-config";
 import type { EnvironmentDeploymentStatus, ServerChoice } from "./tables";
+import type { AttemptTargetNodes } from "./deployment-contract";
 import { preferredServerUnavailableText, skipReasonText, type CandidateReason, type SkipReason } from "./image-build";
 import { BUILDING_KEY, CLEANUP_KEY, TRANSFER_KEY } from "./preparation-progress";
 import { executionErrorLabel, progressRowLabel, type DeploymentProgress, type DeploymentProgressRow } from "./deployment-progress";
@@ -379,64 +377,29 @@ export function deploymentView(input: DeploymentViewInput): DeploymentView {
   };
 }
 
-type AttemptRow = { id: string; status: EnvironmentDeploymentStatus; createdAt: Date };
-type SnapshotRow = { environmentDeploymentId: string; nodeType: "service" | "volume"; nodeId: string; config: unknown };
-type ParsedSnapshot = { row: SnapshotRow } & ({ nodeType: "service"; config: ServiceConfig } | { nodeType: "volume"; config: VolumeConfig });
 /**
- * One Environment Node of the Attempt Target with the configuration it was deployed (or last deployed, when removed) with,
- * parsed once. `image` names its Image Build (a git service's private DNS name); null when nothing is built.
+ * One Environment Node of the Attempt Target as the server froze it. `name` is a service's private DNS name or a
+ * volume's name; `image` names its Image Build (a built service's private DNS name), null when nothing is built.
  */
-export type AttemptTargetNode = { nodeId: string; changed: boolean; removed: boolean; image: string | null } & (
-  | { nodeType: "service"; config: ServiceConfig }
-  | { nodeType: "volume"; config: VolumeConfig }
-);
-
-const parseSnapshot = (row: SnapshotRow): ParsedSnapshot => row.nodeType === "volume"
-  ? { row, nodeType: "volume", config: decodeStrict(persistedVolumeConfigSchema, row.config) }
-  : { row, nodeType: "service", config: parseServiceConfig(row.config) };
-
-function targetNode(snapshot: ParsedSnapshot, changed: boolean, removed: boolean): AttemptTargetNode {
-  const { nodeId } = snapshot.row;
-  if (snapshot.nodeType === "volume") return { nodeId, nodeType: "volume", config: snapshot.config, image: null, changed, removed };
-  const { config } = snapshot;
-  // A removed service builds nothing.
-  return { nodeId, nodeType: "service", config, image: config.source.type === "git" && !removed ? config.privateDns : null, changed, removed };
-}
+export type AttemptTargetNode = { nodeId: string; nodeType: "service" | "volume"; name: string; changed: boolean; removed: boolean; image: string | null };
 
 /**
- * The Attempt Target's full node set, read from deployment snapshots: every node the attempt froze,
- * plus the nodes the last applied attempt before it had and this one dropped (Removed).
- * Once the Engine reports rows, a service is changed only if it has operations; before that,
- * a node is changed when it is built or its snapshot differs from that applied attempt's.
- * Rows for removed services carry no serviceId from the record side, so they are resolved here by name.
+ * The attempt's nodes from its frozen target list. Once the Engine reports rows, an unremoved service is changed only if it
+ * has operations. Rows for removed services carry no serviceId from the record side, so they are resolved here by name.
+ * An attempt from before target lists has none, so it shows no nodes.
  */
-export function attemptTarget({ attempt, progress, history, snapshots }: {
-  attempt: AttemptRow; progress: DeploymentProgress | null;
-  history: readonly AttemptRow[]; snapshots: readonly SnapshotRow[];
-}) {
-  // ponytail: diffs against the last fully applied attempt; a failed attempt in between that deployed some nodes is ignored until rows arrive.
-  const base = history.filter((row) => row.status === "applied" && row.createdAt < attempt.createdAt)
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
-  const own = snapshots.filter((row) => row.environmentDeploymentId === attempt.id);
-  const prior = base ? snapshots.filter((row) => row.environmentDeploymentId === base.id) : [];
-  const sameNode = (a: SnapshotRow) => (b: SnapshotRow) => a.nodeType === b.nodeType && a.nodeId === b.nodeId;
-  const removed = prior.filter((row) => !own.some(sameNode(row))).map(parseSnapshot);
-  const kept = own.map(parseSnapshot);
-  const serviceFor = (name: string | null) => [...kept, ...removed]
-    .find((snapshot) => snapshot.nodeType === "service" && snapshot.config.privateDns === name)?.row.nodeId ?? null;
+export function attemptNodes(targetNodes: AttemptTargetNodes | null, progress: DeploymentProgress | null) {
+  const list = targetNodes?.nodes ?? [];
+  const serviceFor = (name: string | null) => list.find((node) => node.nodeType === "service" && node.name === name)?.nodeId ?? null;
   const resolved = progress && { ...progress, rows: progress.rows.map((row) => row.serviceId ? row : { ...row, serviceId: serviceFor(row.serviceName) }) };
   const rows = resolved?.rows ?? [];
-  const changed = (snapshot: ParsedSnapshot) => {
-    if (snapshot.nodeType === "service" && rows.length > 0) return rows.some((r) => r.serviceId === snapshot.row.nodeId);
-    if (snapshot.nodeType === "service" && snapshot.config.source.type === "git") return true;
-    const before = prior.find(sameNode(snapshot.row));
-    return !before || canonicalJson(before.config) !== canonicalJson(snapshot.row.config);
-  };
-  return {
-    nodes: [...kept.map((snapshot) => targetNode(snapshot, changed(snapshot), false)), ...removed.map((snapshot) => targetNode(snapshot, true, true))],
-    progress: resolved,
-  };
+  const nodes = list.map(({ nodeId, nodeType, name, changed, removed, needsBuild }): AttemptTargetNode => ({
+    nodeId, nodeType, name, removed, image: needsBuild ? name : null,
+    changed: nodeType === "service" && !removed && rows.length > 0 ? rows.some((row) => row.serviceId === nodeId) : changed,
+  }));
+  return { nodes, progress: resolved };
 }
+
 
 /** User-facing whole-deployment status: "Deployed" or "Failed · 2 of 4 deployed". Never "Partial". */
 export function deploymentStatusLabel(view: DeploymentView): string {

@@ -100,6 +100,7 @@ export const environmentDeployment = pgTable(
     deployPreview:
       jsonb("deploy_preview").$type<EnvironmentDeploymentPreview>(),
     runtimeProgress: jsonb("runtime_progress").$type<import("./deployment-progress").DeploymentProgress>(),
+    targetNodes: jsonb("target_nodes").$type<import("./deployment-contract").AttemptTargetNodes>(),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
     message: text("message"),

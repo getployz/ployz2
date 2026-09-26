@@ -8,7 +8,7 @@ import { ServiceBuildLogs, ServiceDeployLogs } from "#/components/deployment-log
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { useAttemptServiceConfigs, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { builtOnLine, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
@@ -36,10 +36,10 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
     queryKey: ["deployment-panel-service", services.id, serviceId],
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.id, serviceId)).select(({ service }) => ({ name: service.name })),
   });
+  const config = useAttemptServiceConfigs(params.organizationSlug, attempt.deployment.id).get(serviceId) ?? null;
   const node = attempt.nodes.find((candidate) => candidate.nodeId === serviceId);
   const view = attempt.view.nodes.find((candidate) => candidate.nodeId === serviceId);
   if (node?.nodeType !== "service" || !view) return null;
-  const { config } = node;
   const built = view.build.state !== "none";
   const requested = Schema.is(deploymentServicePageSchema)(tab) && (built || tab !== "build-logs") ? tab : null;
   const current = requested ?? defaultDeploymentTab(view);
@@ -51,7 +51,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
       {requested ? null : <Navigate {...destination} search={(previous) => ({ ...previous, tab: current })} replace />}
       <CanvasInspectorHeader params={params}>
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium">{named[0]?.name ?? config.privateDns}</span>
+          <span className="truncate font-medium">{named[0]?.name ?? node.name}</span>
           {/* The bar already names the deployment; a phone keeps the width for the service name. */}
           <span className="whitespace-nowrap text-muted-foreground max-[860px]:hidden">
             <span aria-hidden>/ </span><span className="font-mono">{shortDeploymentId(deployment.id)}</span>
@@ -79,7 +79,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
             <DeploymentServiceDetails organizationSlug={params.organizationSlug} deployment={deployment} serviceId={serviceId} view={view} config={config} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
           </TabsContent>
           <TabsContent value="build-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
-            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={config.privateDns} />
+            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={node.name} />
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             {view.outcome === "not_attempted" || view.outcome === "unchanged" ? <p className="mb-3 text-muted-foreground">{outcomeSentences[view.outcome]}</p> : null}
@@ -122,23 +122,26 @@ function DeploymentServiceDetails({ organizationSlug, deployment, serviceId, vie
   deployment: DeploymentAttempt["deployment"];
   serviceId: string;
   view: DeploymentNodeView;
-  config: ServiceConfig;
+  /** Null for a removed service: the attempt holds no snapshot of it. */
+  config: ServiceConfig | null;
   commitSha: string | null;
 }) {
+  const outcome = view.failure ? (
+    <Alert variant="destructive">
+      <AlertTitle>Failed</AlertTitle>
+      <AlertDescription>
+        <pre className="whitespace-pre-wrap break-words font-mono">{view.failure.message}</pre>
+        {view.failure.containerId ? <p>Container <span className="font-mono">{view.failure.containerId}</span></p> : null}
+      </AlertDescription>
+    </Alert>
+  ) : (
+    <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
+  );
+  if (!config) return <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">{outcome}</div>;
   const { source, build, healthcheck } = config;
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      {view.failure ? (
-        <Alert variant="destructive">
-          <AlertTitle>Failed</AlertTitle>
-          <AlertDescription>
-            <pre className="whitespace-pre-wrap break-words font-mono">{view.failure.message}</pre>
-            {view.failure.containerId ? <p>Container <span className="font-mono">{view.failure.containerId}</span></p> : null}
-          </AlertDescription>
-        </Alert>
-      ) : (
-        <p>{view.outcome === "failed" ? "Failed" : outcomeSentences[view.outcome]}</p>
-      )}
+      {outcome}
       <DeployedVariables organizationSlug={organizationSlug} deploymentId={deployment.id} environmentId={deployment.environmentId} serviceId={serviceId} env={config.env} />
       <Fields title="Source" fields={source.type === "image" ? [["Image", source.image]]
         : source.type === "git" ? [

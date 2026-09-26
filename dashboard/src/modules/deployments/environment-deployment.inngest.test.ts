@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { NonRetriableError, serializeError, StepError } from "inngest";
 import {
@@ -424,6 +425,8 @@ describe("process environment deployment", () => {
           Effect.provideService(InngestClient, undefined as never),
           // SAFETY: The deployment cancellation branch never calls GitHub.
           Effect.provideService(GithubApi, undefined as never),
+          // SAFETY: The deployment cancellation branch never decrypts.
+          Effect.provideService(SecretEncryption, undefined as never),
         )),
     );
 

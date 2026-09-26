@@ -37,7 +37,7 @@ describe("durable deployment activities", () => {
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
   function runEffect<A, E>(
-    operation: Effect.Effect<A, E, Database | InngestClient>,
+    operation: Effect.Effect<A, E, Database | InngestClient | import("#/utils/encrypted-secret.server").SecretEncryption>,
   ) {
     return harness.runEffect(
       operation.pipe(Effect.provideService(InngestClient, inngest)),
