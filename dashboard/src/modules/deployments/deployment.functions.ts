@@ -4,7 +4,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect } from "effect";
 import {
   cancelEnvironmentDeploymentSchema,
+  deploymentAttemptQuerySchema,
   deploymentBuildTailQuerySchema,
+  environmentDeploymentsQuerySchema,
   deploymentServiceVariablesQuerySchema,
   nodeDeploymentsQuerySchema,
   reviewedPublicationSchema,
@@ -15,7 +17,9 @@ import {
   retryEnvironmentDeploymentSchema,
 } from "#/modules/deployments/deployment-contract";
 import {
+  getDeploymentAttempt,
   listDeploymentBuildLog,
+  listEnvironmentDeployments,
   listDeploymentBuildTail,
   getDeploymentServiceVariables,
   listDeploymentProgressLogs,
@@ -120,3 +124,13 @@ export const listNodeDeploymentsServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)
   .validator(strictValidator(nodeDeploymentsQuerySchema))
   .handler(({ context, data }) => runActor(context, listNodeDeployments(context.actor, data)));
+
+export const listEnvironmentDeploymentsServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(environmentDeploymentsQuerySchema))
+  .handler(({ context, data }) => runActor(context, listEnvironmentDeployments(context.actor, data)));
+
+export const getDeploymentAttemptServerFn = createServerFn({ method: "GET" })
+  .middleware(deploymentMiddleware)
+  .validator(strictValidator(deploymentAttemptQuerySchema))
+  .handler(({ context, data }) => runActor(context, getDeploymentAttempt(context.actor, data)));

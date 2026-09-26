@@ -8,7 +8,8 @@ import { ServiceBuildLogs, ServiceDeployLogs } from "#/components/deployment-log
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import { useAttemptServiceConfigs, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { useAttemptServiceConfigs } from "#/modules/deployments/deployment-history.queries";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { builtOnLine, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";

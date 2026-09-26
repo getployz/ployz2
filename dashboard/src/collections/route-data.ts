@@ -50,9 +50,10 @@ export async function prefetchOrgStore(context: RouteDataContext, organizationSl
 
 /**
  * Starts every read together. Never throws: an SSR failure is retried by the page's
- * `useSuspenseQuery`, whose boundary owns the error.
+ * `useSuspenseQuery`, whose boundary owns the error. Each read is a `queryOptions` result; the parameter names only the key
+ * they share, so reads of different data start in one call.
  */
-export async function prefetchRemote<T, K extends QueryKey>(context: RouteDataContext, ...reads: Array<FetchQueryOptions<T, Error, T, K>>) {
+export async function prefetchRemote(context: RouteDataContext, ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
   const ready = Promise.all(reads.map((options) => context.queryClient.prefetchQuery(options)));
   if (environmentManager.isServer()) await ready;
 }

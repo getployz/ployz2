@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Data, Effect } from "effect";
@@ -11,6 +11,7 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { BuildOrderRow } from "#/modules/deployments/build-order";
+import { deploymentRowColumns } from "#/modules/deployments/deployment-row.server";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
@@ -72,22 +73,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
           .where(scoped(tables.environmentCanvasNodePosition));
       case "environment_deployment":
-        // The plan the runtime executes (manifest, producers, action policy) stays on the server; no view reads it.
-        const { deployManifest: _manifest, variableProducers: _producers, serviceActionPolicy: _policy, ...deploymentColumns } =
-          getTableColumns(tables.environmentDeployment);
-        return yield* database.drizzle.select({
-          ...deploymentColumns,
-          runtimeProgress: sql<typeof tables.environmentDeployment.$inferSelect.runtimeProgress>`coalesce(
-            ${tables.environmentDeployment.runtimeProgress},
-            (select progress from ${tables.environmentDeploymentEvent}
-             where deployment_id = ${tables.environmentDeployment}.${sql.identifier("id")} order by id desc limit 1)
-          )`,
-          // Removal retries need a fresh destructive review, so an attempt that staged one cannot retry.
-          canRetry: sql<boolean>`${tables.environmentDeployment.status} = 'failed' and not exists (
-            select 1 from ${tables.volumeRemoveAttempt}
-            where ${tables.volumeRemoveAttempt.environmentDeploymentId} = ${tables.environmentDeployment}.${sql.identifier("id")}
-          )`,
-        }).from(tables.environmentDeployment).where(scoped(tables.environmentDeployment));
+        return yield* database.drizzle.select(deploymentRowColumns).from(tables.environmentDeployment).where(scoped(tables.environmentDeployment));
       // Sealed variable ciphertext stays on the server; deploy resolution reads the full rows.
       case "environment_node_config_snapshot":
         return (yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)

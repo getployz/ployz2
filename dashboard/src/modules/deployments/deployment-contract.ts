@@ -82,6 +82,18 @@ export const nodeDeploymentsQuerySchema = Schema.Struct({
   before: Schema.optional(Uuid),
 });
 
+/** One page of an environment's attempts, newest first; `before` is the last attempt id of the previous page. */
+export const environmentDeploymentsQuerySchema = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  environmentId: Uuid,
+  before: Schema.optional(Uuid),
+});
+
+export const deploymentAttemptQuerySchema = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  deploymentId: Uuid,
+});
+
 export const deploymentServiceVariablesQuerySchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
   deploymentId: Uuid,
@@ -193,6 +205,8 @@ export type DispatchQueuedEnvironmentDeploymentInput =
 export type DeploymentOperationEvidencePageQueryInput =
   typeof deploymentOperationEvidencePageQuerySchema.Type;
 export type DeploymentBuildTailQueryInput = typeof deploymentBuildTailQuerySchema.Type;
+export type EnvironmentDeploymentsQueryInput = typeof environmentDeploymentsQuerySchema.Type;
+export type DeploymentAttemptQueryInput = typeof deploymentAttemptQuerySchema.Type;
 export type DeploymentServiceVariablesQueryInput = typeof deploymentServiceVariablesQuerySchema.Type;
 export type NodeDeploymentsQueryInput = typeof nodeDeploymentsQuerySchema.Type;
 export type EnvironmentDeploymentSummary = Omit<

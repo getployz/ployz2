@@ -3,9 +3,10 @@ import {
   createFileRoute,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-import { prefetchRemote } from "#/collections/route-data";
+import { prefetchRemote, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
+import { deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
@@ -16,10 +17,18 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
   ...canvasRouteSearch,
-  loaderDeps: ({ search }) => ({ deployment: search.deployment }),
-  // Deployment Mode's nodes read the build tail; SSR renders them with it and hover preload warms it.
+  loaderDeps: ({ search }) => ({ deployment: search.deployment, deploymentList: search.deploymentList }),
+  // Deployment Mode's nodes read the attempt and its build tail, and the open list its first page;
+  // SSR renders them and hover preload warms them.
   loader: async ({ params, context, deps }) => {
-    if (deps.deployment) await prefetchRemote(context, deploymentBuildTailQueryOptions(params.organizationSlug, deps.deployment));
+    if (deps.deployment) {
+      await prefetchRemote(context,
+        deploymentBuildTailQueryOptions(params.organizationSlug, deps.deployment), deploymentAttemptQueryOptions(params.organizationSlug, deps.deployment));
+    }
+    if (deps.deploymentList) {
+      const environment = await requireEnvironment(context, params);
+      await prefetchRemotePages(context, environmentDeploymentsQueryOptions(params.organizationSlug, environment.id));
+    }
   },
   errorComponent: CanvasError,
   component: CanvasLayout,

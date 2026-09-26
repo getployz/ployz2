@@ -86,12 +86,34 @@ const rows = new Map<string, unknown[]>(Object.entries({
 const runningTarget = [target(api, "api", { changed: false }), target(worker, "worker"), target(old, "old", { removed: true }), target(web, "web", { removed: true })];
 const card = (name: string) => screen.getAllByText(name)[0]?.closest("[data-canvas-node]");
 
-async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production", changeStates = [] }: {
-  extra?: Record<string, unknown[]>; path?: string; changeStates?: EnvironmentChangeStateProjection[];
+/**
+ * Serves the deployment history reads from the seeded rows plus `remote`, rows only the server holds (outside the Org Store).
+ * `attemptArrives` holds the per-attempt read back until it resolves.
+ */
+function serveDeploymentHistory(tables: Record<string, unknown[]>, attemptArrives: Promise<void>) {
+  const deployments = (tables["environment_deployment"] as Array<{ id: string; createdAt: Date }>)
+    .map((row) => ({ ...row, projectSlug: "shop", environmentSlug: "production" }))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const snapshots = tables["environment_node_config_snapshot"] as Array<{ environmentDeploymentId: string; nodeId: string; config: unknown }>;
+  vi.spyOn(deploymentFunctions, "listEnvironmentDeploymentsServerFn").mockImplementation(async () =>
+    asTestDouble<Awaited<ReturnType<typeof deploymentFunctions.listEnvironmentDeploymentsServerFn>>>()({ rows: deployments, next: null }));
+  vi.spyOn(deploymentFunctions, "getDeploymentAttemptServerFn").mockImplementation(async ({ data }) => {
+    await attemptArrives;
+    const row = deployments.find((candidate) => candidate.id === data.deploymentId);
+    return asTestDouble<Awaited<ReturnType<typeof deploymentFunctions.getDeploymentAttemptServerFn>>>()(row ? { row, serviceConfigs: snapshots
+      .filter((snapshot) => snapshot.environmentDeploymentId === row.id).map(({ nodeId, config }) => ({ nodeId, config })) } : null);
+  });
+}
+
+async function openCanvas({ extra = {}, remote = {}, attemptArrives = Promise.resolve(), path = "/cloud/acme/shop/production", changeStates = [] }: {
+  extra?: Record<string, unknown[]>; remote?: Record<string, unknown[]>; attemptArrives?: Promise<void>; path?: string;
+  changeStates?: EnvironmentChangeStateProjection[];
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([...rows.get(table) ?? [], ...extra[table] ?? []]));
+  const tables = (name: string) => [...rows.get(name) ?? [], ...extra[name] ?? [], ...remote[name] ?? []];
+  serveDeploymentHistory({ environment_deployment: tables("environment_deployment"), environment_node_config_snapshot: tables("environment_node_config_snapshot") }, attemptArrives);
   // The failed attempt's event log is finished and empty, so Deploy logs reads it from cache.
   queryClient.setQueryData(["collections", "session", "user", "acme", "deployment_logs", replaceFailedId], { events: [], finished: true });
   // The change-state projection stamps its version from these tables, then reads the given states (none by default).
@@ -268,6 +290,27 @@ describe("deployment mode on the environment canvas", () => {
     expect(screen.queryAllByRole("tab")).toEqual([]);
   });
 
+  it("opens an attempt outside the Org Store behind a skeleton, never a wrong outcome", async () => {
+    let arrive = () => {};
+    const attemptArrives = new Promise<void>((resolve) => { arrive = resolve; });
+    const older = "90000000-0000-4000-8000-000000000017";
+    const router = await openCanvas({ attemptArrives, remote: {
+      environment_deployment: [deployment(older, 0, null, "applied", [target(api, "api"), target(web, "web", { changed: false })])],
+      environment_node_config_snapshot: [snapshot(older, api, "api"), snapshot(older, web, "web")],
+    } });
+
+    await enterDeploymentMode(router, older);
+    expect(screen.getByText("Loading canvas")).toBeTruthy();
+    expect(screen.queryByText("Deployed")).toBeNull();
+    expect(screen.queryByText("Unchanged")).toBeNull();
+
+    await act(async () => { arrive(); });
+    expect((await screen.findAllByText("Back to editor")).length).toBeGreaterThan(0);
+    expect(card("api")?.textContent).toContain("Deployed");
+    expect(card("web")?.textContent).toContain("Unchanged");
+    expect(screen.queryAllByText("worker")).toEqual([]);
+  });
+
   it("leaves the mode on browser Back", async () => {
     const router = await openCanvas();
     await enterDeploymentMode(router);
@@ -302,6 +345,25 @@ describe("the deploy bar", () => {
     await click(bar().getByRole("link", { name: "Editor" }));
     expect(router.state.location.search).toEqual({});
     expect((await screen.findAllByText("worker")).length).toBeGreaterThan(0);
+  });
+
+  it("shows more deployments a page at a time", async () => {
+    await openCanvas();
+    const [newest, ...older] = [...rows.get("environment_deployment") as Array<{ id: string }>].reverse()
+      .map((row) => asTestDouble<Awaited<ReturnType<typeof deploymentFunctions.listEnvironmentDeploymentsServerFn>>["rows"][number]>()(
+        { ...row, projectSlug: "shop", environmentSlug: "production" }));
+    vi.spyOn(deploymentFunctions, "listEnvironmentDeploymentsServerFn").mockImplementation(async ({ data }) =>
+      data.before === undefined ? { rows: newest ? [newest] : [], next: newest?.id ?? null } : { rows: older, next: null });
+    await click(bar().getByRole("button", { name: "Deployments" }));
+    const list = within(await screen.findByRole("navigation", { name: "Deployments" }));
+    await list.findByRole("link", { name: /e0000000/ });
+    expect(list.getAllByRole("link")).toHaveLength(2);
+
+    await click(list.getByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(list.getAllByRole("link").map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Editor"), expect.stringContaining("e0000000"), expect.stringContaining("b0000000"), expect.stringContaining("a0000000"),
+    ]));
+    expect(list.queryByRole("button", { name: "Show more" })).toBeNull();
   });
 
   it("opens a running attempt directly and offers Cancel, and Retry on a failed one", async () => {

@@ -1,4 +1,4 @@
-import { createContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, Suspense, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon, PencilIcon,
@@ -10,10 +10,13 @@ import { Drawer, DrawerContent, DrawerTitle, DrawerTrigger } from "#/components/
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemSeparator, ItemTitle } from "#/components/ui/item";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
+import { Skeleton } from "#/components/ui/skeleton";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useIsMobile } from "#/hooks/use-mobile";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import { useDeployQueuedNow, useRetryDeployment } from "#/modules/deployments/deployment-commands";
-import { useEnvironmentDeployments, type DeploymentAttempt } from "#/modules/deployments/deployment.collection";
+import { useDeploymentList, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
+import { warmEnvironmentDeployments } from "#/modules/deployments/deployment-history.queries";
 import { deploymentStatusLabel, shortDeploymentId, type DeploymentView } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { formatRelativeTime } from "#/utils/relative-time";
@@ -47,6 +50,8 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   const { selectedNodeId } = useCanvasInspectorSelection();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  const { queryClient } = useCollectionScope();
+  const warmList = () => warmEnvironmentDeployments(queryClient, organizationSlug, environmentId);
   const barRef = useRef<HTMLDivElement>(null);
   // The oldest queued or running attempt holds, or is next for, the Environment execution slot; the rest wait behind it.
   const active = attempts.filter(({ deployment }) => isActiveDeployment(deployment.status));
@@ -71,7 +76,7 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   }, [viewed, listOpen, selectedNodeId, navigate]);
 
   const listTrigger = (
-    <Button size="sm" variant="ghost" data-active={viewed !== null}
+    <Button size="sm" variant="ghost" data-active={viewed !== null} onPointerEnter={warmList} onFocus={warmList}
       aria-label={viewed ? `Deployment ${shortDeploymentId(viewed.deployment.id)}, all deployments` : "Deployments"}>
       {viewed ? <><StatusIcon view={viewed.view} /><span className="font-mono">{shortDeploymentId(viewed.deployment.id)}</span></>
         : "Deployments"}
@@ -93,7 +98,8 @@ export function DeployBar({ children }: { children?: ReactNode }) {
       <CircleDashedIcon />{active.length > 2 ? `${active.length - 1} queued` : "Queued"}
     </Link>
   ) : null;
-  const list = <DeploymentList attempts={attempts} viewedId={viewed?.deployment.id ?? null} environmentSlug={environmentSlug} />;
+  const list = <DeploymentList organizationSlug={organizationSlug} environmentId={environmentId}
+    viewedId={viewed?.deployment.id ?? null} environmentSlug={environmentSlug} />;
 
   return (
     <div ref={barRef} role="group" aria-label="Deploy bar" className="deploy-bar" data-deployment={viewed ? "" : undefined}>
@@ -150,22 +156,40 @@ function DeploymentActions({ deployment, building }: { deployment: EnvironmentDe
   </>;
 }
 
-/** The Editor first, then the environment's deployments newest first. */
-function DeploymentList({ attempts, viewedId, environmentSlug }: { attempts: DeploymentAttempt[]; viewedId: string | null; environmentSlug: string }) {
+/** The Editor first, then the environment's deployments newest first, a page at a time. */
+function DeploymentList({ organizationSlug, environmentId, viewedId, environmentSlug }: {
+  organizationSlug: string; environmentId: string; viewedId: string | null; environmentSlug: string;
+}) {
   return (
     <nav aria-label="Deployments" className="max-h-[min(28rem,70dvh)] overflow-y-auto"><ItemGroup>
       <ListRow current={viewedId === null} search={{ deployment: undefined }}
         icon={<PencilIcon />} title="Editor" detail={`${environmentSlug} as it is now`} />
       <ItemSeparator />
-      {attempts.length === 0 ? <Empty variant="placeholder"><EmptyDescription>No deployments yet</EmptyDescription></Empty> : null}
-      {attempts.map(({ deployment, view }) => (
-        <ListRow key={deployment.id} current={deployment.id === viewedId} search={{ deployment: deployment.id }}
-          icon={<StatusIcon view={view} />}
-          title={<><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</>}
-          detail={`${deploymentStatusLabel(view)} · ${formatRelativeTime(deployment.createdAt)}`} />
-      ))}
+      <Suspense fallback={<ListRowSkeletons />}>
+        <DeploymentRows organizationSlug={organizationSlug} environmentId={environmentId} viewedId={viewedId} />
+      </Suspense>
     </ItemGroup></nav>
   );
+}
+
+function DeploymentRows({ organizationSlug, environmentId, viewedId }: { organizationSlug: string; environmentId: string; viewedId: string | null }) {
+  const { attempts, hasMore, loadingMore, showMore } = useDeploymentList(organizationSlug, environmentId);
+  return <>
+    {attempts.length === 0 ? <Empty variant="placeholder"><EmptyDescription>No deployments yet</EmptyDescription></Empty> : null}
+    {attempts.map(({ deployment, view }) => (
+      <ListRow key={deployment.id} current={deployment.id === viewedId} search={{ deployment: deployment.id }}
+        icon={<StatusIcon view={view} />}
+        title={<><span className="font-mono">{shortDeploymentId(deployment.id)}</span> · {deployment.message ?? "Deployment"}</>}
+        detail={`${deploymentStatusLabel(view)} · ${formatRelativeTime(deployment.createdAt)}`} />
+    ))}
+    {loadingMore ? <ListRowSkeletons /> : hasMore ? <Button size="sm" variant="ghost" onClick={showMore}>Show more</Button> : null}
+  </>;
+}
+
+function ListRowSkeletons() {
+  return <div aria-hidden className="flex flex-col gap-3 p-2">
+    {[0, 1, 2].map((row) => <div key={row} className="flex flex-col gap-1.5"><Skeleton className="h-4 w-48" /><Skeleton className="h-3 w-32" /></div>)}
+  </div>;
 }
 
 function ListRow({ current, search, icon, title, detail }: {

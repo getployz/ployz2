@@ -1,16 +1,19 @@
 import "@tanstack/react-start/server-only";
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import type { EffectPgDatabase } from "drizzle-orm/effect-postgres";
 import { Effect, Schema } from "effect";
 
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type {
+  DeploymentAttemptQueryInput,
   DeploymentBuildTailQueryInput,
   DeploymentOperationEvidencePageQueryInput,
   DeploymentServiceVariablesQueryInput,
   EnvironmentChangeStateNodeProjection,
   EnvironmentChangeStateProjection,
   NodeDeploymentsQueryInput,
+  EnvironmentDeploymentsQueryInput,
   OrganizationEnvironmentChangeStateQueryInput,
 } from "#/modules/deployments/deployment-contract";
 import { loadEnvironmentSnapshotProjection, type EnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
@@ -20,13 +23,15 @@ import { withoutSealedCiphertext } from "#/modules/environment-design/saved-inte
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import type { Actor } from "#/modules/identity/actor";
+import { environment, project } from "#/modules/project/tables";
+import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-events.server";
-import type { DeploymentProgress } from "./deployment-progress";
 import { attemptNodes, deploymentView } from "./deployment-view";
-import { environmentDeployment, environmentDeploymentEvent } from "./tables";
+import { deploymentRowColumns } from "./deployment-row.server";
+import { environmentDeployment } from "./tables";
 import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
 
 const requireOrganization = Effect.fn("Deployments.requireOrganization")(
@@ -196,11 +201,7 @@ export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(func
   const candidates = (before: string | null) => drizzle.select({
     id: table.id, message: table.message, createdAt: table.createdAt, status: table.status, failureMessage: table.failureMessage,
     planned: sql<boolean>`${table.deployPreview} is not null`, targetNodes: table.targetNodes,
-    runtimeProgress: sql<DeploymentProgress | null>`coalesce(
-      ${table.runtimeProgress},
-      (select progress from ${environmentDeploymentEvent}
-       where deployment_id = ${table}.${sql.identifier("id")} order by id desc limit 1)
-    )`,
+    runtimeProgress: deploymentRowColumns.runtimeProgress,
   }).from(table).where(and(
     eq(table.organizationId, organization.id),
     eq(table.environmentId, input.environmentId),
@@ -233,4 +234,58 @@ export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(func
   const history = yield* scan(input.before ?? null, (attempt) => attempt.outcome !== "unchanged" && attempt.id !== running?.id, NODE_DEPLOYMENTS_PAGE + 1);
   const items = history.slice(0, NODE_DEPLOYMENTS_PAGE);
   return { running, items, next: history.length > NODE_DEPLOYMENTS_PAGE ? items.at(-1)?.id ?? null : null };
+});
+
+const DEPLOYMENT_PAGE_SIZE = 20;
+
+/** The Org Store's deployment row plus the slugs its summary carries. */
+function selectAttempts(drizzle: EffectPgDatabase, organizationId: string, where: SQL | undefined) {
+  return drizzle
+    .select({ ...deploymentRowColumns, projectSlug: project.slug, environmentSlug: environment.namespace })
+    .from(environmentDeployment)
+    .innerJoin(environment, eq(environment.id, environmentDeployment.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .where(and(eq(environmentDeployment.organizationId, organizationId), where));
+}
+
+/** One page of an environment's attempts, newest first; ties on `created_at` break by id. `next` continues after the last row. */
+export const listEnvironmentDeployments = Effect.fn("Deployments.listEnvironmentDeployments")(function* (
+  actor: Actor,
+  input: EnvironmentDeploymentsQueryInput,
+) {
+  const organization = yield* requireOrganization(actor, input.organizationSlug);
+  const { drizzle } = yield* Database;
+  const rows = yield* selectAttempts(drizzle, organization.id, and(
+    eq(environmentDeployment.environmentId, input.environmentId),
+    input.before === undefined ? undefined : sql`(${environmentDeployment.createdAt}, ${environmentDeployment.id}) < (
+      select previous.created_at, previous.id from ${environmentDeployment} previous where previous.id = ${input.before}
+    )`,
+  )).orderBy(desc(environmentDeployment.createdAt), desc(environmentDeployment.id)).limit(DEPLOYMENT_PAGE_SIZE + 1);
+  const page = rows.slice(0, DEPLOYMENT_PAGE_SIZE);
+  return { rows: page, next: rows.length > DEPLOYMENT_PAGE_SIZE ? page.at(-1)?.id ?? null : null };
+});
+
+/**
+ * One attempt: its row (with its frozen target list) and the service configs it deployed, for card details.
+ * Null when the organization has no such attempt.
+ */
+export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt")(function* (
+  actor: Actor,
+  input: DeploymentAttemptQueryInput,
+) {
+  const organization = yield* requireOrganization(actor, input.organizationSlug);
+  const { drizzle } = yield* Database;
+  const [[row], snapshots] = yield* Effect.all([
+    selectAttempts(drizzle, organization.id, eq(environmentDeployment.id, input.deploymentId)),
+    drizzle.select({ nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
+      .from(environmentNodeConfigSnapshot)
+      .where(and(
+        eq(environmentNodeConfigSnapshot.organizationId, organization.id),
+        eq(environmentNodeConfigSnapshot.environmentDeploymentId, input.deploymentId),
+        eq(environmentNodeConfigSnapshot.nodeType, "service"),
+      )),
+  ]);
+  if (!row) return null;
+  // Sealed variable ciphertext stays on the server.
+  return { row, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
 });
