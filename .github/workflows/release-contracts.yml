@@ -78,9 +78,6 @@ jobs:
       - uses: mlugg/setup-zig@v1
         with:
           version: ${{ env.ZIG_VERSION }}
-          # Its cache key carries the run id, so every release run stored ~20 MB per arch that
-          # no later run restores exactly, crowding the Image Build cache out of the repo's 10 GB.
-          use-cache: false
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
