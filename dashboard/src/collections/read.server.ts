@@ -75,9 +75,6 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "environment_deployment":
         return yield* database.drizzle.select(deploymentRowColumns).from(tables.environmentDeployment).where(scoped(tables.environmentDeployment));
       // Sealed variable ciphertext stays on the server; deploy resolution reads the full rows.
-      case "environment_node_config_snapshot":
-        return (yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)
-          .where(scoped(tables.environmentNodeConfigSnapshot))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));
       case "environment_node_introduction":
         return (yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
           .where(scoped(tables.environmentNodeIntroduction))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));

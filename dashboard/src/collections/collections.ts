@@ -17,7 +17,6 @@ import {
   environment as schemaEnvironment,
 } from "#/modules/project/tables";
 import {
-  environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
 } from "#/modules/runtime/tables";
 
@@ -28,8 +27,6 @@ type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
 type EnvironmentResourceRow = typeof schemaEnvironmentResource.$inferSelect;
 type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy"> & { canRetry: boolean };
-type EnvironmentNodeConfigSnapshotRow =
-  typeof schemaEnvironmentNodeConfigSnapshot.$inferSelect;
 type EnvironmentNodeIntroductionRow =
   typeof schemaEnvironmentNodeIntroduction.$inferSelect;
 
@@ -54,8 +51,6 @@ export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
 export const getResourceLineagesCollection = changeCollection<ResourceLineageRow>("resource_lineage", (row) => row.id);
 export const getRawEnvironmentResourcesCollection = changeCollection<EnvironmentResourceRow>("environment_resource", (row) => row.id);
 export const getEnvironmentDeploymentsCollection = changeCollection<EnvironmentDeploymentRow>("environment_deployment", (row) => row.id);
-export const getEnvironmentNodeConfigSnapshotsCollection = changeCollection<EnvironmentNodeConfigSnapshotRow>(
-  "environment_node_config_snapshot", (row) => row.id);
 export const getEnvironmentNodeIntroductionsCollection = changeCollection<EnvironmentNodeIntroductionRow>(
   "environment_node_introduction", (row) => `${row.nodeType}:${row.nodeId}`);
 export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
@@ -86,7 +81,6 @@ export const orgStoreTables = {
   environment_resource: getRawEnvironmentResourcesCollection,
   environment_canvas_node_position: getCanvasPositionsCollection,
   environment_deployment: getEnvironmentDeploymentsCollection,
-  environment_node_config_snapshot: getEnvironmentNodeConfigSnapshotsCollection,
   environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
   organization_enrollment: getOrganizationEnrollmentCollection,
   organization_cluster_domain: getClusterDomainCollection,

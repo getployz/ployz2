@@ -13,7 +13,7 @@ export type DataSourceKind = "org-store" | "runtime" | "remote";
 
 export const dataSources = {
   "collections/query-collection.ts": { kind: "org-store", freshness: "table default: the Organization change stream pushes which tables changed and each reads rows changed since its cursor; no timer; refetch on focus and reconnect; land this user's writes via writeCommitted" },
-  // ponytail: deployments and node-config snapshots are unbounded history; move them to paged remote reads when orgs outgrow eager loading.
+  // ponytail: deployments are unbounded history; move them to paged remote reads when orgs outgrow eager loading.
   "collections/collections.ts": { kind: "org-store", freshness: "table default for every table, deployments included: deployment events push progress" },
   "collections/org-store.ts": { kind: "org-store", freshness: "readiness only, once per organization; the change stream keeps tables fresh" },
   "modules/environment-design/environment-document.collection.ts": { kind: "org-store", freshness: "derived from environments and projects" },

@@ -20,7 +20,6 @@ export const changeNameSources = {
   environment_resource: ["environment_resource"],
   environment_canvas_node_position: ["environment_canvas_node_position"],
   environment_deployment: ["environment_deployment", "environment_deployment_event"],
-  environment_node_config_snapshot: ["environment_node_config_snapshot"],
   environment_node_introduction: ["environment_node_introduction"],
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],

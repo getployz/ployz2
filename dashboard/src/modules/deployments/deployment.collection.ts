@@ -6,7 +6,6 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { attemptNodes, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
-  getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
 } from "#/collections/collections";
@@ -91,10 +90,7 @@ function deploymentSummary(deployment: DeploymentHistoryRow): EnvironmentDeploym
 
 /** Admission and Saved State commands can also replace a queued attempt's history. */
 export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
-  await Promise.all([
-    reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
-    reconcileCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
-  ]);
+  await reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope));
 }
 
 /** `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */

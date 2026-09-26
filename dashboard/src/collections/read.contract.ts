@@ -7,7 +7,7 @@ export const collectionNames = [
   "project", "environment_summary", "project_preference", "environment", "service", "resource_lineage",
   "environment_resource", "environment_canvas_node_position",
   "environment_deployment",
-  "environment_node_config_snapshot", "environment_node_introduction",
+  "environment_node_introduction",
   "organization_enrollment", "organization_cluster_domain", "organization_build_order",
 ] as const;
 
