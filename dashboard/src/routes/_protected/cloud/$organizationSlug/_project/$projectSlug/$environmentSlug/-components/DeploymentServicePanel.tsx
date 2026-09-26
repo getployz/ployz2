@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { useAttemptServiceConfigs } from "#/modules/deployments/deployment-history.queries";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
-import { builtOnLine, imageName, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
+import { builtOnLine, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
   DEPLOYMENT_SERVICE_PAGES, deploymentServicePageSchema, type DeploymentServicePage,
 } from "../services/$serviceId/-components/service-pages";
@@ -83,7 +83,7 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
             </Suspense>
           </TabsContent>
           <TabsContent value="build-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
-            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={imageName(node)} />
+            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={node.name} />
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             {view.outcome === "not_attempted" || view.outcome === "unchanged" ? <p className="mb-3 text-muted-foreground">{outcomeSentences[view.outcome]}</p> : null}

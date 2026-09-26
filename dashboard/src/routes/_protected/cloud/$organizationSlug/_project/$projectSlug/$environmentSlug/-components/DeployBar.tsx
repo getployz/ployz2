@@ -91,7 +91,7 @@ export function DeployBar({ children }: { children?: ReactNode }) {
     <Link to="." search={(previous) => ({ ...previous, deployment: running.deployment.id, deploymentList: undefined })}
       className={buttonVariants({ size: "sm", variant: "secondary" })}>
       <StatusIcon view={running.view} />
-      <span className="tabular-nums">{running.view.status === "deploying" && running.view.changed !== null ? `Deploying ${running.view.deployed}/${running.view.changed}` : deploymentStatusLabel(running.view)}</span>
+      <span className="tabular-nums">{running.view.status === "deploying" ? `Deploying ${running.view.deployed}/${running.view.changed}` : deploymentStatusLabel(running.view)}</span>
       <ChevronRightIcon />
     </Link>
   ) : null;

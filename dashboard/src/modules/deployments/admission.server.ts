@@ -58,7 +58,7 @@ import {
   type DeploymentTriggerOrigin as DeploymentTriggerOriginType,
 } from "./deployment";
 import { Database } from "#/server/database.server";
-import { writeAttemptTargetNodes } from "./attempt-target.server";
+import { writeTargetNodeList } from "./attempt-target.server";
 import { loadAppliedNodeConfigs } from "./environment-state.repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
@@ -440,7 +440,7 @@ function writeQueuedSavedTarget(
       retryOfDeploymentId: input.retryOfDeploymentId,
     });
     // Provisional: the attempt's start rewrites it against the whole of Applied State.
-    yield* writeAttemptTargetNodes(deployment.id, yield* loadAppliedNodeConfigs(input.environmentId));
+    yield* writeTargetNodeList(deployment.id, yield* loadAppliedNodeConfigs(input.environmentId));
     const authorizations = yield* actionableVolumeDeletionAuthorizations(
       input.environmentId,
       target.volumeDeletionAuthorizations,

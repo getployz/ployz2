@@ -29,8 +29,7 @@ import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-events.server";
-import { attemptNodes, deploymentView } from "./deployment-view";
-import { snapshotNodeFacts } from "./attempt-target.server";
+import { targetNodes, deploymentView } from "./deployment-view";
 import { deploymentRowColumns } from "./deployment-row.server";
 import { environmentDeployment } from "./tables";
 import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
@@ -210,7 +209,7 @@ export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(func
   const organization = yield* requireOrganization(actor, input.organizationSlug);
   const { drizzle } = yield* Database;
   const table = environmentDeployment;
-  /** A page of the attempts whose target list holds the node, older than `before`; attempts without a list never match. */
+  /** A page of the attempts whose Target Node List holds the node, older than `before`. */
   const candidates = (before: string | null) => drizzle.select({
     id: table.id, message: table.message, createdAt: table.createdAt, status: table.status, failureMessage: table.failureMessage,
     planned: sql<boolean>`${table.deployPreview} is not null`, targetNodes: table.targetNodes,
@@ -221,7 +220,7 @@ export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(func
     sql`${table.targetNodes} -> 'nodes' @> ${JSON.stringify([{ nodeId: input.nodeId }])}::jsonb`,
     before === null ? undefined : olderThan(before),
   )).orderBy(desc(table.createdAt), desc(table.id)).limit(PAGE_SIZE).pipe(Effect.map((rows) => rows.map((row) => {
-    const { nodes, progress } = attemptNodes(row.targetNodes, row.runtimeProgress);
+    const { nodes, progress } = targetNodes(row.targetNodes, row.runtimeProgress);
     const view = deploymentView({ deployment: row, progress, nodes });
     const outcome = view.nodes.find((node) => node.nodeId === input.nodeId)?.outcome ?? "unchanged";
     return { id: row.id, message: row.message, createdAt: row.createdAt, outcome };
@@ -272,8 +271,8 @@ export const listEnvironmentDeployments = Effect.fn("Deployments.listEnvironment
 });
 
 /**
- * One attempt: its row (with its target list) and the service configs it deployed, for card details. An attempt from
- * before target lists also gets its nodes from its snapshots (`snapshotNodes`). Null when the organization has no such attempt.
+ * One attempt: its row (with its Target Node List) and the service configs it deployed, for the service panel's Details.
+ * Null when the organization has no such attempt.
  */
 export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt")(function* (
   actor: Actor,
@@ -283,19 +282,15 @@ export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt"
   const { drizzle } = yield* Database;
   const [[row], snapshots] = yield* Effect.all([
     selectAttempts(drizzle, organization.id, eq(environmentDeployment.id, input.deploymentId)),
-    drizzle.select({ nodeType: environmentNodeConfigSnapshot.nodeType, nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
+    drizzle.select({ nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
       .from(environmentNodeConfigSnapshot)
       .where(and(
         eq(environmentNodeConfigSnapshot.organizationId, organization.id),
         eq(environmentNodeConfigSnapshot.environmentDeploymentId, input.deploymentId),
+        eq(environmentNodeConfigSnapshot.nodeType, "service"),
       )),
   ]);
   if (!row) return null;
-  return {
-    row,
-    // Sealed variable ciphertext stays on the server.
-    serviceConfigs: snapshots.filter((snapshot) => snapshot.nodeType === "service")
-      .map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })),
-    snapshotNodes: row.targetNodes === null ? snapshots.map(snapshotNodeFacts) : null,
-  };
+  // Sealed variable ciphertext stays on the server.
+  return { row, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
 });

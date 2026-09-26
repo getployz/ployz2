@@ -3,7 +3,7 @@ import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/co
 import { collectionOptions, eq, liveQueryCollectionOptions, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useQuery, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { attemptNodes, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView, type SnapshotNode } from "#/modules/deployments/deployment-view";
+import { targetNodes, deploymentView, type TargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentsCollection,
@@ -87,12 +87,17 @@ function deploymentSummary(deployment: DeploymentHistoryRow): EnvironmentDeploym
   return { ...decoded, deployPreview: deployment.deployPreview === null ? null : parseSdkDeployPreview(deployment.deployPreview) };
 }
 
+/** Whether the Org Store holds the attempt, so Deployment Mode draws it with no per-attempt read. Needs a loaded Org Store. */
+export function isAttemptInOrgStore(organizationSlug: string, scope: CollectionScope, deploymentId: string) {
+  return getEnvironmentDeploymentsCollection(organizationSlug, scope).has(deploymentId);
+}
+
 /** Admission and Saved State commands can also replace a queued attempt's history. */
 export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
   await reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope));
 }
 
-export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView };
+export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: TargetNode[]; view: DeploymentView };
 /** The attempt Deployment Mode shows. `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
 export type ViewedAttempt = DeploymentAttempt & { buildPending: boolean };
 
@@ -107,34 +112,29 @@ function useStoredAttempts(organizationSlug: string, environmentId: string) {
   return data;
 }
 
-/** One attempt through the deployment view projection; `snapshotNodes` stand in for the target node list an old attempt lacks. */
-function viewAttempt(deployment: EnvironmentDeploymentSummary, { snapshotNodes, buildLog }: { snapshotNodes?: readonly SnapshotNode[] | null; buildLog?: BuildLog | null } = {}): DeploymentAttempt {
-  const { nodes, progress } = attemptNodes(deployment.targetNodes, deployment.runtimeProgress, snapshotNodes ?? []);
+/** One attempt through the deployment view projection. */
+function viewAttempt(deployment: EnvironmentDeploymentSummary, buildLog?: BuildLog | null): DeploymentAttempt {
+  const { nodes, progress } = targetNodes(deployment.targetNodes, deployment.runtimeProgress);
   const view = deploymentView({ deployment: { ...deployment, planned: deployment.deployPreview !== null }, progress, nodes, buildLog });
   return { deployment, nodes, view };
 }
 
 /**
  * The attempt Deployment Mode shows, through the deployment view projection; null when the environment has no such attempt.
- * An attempt the Org Store holds with its target node list needs no read. One outside it, or from before target lists, comes
- * from its per-attempt Remote Read: `pending` until it arrives, never suspending. `buildLog` also reads the attempt's Build Steps
- * and output tails (polled until it finishes) for per-image build stages and tails.
+ * An attempt the Org Store holds needs no read; one outside it comes from its per-attempt Remote Read, `pending` until it
+ * arrives. `buildLog` also reads the attempt's Build Steps and output tails (polled until it finishes) for per-image build
+ * stages and tails.
  */
 export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}) {
   const stored = useStoredAttempts(organizationSlug, environmentId).find((candidate) => candidate.id === deploymentId);
-  const { data: read, isPending } = useQuery({
-    ...deploymentAttemptQueryOptions(organizationSlug, stored?.targetNodes ? null : deploymentId),
-    // A failed read (not a missing attempt, which reads null) fails the canvas route.
-    throwOnError: true,
-  });
-  const remote = read?.row.environmentId === environmentId ? read : null;
-  const deployment = stored ?? (remote ? deploymentSummary(remote.row) : undefined);
-  const tailId = buildLog && deployment && (deployment.targetNodes?.nodes ?? remote?.snapshotNodes ?? []).some((node) => node.needsBuild) ? deployment.id : null;
+  // useQuery, not useSuspenseQuery: the header, deploy bar and inspector read this attempt too and must stay mounted while
+  // it loads, so only the canvas nodes wait (on `pending`). A failed read (not a missing attempt) still fails the route.
+  const { data: read, isPending } = useQuery({ ...deploymentAttemptQueryOptions(organizationSlug, stored ? null : deploymentId), throwOnError: true });
+  const deployment = stored ?? (read?.row.environmentId === environmentId ? deploymentSummary(read.row) : undefined);
+  const tailId = buildLog && deployment?.targetNodes.nodes.some((node) => node.needsBuild) ? deployment.id : null;
   const tail = useBuildTail(organizationSlug, tailId);
-  const attempt: ViewedAttempt | null = deployment && (deployment.targetNodes || remote)
-    ? { ...viewAttempt(deployment, { snapshotNodes: remote?.snapshotNodes, buildLog: tail.data }), buildPending: tailId !== null && tail.isPending }
-    : null;
-  return { attempt, pending: attempt === null && isPending };
+  const attempt: ViewedAttempt | null = deployment ? { ...viewAttempt(deployment, tail.data), buildPending: tailId !== null && tail.isPending } : null;
+  return { attempt, pending: !deployment && isPending };
 }
 
 /** The attempts of an environment the Org Store holds (active ones plus the latest) through the deployment view projection, newest first. */

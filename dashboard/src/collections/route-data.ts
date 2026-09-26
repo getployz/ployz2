@@ -1,13 +1,10 @@
 import { environmentManager, type FetchInfiniteQueryOptions, type FetchQueryOptions, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { notFound } from "@tanstack/react-router";
 import type { CollectionScope } from "./scope";
-import { getEnvironmentDeploymentsCollection } from "./collections";
 import { orgStoreOptions } from "./org-store";
 import {
   loadWorkspaceEnvironment, organizationStateQueryOptions, preloadWorkspace, readWorkspace,
 } from "#/modules/environment-design/workspace.queries";
-import { deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
-import { deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import type { EnvironmentBySlug } from "#/modules/environment-design/workspace-schemas";
 
 /**
@@ -43,6 +40,13 @@ export async function requireEnvironment(context: RouteDataContext, input: Envir
   return loadWorkspaceEnvironment(input, scopeOf(context));
 }
 
+/** Awaits the Org Store for a loader that decides from it; resolves at once on client navigations, where it is in memory. */
+export async function requireOrgStore(context: RouteDataContext, organizationSlug: string) {
+  const scope = scopeOf(context);
+  await context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scope));
+  return scope;
+}
+
 /** SSR failure fails the organization route: no org page can render without the Org Store. */
 export async function prefetchOrgStore(context: RouteDataContext, organizationSlug: string) {
   const ready = context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scopeOf(context)));
@@ -66,24 +70,7 @@ export async function prefetchRemotePages<T, K extends QueryKey, P>(context: Rou
   if (environmentManager.isServer()) await ready;
 }
 
-/**
- * The canvas's Deployment Mode reads, all started together: the viewed attempt's build tail and, unless the Org Store holds
- * the attempt with its target node list (the canvas then draws from the Org Store alone), its per-attempt read; and the open
- * deployment list's first page, keyed by the environment id the Org Store resolves. The Org Store is in memory on client navigations.
- */
-export async function prefetchDeploymentMode(context: RouteDataContext, params: EnvironmentBySlug, { deployment, deploymentList }: {
-  deployment: string | null; deploymentList?: boolean;
-}) {
-  const { organizationSlug } = params;
-  const scope = scopeOf(context);
-  const inOrgStore = (deploymentId: string) => context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scope)).then(
-    () => getEnvironmentDeploymentsCollection(organizationSlug, scope).get(deploymentId)?.targetNodes != null,
-    () => false,
-  );
-  await Promise.all([
-    deployment && prefetchRemote(context, deploymentBuildTailQueryOptions(organizationSlug, deployment)),
-    deployment && inOrgStore(deployment).then((held) => held ? undefined : prefetchRemote(context, deploymentAttemptQueryOptions(organizationSlug, deployment))),
-    deploymentList && requireEnvironment(context, params).then((environment) =>
-      prefetchRemotePages(context, environmentDeploymentsQueryOptions(organizationSlug, environment.id))),
-  ]);
+/** Awaits prefetches the loader started together (`false` skips one); loaders never await `Promise.all` themselves. */
+export async function prefetchTogether(...prefetches: Array<Promise<void> | false | null>) {
+  await Promise.all(prefetches);
 }

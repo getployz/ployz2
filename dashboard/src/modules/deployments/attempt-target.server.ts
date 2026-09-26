@@ -5,7 +5,7 @@ import { asRecord, asString } from "#/lib/json";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
-import type { AttemptTargetNodes } from "./deployment-contract";
+import type { TargetNodeList } from "./deployment-contract";
 import { environmentDeployment } from "./tables";
 
 type Node = { nodeType: "service" | "volume"; nodeId: string; config: unknown };
@@ -15,7 +15,7 @@ type Node = { nodeType: "service" | "volume"; nodeId: string; config: unknown };
  * `name` is a service's private DNS name (its Image Build and runtime service name) or a volume's name; only a Git-sourced
  * service builds an image.
  */
-export function snapshotNodeFacts({ nodeType, nodeId, config }: Node): Omit<AttemptTargetNodes["nodes"][number], "changed" | "removed"> {
+export function snapshotNodeFacts({ nodeType, nodeId, config }: Node): Omit<TargetNodeList["nodes"][number], "changed" | "removed"> {
   const record = asRecord(config);
   const source = nodeType === "service" ? asRecord(record?.["source"]) : null;
   const kind = source?.["type"];
@@ -36,14 +36,14 @@ export function snapshotNodeFacts({ nodeType, nodeId, config }: Node): Omit<Atte
  * frozen with the Attempt Target when the attempt starts, rewritten against Applied State at that moment.
  * Runs inside a transaction that holds the environment's queue lock.
  */
-export const writeAttemptTargetNodes = Effect.fn("Deployments.writeAttemptTargetNodes")(function* (
+export const writeTargetNodeList = Effect.fn("Deployments.writeTargetNodeList")(function* (
   environmentDeploymentId: string, applied: ReadonlyMap<string, Node>,
 ) {
   const { drizzle } = yield* Database;
   const target = yield* drizzle.select({ nodeType: environmentNodeConfigSnapshot.nodeType, nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
     .from(environmentNodeConfigSnapshot).where(eq(environmentNodeConfigSnapshot.environmentDeploymentId, environmentDeploymentId));
   const targetKeys = new Set(target.map((node) => `${node.nodeType}:${node.nodeId}`));
-  const targetNodes: AttemptTargetNodes = {
+  const targetNodes: TargetNodeList = {
     version: 1,
     nodes: [
       ...target.map((node) => {

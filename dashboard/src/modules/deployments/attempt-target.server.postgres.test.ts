@@ -8,9 +8,9 @@ import {
 } from "#/modules/environment-design/services";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
-import { writeAttemptTargetNodes } from "./attempt-target.server";
+import { writeTargetNodeList } from "./attempt-target.server";
 import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
-import { attemptNodes, deploymentView } from "./deployment-view";
+import { targetNodes, deploymentView } from "./deployment-view";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
 const userId = "00000000-0000-4000-8000-000000000902";
@@ -81,13 +81,13 @@ it("writes the target node list against Applied State, counting a failed attempt
 
   // As the attempt's start writes it: against the whole of Applied State.
   await harness.runTransaction(() => loadEnvironmentSnapshotProjection({ kind: "environment", environmentId }).pipe(
-    Effect.flatMap((projection) => writeAttemptTargetNodes(target, projection.appliedSavedNodeByKey)),
+    Effect.flatMap((projection) => writeTargetNodeList(target, projection.appliedSavedNodeByKey)),
     Effect.provideService(SecretEncryption, encryption),
   ));
 
   const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, target));
-  expect(row?.targetNodes?.version).toBe(1);
-  expect(Object.fromEntries(row?.targetNodes?.nodes.map((node) => [node.nodeId, node]) ?? [])).toEqual({
+  expect(row?.targetNodes.version).toBe(1);
+  expect(Object.fromEntries(row?.targetNodes.nodes.map((node) => [node.nodeId, node]) ?? [])).toEqual({
     // The failed attempt confirmed api at nginx:2, so it is Applied State: unchanged.
     [api]: { nodeId: api, nodeType: "service", name: "api", changed: false, removed: false, needsBuild: false, source: { kind: "image", label: "nginx:2" }, mounts: [] },
     // Its web never finished, so Applied State still has nginx:1.
@@ -97,7 +97,8 @@ it("writes the target node list against Applied State, counting a failed attempt
     [old]: { nodeId: old, nodeType: "service", name: "old", changed: true, removed: true, needsBuild: false, source: { kind: "image", label: "nginx:1" }, mounts: [] },
   });
 
-  const { nodes, progress } = attemptNodes(row?.targetNodes ?? null, null);
+  if (!row) throw new Error("Missing target attempt");
+  const { nodes, progress } = targetNodes(row.targetNodes, null);
   const view = deploymentView({ deployment: { status: "applied", failureMessage: null, planned: true }, progress, nodes });
   expect(Object.fromEntries(view.nodes.map((node) => [node.nodeId, node.outcome]))).toEqual({
     [api]: "unchanged", [web]: "deployed", [data]: "unchanged", [build]: "deployed", [old]: "removed",

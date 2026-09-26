@@ -6,7 +6,7 @@ import { useParams } from "@tanstack/react-router";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getCanvasPositionsCollection, getRawServicesCollection } from "#/collections/collections";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import type { AttemptTargetNode } from "#/modules/deployments/deployment-view";
+import type { TargetNode } from "#/modules/deployments/deployment-view";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { BackToLive } from "../deployment-mode";
 import { canvasNodeTypes } from "./canvas-node-types";
@@ -38,7 +38,7 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.environmentId, environmentId))
       .select(({ service }) => ({ id: service.id, name: service.name })),
   });
-  const positionOf = (node: AttemptTargetNode) => {
+  const positionOf = (node: TargetNode) => {
     const row = positionRows.find((candidate) => candidate.resourceType === node.nodeType && candidate.resourceId === node.nodeId);
     return row ? { x: row.x, y: row.y } : undefined;
   };

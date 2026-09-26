@@ -25,7 +25,7 @@ import {
 import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
-import { writeAttemptTargetNodes } from "./attempt-target.server";
+import { writeTargetNodeList } from "./attempt-target.server";
 import { coreOperationWatch } from "#/modules/operations/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -392,7 +392,7 @@ export const beginEnvironmentDeploymentPlanning = Effect.fn(
     const environmentId = yield* lockDeploymentEnvironment(input.environmentDeploymentId);
     if (environmentId) {
       const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId });
-      yield* writeAttemptTargetNodes(input.environmentDeploymentId, projection.appliedSavedNodeByKey);
+      yield* writeTargetNodeList(input.environmentDeploymentId, projection.appliedSavedNodeByKey);
     }
     return true;
   })).pipe(

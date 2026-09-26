@@ -47,7 +47,7 @@ it("pages an environment's attempts 20 at a time, newest first, ties broken by i
   expect(page3.next).toBeNull();
 });
 
-it("reads one attempt with the service configs it deployed, without sealed ciphertext, and its nodes when it has no target list", async () => {
+it("reads one attempt with the service configs it deployed, without sealed ciphertext", async () => {
   const attempt = attempts[0]?.id ?? "";
   await harness.db.insert(schema.environmentNodeConfigSnapshot).values([{
     organizationId, environmentId, environmentDeploymentId: attempt, nodeType: "service", nodeId: api, nodeLineageId: api,
@@ -61,9 +61,5 @@ it("reads one attempt with the service configs it deployed, without sealed ciphe
   expect(found?.row).toMatchObject({ id: attempt, environmentId, projectSlug: "shop" });
   expect(found?.serviceConfigs.map((config) => config.nodeId)).toEqual([api]);
   expect(JSON.stringify(found?.serviceConfigs)).not.toContain("ciphertext");
-  expect(found?.snapshotNodes).toEqual([
-    { nodeId: api, nodeType: "service", name: "api", needsBuild: false, source: { kind: "image", label: "nginx:1" }, mounts: [] },
-    { nodeId: data, nodeType: "volume", name: "data", needsBuild: false, source: null, mounts: [] },
-  ]);
   expect(await read(id(9999))).toBeNull();
 });

@@ -100,7 +100,7 @@ export const deploymentServiceVariablesQuerySchema = Schema.Struct({
  * with the Attempt Target when it starts. Never config: schema changes never touch frozen rows. `name` is a service's private DNS
  * name (its Image Build and runtime service name) or a volume's name.
  */
-export const attemptTargetNodesSchema = Schema.Struct({
+export const targetNodeListSchema = Schema.Struct({
   version: Schema.Literal(1),
   nodes: Schema.Array(Schema.Struct({
     nodeId: Schema.String,
@@ -115,7 +115,7 @@ export const attemptTargetNodesSchema = Schema.Struct({
     mounts: Schema.Array(Schema.String),
   })),
 });
-export type AttemptTargetNodes = typeof attemptTargetNodesSchema.Type;
+export type TargetNodeList = typeof targetNodeListSchema.Type;
 
 export const environmentDeploymentSummarySchema = Schema.Struct({
   id: Uuid,
@@ -129,7 +129,7 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   deployPreview: Schema.NullOr(runtimeDeployPreviewSchema),
   runtimeProgress: Schema.NullOr(deploymentProgressSchema),
   sourcePins: deploymentSourcePinsSchema,
-  targetNodes: Schema.NullOr(attemptTargetNodesSchema),
+  targetNodes: targetNodeListSchema,
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
   dispatchRequestedAt: Schema.NullOr(Schema.Date),

@@ -36,10 +36,10 @@ it("reads a node's Running attempt and its changing History, 20 a page", async (
   const [saved] = await harness.db.insert(schema.environmentSavedStateSnapshot).values({
     organizationId, environmentId, actorId: userId, intent: { version: 1, environmentSlug: "production", services: [], volumes: [] }, volumeDeletionAuthorizations: [],
   }).returning();
-  const deployment = (deploymentId: string, minute: number, status: "applied" | "failed", nodes: ReturnType<typeof target>[] | null, runtimeProgress: DeploymentProgress | null = null) => ({
+  const deployment = (deploymentId: string, minute: number, status: "applied" | "failed", nodes: ReturnType<typeof target>[], runtimeProgress: DeploymentProgress | null = null) => ({
     id: deploymentId, organizationId, environmentId, savedStateSnapshotId: saved?.id ?? "", status, message: deploymentId,
     triggerOrigin: { origin: "manual" as const, actorId: userId }, createdAt: new Date(Date.UTC(2026, 8, 1, 0, minute)),
-    targetNodes: nodes && { version: 1 as const, nodes }, runtimeProgress,
+    targetNodes: { version: 1 as const, nodes }, runtimeProgress,
   });
   // `first` deployed api; `second` only added worker (api Unchanged); `third` failed api's health check, so `first` still serves it.
   // Then 30 more failed attempts in pairs that share a creation time, every fifth leaving api unchanged.
@@ -47,7 +47,8 @@ it("reads a node's Running attempt and its changing History, 20 a page", async (
     deployment(first, 1, "applied", [target(api, "api", true)]),
     deployment(second, 2, "applied", [target(api, "api", false), target(worker, "worker", true)]),
     deployment(third, 3, "failed", [target(api, "api", true), target(worker, "worker", false)], failedApi),
-    deployment(listless, 4, "applied", null),
+    // Migrated from before Target Node Lists: an empty list, so it never shows.
+    deployment(listless, 4, "applied", []),
     ...extra.map((deploymentId, index) => deployment(deploymentId, 10 + Math.floor(index / 2), "failed", [target(api, "api", index % 5 !== 0)])),
   ]);
   const read = (before?: string) => harness.runEffect(listNodeDeployments({ userId }, { organizationSlug: "acme", environmentId, nodeId: api, before }));

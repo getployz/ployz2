@@ -2373,9 +2373,9 @@
     {
       "type": "jsonb",
       "typeSchema": null,
-      "notNull": false,
+      "notNull": true,
       "dimensions": 0,
-      "default": null,
+      "default": "'{\"version\":1,\"nodes\":[]}'",
       "generated": null,
       "identity": null,
       "name": "target_nodes",

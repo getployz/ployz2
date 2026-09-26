@@ -18,7 +18,7 @@ export const dataSources = {
   "modules/environment-design/environment-document.collection.ts": { kind: "org-store", freshness: "derived from environments and projects" },
   "modules/environment-design/resource.collection.ts": { kind: "org-store", freshness: "derived from resources, lineages, positions, and documents" },
   "modules/services/services.collection.ts": { kind: "org-store", freshness: "derived from services and documents" },
-  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (active attempts plus the latest per Environment, with their target node lists); an attempt outside them, or from before target lists, and the paged deployment list come from the deployment-history.queries.ts Remote Reads, with live status from the Org Store for rows it holds" },
+  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (active attempts plus the latest per Environment, with their Target Node Lists); an attempt outside them and the paged deployment list come from the deployment-history.queries.ts Remote Reads, with live status from the Org Store for rows it holds" },
   "modules/deployments/environment-change-state.queries.ts": { kind: "org-store", freshness: "server projection, refetched when the change log names environment_change_state (deployment rows or saved revisions); progress events excluded" },
   "modules/runtime/runtime.collection.ts": { kind: "runtime", freshness: "SSE runtime watch" },
   "modules/runtime/container-log.stream.ts": { kind: "runtime", freshness: "SSE log stream, older pages on scroll" },
