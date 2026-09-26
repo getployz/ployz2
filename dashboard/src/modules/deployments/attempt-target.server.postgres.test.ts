@@ -1,13 +1,15 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import { Effect } from "effect";
 import type { MachineId } from "@ployz/sdk";
 import * as schema from "#/db/schema";
 import {
   createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createImageServiceSource, projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
-import { makeSecretEncryption } from "#/utils/encrypted-secret.server";
-import { freezeAttemptTargetNodes } from "./attempt-target.server";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
+import { writeAttemptTargetNodes } from "./attempt-target.server";
+import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
 import { attemptNodes, deploymentView } from "./deployment-view";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
@@ -17,6 +19,7 @@ const environmentId = "00000000-0000-4000-8000-000000000904";
 const [applied, failed, target] = ["911", "912", "913"].map((suffix) => `00000000-0000-4000-8000-000000000${suffix}`) as [string, string, string];
 const [api, web, old, data, build] = ["921", "922", "923", "924", "925"].map((suffix) => `00000000-0000-4000-8000-000000000${suffix}`) as [string, string, string, string, string];
 const machineId = "a".repeat(32) as MachineId;
+const encryption = makeSecretEncryption("test-encryption-secret");
 
 const service = (privateDns: string, image = "nginx:1") => projectServiceDeploymentConfig({
   source: createImageServiceSource({ image }), preDeployCommand: null, startCommand: null,
@@ -31,7 +34,7 @@ let harness: PostgresTestHarness;
 beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
 afterAll(async () => { await harness?.stop(); });
 
-it("freezes the target node list against Applied State, counting a failed attempt's confirmed services", async () => {
+it("writes the target node list against Applied State, counting a failed attempt's confirmed services", async () => {
   await harness.pool.query(`
     insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
     insert into "user" (id, email, name) values ('${userId}', 'owner@example.com', 'Owner');
@@ -62,7 +65,7 @@ it("freezes the target node list against Applied State, counting a failed attemp
   ]);
   await harness.db.insert(schema.environmentDeploymentSecret).values({
     organizationId, environmentDeploymentId: failed,
-    encryptedRuntimeOutcome: makeSecretEncryption("test-encryption-secret").encrypt(JSON.stringify(outcome)),
+    encryptedRuntimeOutcome: encryption.encrypt(JSON.stringify(outcome)),
   });
   const snapshot = (deploymentId: string, nodeId: string, config: typeof schema.environmentNodeConfigSnapshot.$inferInsert["config"], nodeType: "service" | "volume" = "service") => ({
     organizationId, environmentId, environmentDeploymentId: deploymentId, nodeType, nodeId, nodeLineageId: nodeId, config,
@@ -71,27 +74,31 @@ it("freezes the target node list against Applied State, counting a failed attemp
     snapshot(applied, api, service("api")), snapshot(applied, web, service("web")), snapshot(applied, old, service("old")),
     snapshot(applied, data, { version: 2, name: "data" }, "volume"),
     snapshot(failed, api, service("api", "nginx:2")), snapshot(failed, web, service("web", "nginx:2")),
-    snapshot(target, api, service("api", "nginx:2")), snapshot(target, web, service("web", "nginx:2")),
+    snapshot(target, api, service("api", "nginx:2")), snapshot(target, web, { ...service("web", "nginx:2"), mounts: [{ volumeResourceId: data, target: "/data" }] }),
     snapshot(target, data, { version: 2, name: "data" }, "volume"),
-    snapshot(target, build, { ...service("build"), source: { type: "git" } }),
+    snapshot(target, build, { ...service("build"), source: { type: "git", repository: "acme/build" } }),
   ]);
 
-  await harness.runTransaction(() => freezeAttemptTargetNodes({ environmentId, environmentDeploymentId: target }));
+  // As the attempt's start writes it: against the whole of Applied State.
+  await harness.runTransaction(() => loadEnvironmentSnapshotProjection({ kind: "environment", environmentId }).pipe(
+    Effect.flatMap((projection) => writeAttemptTargetNodes(target, projection.appliedSavedNodeByKey)),
+    Effect.provideService(SecretEncryption, encryption),
+  ));
 
   const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, target));
   expect(row?.targetNodes?.version).toBe(1);
   expect(Object.fromEntries(row?.targetNodes?.nodes.map((node) => [node.nodeId, node]) ?? [])).toEqual({
     // The failed attempt confirmed api at nginx:2, so it is Applied State: unchanged.
-    [api]: { nodeId: api, nodeType: "service", name: "api", changed: false, removed: false, needsBuild: false },
+    [api]: { nodeId: api, nodeType: "service", name: "api", changed: false, removed: false, needsBuild: false, source: { kind: "image", label: "nginx:2" }, mounts: [] },
     // Its web never finished, so Applied State still has nginx:1.
-    [web]: { nodeId: web, nodeType: "service", name: "web", changed: true, removed: false, needsBuild: false },
-    [data]: { nodeId: data, nodeType: "volume", name: "data", changed: false, removed: false, needsBuild: false },
-    [build]: { nodeId: build, nodeType: "service", name: "build", changed: true, removed: false, needsBuild: true },
-    [old]: { nodeId: old, nodeType: "service", name: "old", changed: true, removed: true, needsBuild: false },
+    [web]: { nodeId: web, nodeType: "service", name: "web", changed: true, removed: false, needsBuild: false, source: { kind: "image", label: "nginx:2" }, mounts: [data] },
+    [data]: { nodeId: data, nodeType: "volume", name: "data", changed: false, removed: false, needsBuild: false, source: null, mounts: [] },
+    [build]: { nodeId: build, nodeType: "service", name: "build", changed: true, removed: false, needsBuild: true, source: { kind: "git", label: "acme/build" }, mounts: [] },
+    [old]: { nodeId: old, nodeType: "service", name: "old", changed: true, removed: true, needsBuild: false, source: { kind: "image", label: "nginx:1" }, mounts: [] },
   });
 
   const { nodes, progress } = attemptNodes(row?.targetNodes ?? null, null);
-  const view = deploymentView({ deployment: { status: "applied", failureMessage: null, deployPreview: {} }, progress, nodes });
+  const view = deploymentView({ deployment: { status: "applied", failureMessage: null, planned: true }, progress, nodes });
   expect(Object.fromEntries(view.nodes.map((node) => [node.nodeId, node.outcome]))).toEqual({
     [api]: "unchanged", [web]: "deployed", [data]: "unchanged", [build]: "deployed", [old]: "removed",
   });

@@ -1,12 +1,12 @@
 import { Suspense } from "react";
 import { Link, useLoaderData, useParams } from "@tanstack/react-router";
 import { Badge } from "#/components/ui/badge";
-import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { TabsContent } from "#/components/ui/tabs";
-import { useNodeDeployments, type NodeDeployment } from "#/modules/deployments/node-deployments.queries";
+import { ShowMore } from "#/components/show-more";
+import { useNodeDeployments, type NodeDeployment } from "#/modules/deployments/deployment-history.queries";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { nodeOutcomeLabels, shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { formatRelativeTime } from "#/utils/relative-time";
@@ -43,7 +43,8 @@ function Deployments({ organizationSlug, serviceId }: { organizationSlug: string
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { data, hasNextPage, fetchNextPage, isFetchingNextPage } = useNodeDeployments(organizationSlug, environmentId, serviceId);
   const running = data.pages[0]?.running;
-  const history = data.pages.flatMap((page) => page.items);
+  // History holds the Running attempt too; it shows once, as Running.
+  const history = data.pages.flatMap((page) => page.items).filter((deployment) => deployment.id !== running?.id);
   const open = (deployment: NodeDeployment, tab?: "deploy-logs") =>
     <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId }} search={{ deployment: deployment.id, tab }} />;
 
@@ -73,9 +74,7 @@ function Deployments({ organizationSlug, serviceId }: { organizationSlug: string
         ) : (
           <p className="text-muted-foreground">No other deployments changed this service.</p>
         )}
-        {hasNextPage && (
-          <Button variant="outline" size="sm" className="self-start" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>Show more</Button>
-        )}
+        <ShowMore hasMore={hasNextPage} loading={isFetchingNextPage} onShowMore={() => void fetchNextPage()} />
       </section>
     </>
   );

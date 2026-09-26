@@ -9,11 +9,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/com
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
+import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { cn } from "#/lib/utils";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { builtOnLine, nodeOutcomeLabels, type Stage } from "#/modules/deployments/deployment-view";
 import { canvasNodeTransition } from "./constants";
-import { getServiceIcon, getServiceSubtitle } from "./service-node-helpers";
 import type { CanvasDeploymentNodeData } from "./types";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 import { useDeploymentMode } from "../deployment-mode";
@@ -43,19 +43,18 @@ function StageLabel({ name, stage }: { name: string; stage: Stage }) {
  */
 export function DeploymentNodeCard({ data, className }: { data: CanvasDeploymentNodeData; className?: string }) {
   const { node, view } = data;
-  const source = data.config?.source ?? null;
-  const subtitle = source ? getServiceSubtitle({ source }) : node.nodeType === "volume" ? "Named volume" : null;
+  const subtitle = node.source?.label ?? (node.nodeType === "volume" ? "Named volume" : null);
   const dimmed = view.outcome === "unchanged" || view.outcome === "not_attempted";
   const badge = outcomeBadges[view.outcome];
   // Until the build tail arrives a built service's stages are unknown; claiming Queued would be false.
-  const pending = useDeploymentMode()?.buildPending === true && node.image !== null && !dimmed;
+  const pending = useDeploymentMode()?.buildPending === true && node.needsBuild && !dimmed;
   return (
     <Card size="node" state={badge === "destructive" || badge === "info" ? badge : undefined}
       data-canvas-node={node.nodeId} data-dimmed={dimmed} className={cn("justify-between", dimmed && "opacity-40", className)}>
       <CardHeader>
         <div className="flex items-start gap-3">
           <Avatar>
-            <AvatarFallback>{source ? getServiceIcon({ source }) : node.nodeType === "volume" ? <HardDriveIcon /> : <PackageIcon />}</AvatarFallback>
+            <AvatarFallback>{node.source?.kind === "git" ? <GitHubMarkIcon /> : node.nodeType === "volume" ? <HardDriveIcon /> : <PackageIcon />}</AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1 overflow-hidden">
             <CardTitle className="truncate">{data.name}</CardTitle>

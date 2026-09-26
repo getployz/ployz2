@@ -52,13 +52,12 @@ import {
 import { runInngestEffect } from "#/server/run.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export type GithubIngestionEffectRunner = <A, E extends Error>(
   effect: Effect.Effect<
     A,
     E,
-    AppConfig | Database | InngestClient | GithubApi | SecretEncryption
+    AppConfig | Database | InngestClient | GithubApi
   >,
 ) => Promise<A>;
 

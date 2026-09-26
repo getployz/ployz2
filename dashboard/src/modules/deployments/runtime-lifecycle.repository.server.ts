@@ -25,7 +25,7 @@ import {
 import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
-import { freezeAttemptTargetNodes } from "./attempt-target.server";
+import { writeAttemptTargetNodes } from "./attempt-target.server";
 import { coreOperationWatch } from "#/modules/operations/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -139,10 +139,6 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
           )
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
-        // Starting freezes the Attempt Target: its node list is rediffed against Applied State now.
-        if (input.status === "planning" && environmentId) {
-          yield* freezeAttemptTargetNodes({ environmentId, environmentDeploymentId: input.environmentDeploymentId });
-        }
         // An attempt leaving queued (building → planning, failed, cancelled) frees the queue for the pending attempt.
         if (environmentId) yield* dispatchPendingAfterCommit(environmentId);
         // An ended attempt stops its Image Builds; a running build step observes this and aborts.
@@ -388,10 +384,18 @@ export const markDeploymentStatus = Effect.fn(
 export const beginEnvironmentDeploymentPlanning = Effect.fn(
   "Deployments.beginEnvironmentDeploymentPlanning",
 )(function* (input: { readonly environmentDeploymentId: string; readonly expectedInngestRunId?: string }) {
-  const changed = yield* markDeploymentStatus({
-    ...input,
-    status: "planning",
-  }).pipe(
+  const database = yield* Database;
+  const changed = yield* database.transaction(Effect.gen(function* () {
+    const started = yield* markDeploymentStatus({ ...input, status: "planning" });
+    if (!started) return false;
+    // Starting freezes the target node list with the Attempt Target: rediffed against the whole of Applied State now.
+    const environmentId = yield* lockDeploymentEnvironment(input.environmentDeploymentId);
+    if (environmentId) {
+      const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId });
+      yield* writeAttemptTargetNodes(input.environmentDeploymentId, projection.appliedSavedNodeByKey);
+    }
+    return true;
+  })).pipe(
     Effect.catchTag("DeploymentQueueOccupied", () =>
       Effect.succeed("blocked" as const),
     ),
@@ -473,7 +477,7 @@ export const dispatchEnvironmentDeployment = Effect.fn("Deployments.dispatchAfte
  * An attempt leaving queued frees the queue for the pending attempt. Annotated: a failed dispatch
  * settles through markEnvironmentDeploymentStatus, which calls back here.
  */
-function dispatchPendingAfterCommit(environmentId: string): Effect.Effect<void, never, Database | InngestClient | SecretEncryption> {
+function dispatchPendingAfterCommit(environmentId: string): Effect.Effect<void, never, Database | InngestClient> {
   return afterDatabaseCommit(dispatchPendingDeployment(environmentId).pipe(
     Effect.catch((error) => Effect.logError("Failed to dispatch the pending deployment", error)
       .pipe(Effect.annotateLogs({ environmentId }))),

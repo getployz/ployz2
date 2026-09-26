@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
-import { nodeDeploymentsQueryOptions } from "#/modules/deployments/node-deployments.queries";
+import { nodeDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,

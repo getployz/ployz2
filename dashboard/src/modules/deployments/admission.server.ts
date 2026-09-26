@@ -58,7 +58,8 @@ import {
   type DeploymentTriggerOrigin as DeploymentTriggerOriginType,
 } from "./deployment";
 import { Database } from "#/server/database.server";
-import { freezeAttemptTargetNodes } from "./attempt-target.server";
+import { writeAttemptTargetNodes } from "./attempt-target.server";
+import { loadAppliedNodeConfigs } from "./environment-state.repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 export type PreparedEnvironmentNodeSnapshot = Pick<
@@ -438,7 +439,8 @@ function writeQueuedSavedTarget(
       nodeSnapshots: target.nodeSnapshots,
       retryOfDeploymentId: input.retryOfDeploymentId,
     });
-    yield* freezeAttemptTargetNodes({ environmentId: input.environmentId, environmentDeploymentId: deployment.id });
+    // Provisional: the attempt's start rewrites it against the whole of Applied State.
+    yield* writeAttemptTargetNodes(deployment.id, yield* loadAppliedNodeConfigs(input.environmentId));
     const authorizations = yield* actionableVolumeDeletionAuthorizations(
       input.environmentId,
       target.volumeDeletionAuthorizations,

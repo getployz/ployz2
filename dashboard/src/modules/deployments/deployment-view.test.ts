@@ -16,10 +16,10 @@ const context = { serviceIdFor: (name: string | null) => name };
 const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null, image: string | null = null) =>
   ({ id, image, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
 const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: Partial<DeploymentViewInput["deployment"]> = {}): DeploymentViewInput["deployment"] =>
-  ({ status, failureMessage: null, deployPreview: null, ...extra });
-/** A service in the Attempt Target; `image` makes it a built one. */
-const node = ({ nodeId, changed, removed = false, image = null }: { nodeId: string; changed: boolean; removed?: boolean; image?: string | null }): AttemptTargetNode => ({
-  nodeId, changed, removed, image, nodeType: "service", name: nodeId,
+  ({ status, failureMessage: null, planned: false, ...extra });
+/** A service in the target node list, named by its id; `needsBuild` makes it a built one. */
+const node = ({ nodeId, changed, removed = false, needsBuild = false }: { nodeId: string; changed: boolean | null; removed?: boolean; needsBuild?: boolean }): AttemptTargetNode => ({
+  nodeId, changed, removed, needsBuild, nodeType: "service", name: nodeId, source: null, mounts: [],
 });
 
 describe("deployment view projection", () => {
@@ -61,7 +61,7 @@ describe("deployment view projection", () => {
     expect(progress.compensation).toEqual(["Replacement container stopped", "Previous container restart failed: StartContainer: unavailable"]);
     expect(JSON.stringify(progress)).not.toContain("never-publish");
 
-    const view = deploymentView({ deployment: deployment("failed", { deployPreview: {} }), progress, nodes: [
+    const view = deploymentView({ deployment: deployment("failed", { planned: true }), progress, nodes: [
       node({ nodeId: "svc-0", changed: true }), node({ nodeId: "svc-1", changed: true }), node({ nodeId: "svc-2", changed: true }), node({ nodeId: "db", changed: false }),
     ] });
     expect(view.nodes.map((n) => n.outcome)).toEqual(["deployed", "failed", "not_attempted", "unchanged"]);
@@ -75,8 +75,8 @@ describe("deployment view projection", () => {
     const view = deploymentView({
       deployment: deployment("failed", { failureMessage: "Image preparation failed" }),
       progress: { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "build", serviceId: "web", machineId: "m", machineName: "builder", message: null } },
-      nodes: [node({ nodeId: "api", changed: true, image: "api" }), node({ nodeId: "web", changed: true, image: "web" }),
-        node({ nodeId: "docs", changed: true, image: "docs" }), node({ nodeId: "worker", changed: true })],
+      nodes: [node({ nodeId: "api", changed: true, needsBuild: true }), node({ nodeId: "web", changed: true, needsBuild: true }),
+        node({ nodeId: "docs", changed: true, needsBuild: true }), node({ nodeId: "worker", changed: true })],
       buildLog: {
         steps: [
           step(1, 0, "stage:Upload", "Uploading source", 0, 1),
@@ -98,7 +98,7 @@ describe("deployment view projection", () => {
   it("says which Server each image builds on and why, only once the Engine chose", () => {
     const view = deploymentView({
       deployment: deployment("queued"), progress: null,
-      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki", "shop", "mail", "cron"].map((image) => node({ nodeId: image, changed: true, image })),
+      nodes: ["api", "web", "docs", "worker", "site", "blog", "wiki", "shop", "mail", "cron"].map((nodeId) => node({ nodeId, changed: true, needsBuild: true })),
       buildLog: {
         steps: [], output: [],
         imageBuilds: [
@@ -138,7 +138,7 @@ describe("deployment view projection", () => {
     const view = deploymentView({
       deployment: deployment("planning"),
       progress: { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "build", serviceId: "web", machineId: "m", machineName: "builder", message: null } },
-      nodes: [node({ nodeId: "api", changed: true, image: "api" }), node({ nodeId: "web", changed: true, image: "web" })],
+      nodes: [node({ nodeId: "api", changed: true, needsBuild: true }), node({ nodeId: "web", changed: true, needsBuild: true })],
       buildLog: { steps: [step(1, 1, "stage:Building", "api", 0, null), step(2, 1, "sha256:a", "[1/2] RUN make", 1, null)],
         output: [{ stepId: 2, text: "one\ntwo\n" }, { stepId: 2, text: "three\n" }] },
     });
@@ -148,7 +148,7 @@ describe("deployment view projection", () => {
   it("shows a queued attempt's Image Builds in parallel, and one failing while another still builds", () => {
     const view = deploymentView({
       deployment: deployment("queued"), progress: null,
-      nodes: [node({ nodeId: "api", changed: true, image: "api" }), node({ nodeId: "web", changed: true, image: "web" }), node({ nodeId: "docs", changed: true, image: "docs" })],
+      nodes: [node({ nodeId: "api", changed: true, needsBuild: true }), node({ nodeId: "web", changed: true, needsBuild: true }), node({ nodeId: "docs", changed: true, needsBuild: true })],
       buildLog: {
         steps: [
           step(1, 1, "stage:Building", "api", 0, null, null, "api"), step(2, 1, "sha256:a", "[1/2] RUN make", 1, null, null, "api"),
@@ -176,28 +176,28 @@ describe("deployment view projection", () => {
   });
 
   it("does not claim an unknown runtime outcome was never attempted", () => {
-    const view = deploymentView({ deployment: deployment("failed", { failureMessage: "Connection lost", deployPreview: {} }), progress: null, nodes: [node({ nodeId: "web", changed: true })] });
+    const view = deploymentView({ deployment: deployment("failed", { failureMessage: "Connection lost", planned: true }), progress: null, nodes: [node({ nodeId: "web", changed: true })] });
     expect(view.nodes[0]).toMatchObject({ outcome: "failed", deploy: { state: "failed" }, failure: { message: "Connection lost" } });
   });
 
-  it("renders an attempt from before target lists without nodes", () => {
-    const { nodes, progress } = attemptNodes(null, null);
-    const view = deploymentView({ deployment: deployment("failed", { failureMessage: "Connection lost" }), progress, nodes });
-    expect(view).toMatchObject({ status: "failed", nodes: [], changed: 0 });
-    expect(deploymentStatusLabel(view)).toBe("Failed · 0 of 0 deployed");
+  it("draws an attempt from before target lists from its snapshots, without Changed or Unchanged or a count", () => {
+    expect(deploymentStatusLabel(deploymentView({ deployment: deployment("failed"), ...attemptNodes(null, null) }))).toBe("Failed");
+    const snapshotNodes = [{ nodeId: "web", nodeType: "service" as const, name: "web", needsBuild: false, source: null, mounts: [] }];
+    const view = deploymentView({ deployment: deployment("failed", { failureMessage: "Connection lost" }), ...attemptNodes(null, null, snapshotNodes) });
+    expect(view).toMatchObject({ status: "failed", changed: null, nodes: [{ nodeId: "web", outcome: "failed" }] });
+    expect(deploymentStatusLabel(view)).toBe("Failed");
+    expect(deploymentView({ deployment: deployment("applied"), ...attemptNodes(null, null, snapshotNodes) }).nodes[0]?.outcome).toBe("deployed");
   });
 
-  it("reads the frozen target list, refined by the Engine's rows once they arrive", () => {
+  it("reads the target node list, refined by the Engine's rows once they arrive", () => {
+    const facts = { source: null, mounts: [] };
     const list = { version: 1 as const, nodes: [
-      { nodeId: "api", nodeType: "service" as const, name: "api", changed: true, removed: false, needsBuild: true },
-      { nodeId: "web", nodeType: "service" as const, name: "web", changed: true, removed: false, needsBuild: false },
-      { nodeId: "old", nodeType: "service" as const, name: "old", changed: true, removed: true, needsBuild: false },
-      { nodeId: "data", nodeType: "volume" as const, name: "data", changed: false, removed: false, needsBuild: false },
+      { nodeId: "api", nodeType: "service" as const, name: "api", changed: true, removed: false, needsBuild: true, ...facts },
+      { nodeId: "web", nodeType: "service" as const, name: "web", changed: true, removed: false, needsBuild: false, ...facts },
+      { nodeId: "old", nodeType: "service" as const, name: "old", changed: true, removed: true, needsBuild: false, ...facts },
+      { nodeId: "data", nodeType: "volume" as const, name: "data", changed: false, removed: false, needsBuild: false, ...facts },
     ] };
-    expect(attemptNodes(list, null).nodes.map(({ nodeId, changed, image }) => ({ nodeId, changed, image }))).toEqual([
-      { nodeId: "api", changed: true, image: "api" }, { nodeId: "web", changed: true, image: null },
-      { nodeId: "old", changed: true, image: null }, { nodeId: "data", changed: false, image: null },
-    ]);
+    expect(attemptNodes(list, null).nodes.map(({ nodeId, changed }) => [nodeId, changed])).toEqual([["api", true], ["web", true], ["old", true], ["data", false]]);
     // Only api has rows; the removed service's row arrives without a serviceId and resolves by name.
     const remove = row(0, { type: "remove_container", machine_id: "machine-0" as MachineId, container_id: "gone" as ContainerId });
     const rows = [{ ...row(1), service_name: "api" }, { ...remove, service_name: "old" }];

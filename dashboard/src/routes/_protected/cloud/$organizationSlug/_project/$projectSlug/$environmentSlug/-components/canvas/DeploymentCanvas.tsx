@@ -6,7 +6,6 @@ import { useParams } from "@tanstack/react-router";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getCanvasPositionsCollection, getRawServicesCollection } from "#/collections/collections";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { useAttemptServiceConfigs } from "#/modules/deployments/deployment-history.queries";
 import type { AttemptTargetNode } from "#/modules/deployments/deployment-view";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { BackToLive } from "../deployment-mode";
@@ -39,7 +38,6 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.environmentId, environmentId))
       .select(({ service }) => ({ id: service.id, name: service.name })),
   });
-  const configs = useAttemptServiceConfigs(organizationSlug, attempt.deployment.id);
   const positionOf = (node: AttemptTargetNode) => {
     const row = positionRows.find((candidate) => candidate.resourceType === node.nodeType && candidate.resourceId === node.nodeId);
     return row ? { x: row.x, y: row.y } : undefined;
@@ -56,14 +54,13 @@ export function DeploymentCanvas({ attempt, environmentId }: { attempt: Deployme
     return [{
       id: node.nodeId, type: "deployment", position,
       width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, draggable: false,
-      data: { node, name, view, config: configs.get(node.nodeId) ?? null },
+      data: { node, name, view },
     }];
   });
 
-  // Mount edges come straight from the snapshots; reference edges need the live services' slugs, so the mode leaves them out.
-  const edges = [...configs].flatMap(([nodeId, config]) => config.mounts.flatMap(({ volumeResourceId }) =>
-    nodes.some((candidate) => candidate.id === volumeResourceId)
-      ? [{ id: `mount:${volumeResourceId}:${nodeId}`, source: volumeResourceId, target: nodeId }] : []));
+  // Mount edges come straight from the target node list; reference edges need the live services' slugs, so the mode leaves them out.
+  const edges = attempt.nodes.flatMap((node) => node.mounts.flatMap((volumeId) =>
+    nodes.some((candidate) => candidate.id === volumeId) ? [{ id: `mount:${volumeId}:${node.nodeId}`, source: volumeId, target: node.nodeId }] : []));
 
   return (
     <div className="canvas-graph" data-deployment-canvas>

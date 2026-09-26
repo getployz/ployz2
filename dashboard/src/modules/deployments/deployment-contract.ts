@@ -74,20 +74,15 @@ export const deploymentBuildTailQuerySchema = Schema.Struct({
   deploymentId: Uuid,
 });
 
-/** `before` pages History back from that attempt. */
-export const nodeDeploymentsQuerySchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  environmentId: Uuid,
-  nodeId: Uuid,
-  before: Schema.optional(Uuid),
-});
-
 /** One page of an environment's attempts, newest first; `before` is the last attempt id of the previous page. */
 export const environmentDeploymentsQuerySchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
   before: Schema.optional(Uuid),
 });
+
+/** One page of a node's History. */
+export const nodeDeploymentsQuerySchema = Schema.Struct({ ...environmentDeploymentsQuerySchema.fields, nodeId: Uuid });
 
 export const deploymentAttemptQuerySchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
@@ -101,8 +96,8 @@ export const deploymentServiceVariablesQuerySchema = Schema.Struct({
 });
 
 /**
- * The Attempt Target's nodes as plain facts, diffed against Applied State when the attempt was admitted and
- * again when it started. Never config: schema changes never touch frozen rows. `name` is a service's private DNS
+ * The attempt's target node list as plain facts, diffed against Applied State: provisional while the attempt is queued, frozen
+ * with the Attempt Target when it starts. Never config: schema changes never touch frozen rows. `name` is a service's private DNS
  * name (its Image Build and runtime service name) or a volume's name.
  */
 export const attemptTargetNodesSchema = Schema.Struct({
@@ -114,6 +109,10 @@ export const attemptTargetNodesSchema = Schema.Struct({
     changed: Schema.Boolean,
     removed: Schema.Boolean,
     needsBuild: Schema.Boolean,
+    /** What a service's card shows of its source: a Git repository or an image; null for volumes and empty services. */
+    source: Schema.NullOr(Schema.Struct({ kind: Schema.Literals(["git", "image"]), label: Schema.String })),
+    /** The volume node ids a service mounts. */
+    mounts: Schema.Array(Schema.String),
   })),
 });
 export type AttemptTargetNodes = typeof attemptTargetNodesSchema.Type;
@@ -131,7 +130,6 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   runtimeProgress: Schema.NullOr(deploymentProgressSchema),
   sourcePins: deploymentSourcePinsSchema,
   targetNodes: Schema.NullOr(attemptTargetNodesSchema),
-  buildServiceIds: Schema.Array(Schema.String),
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
   dispatchRequestedAt: Schema.NullOr(Schema.Date),

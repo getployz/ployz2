@@ -15,7 +15,7 @@ const [first, second, third, listless] = [id(1), id(2), id(3), id(4)];
 const extra = Array.from({ length: 30 }, (_, index) => id(100 + index));
 
 /** A service in an attempt's frozen target list. */
-const target = (nodeId: string, name: string, changed: boolean) => ({ nodeId, nodeType: "service" as const, name, changed, removed: false, needsBuild: false });
+const target = (nodeId: string, name: string, changed: boolean) => ({ nodeId, nodeType: "service" as const, name, changed, removed: false, needsBuild: false, source: null, mounts: [] });
 const failedApi: DeploymentProgress = { completed: 0, total: 1, outcome: "failed", compensation: [], rows: [{ index: 0, machineId: "m", machineName: "server",
   serviceId: api, runtimeServiceId: null, serviceName: "api", displayName: null, operation: "replace_container", target: "c1", updateOrder: null,
   status: "failed", phase: null, elapsedMs: null, deadlineMs: null, health: null, error: "health check failed", containerId: "c1", startedAt: null, finishedAt: null }] };
@@ -58,9 +58,10 @@ it("reads a node's Running attempt and its changing History, 20 a page", async (
   expect(page1.items.map((item) => item.id)).toEqual(shown.slice(0, 20));
   expect(page1.next).toBe(shown[19]);
 
+  // Later pages skip the Running scan; History holds the Running attempt too, which the panel shows once.
   const page2 = await read(page1.next ?? undefined);
-  expect(page2.running?.id).toBe(first);
-  expect(page2.items.map((item) => item.id)).toEqual([...shown.slice(20), third]);
-  expect(page2.items.at(-1)?.outcome).toBe("failed");
+  expect(page2.running).toBeNull();
+  expect(page2.items.map((item) => item.id)).toEqual([...shown.slice(20), third, first]);
+  expect(page2.items.map((item) => item.outcome).slice(-2)).toEqual(["failed", "deployed"]);
   expect(page2.next).toBeNull();
 });

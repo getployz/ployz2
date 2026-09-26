@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { afterEach, expect, it } from "vitest";
 import { Tabs } from "#/components/ui/tabs";
-import { nodeDeploymentsQueryOptions, type NodeDeployment } from "#/modules/deployments/node-deployments.queries";
+import { nodeDeploymentsQueryOptions, type NodeDeployment } from "#/modules/deployments/deployment-history.queries";
 import { canvasRouteSearch } from "../../../-components/deployment-mode";
 import { ServiceDeploymentsTab } from "./ServiceDeploymentsTab";
 
@@ -16,9 +16,10 @@ const attempt = (id: string, message: string, outcome: NodeDeployment["outcome"]
 
 async function openTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The server read's one page: `first` still serves api after `third` failed it.
+  // The server read's one page: `first` still serves api after `third` failed it; History holds `first` too.
   queryClient.setQueryData(nodeDeploymentsQueryOptions("acme", environmentId, api).queryKey, {
-    pages: [{ running: attempt(first, "Ship api", "deployed"), items: [attempt(third, "Bump api", "failed")], next: null }], pageParams: [undefined],
+    pages: [{ running: attempt(first, "Ship api", "deployed"), items: [attempt(third, "Bump api", "failed"), attempt(first, "Ship api", "deployed")], next: null }],
+    pageParams: [undefined],
   });
 
   const root = createRootRoute({ component: Outlet });
@@ -45,6 +46,8 @@ it("shows the deployment still serving the service, its changing history, and op
   const router = await openTab();
   const running = screen.getByText("Running").closest("a");
   expect(running?.textContent).toContain("Ship api");
+  // The Running attempt shows once.
+  expect(screen.getAllByText(/Ship api/)).toHaveLength(1);
   expect(running?.getAttribute("href")).toBe(`/cloud/acme/shop/production/services/${api}?deployment=${first}&tab=deploy-logs`);
   expect(screen.getByText(/Bump api/).closest("a")?.textContent).toContain("Failed");
   expect(screen.queryByText("Show more")).toBeNull();

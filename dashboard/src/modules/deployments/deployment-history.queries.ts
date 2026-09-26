@@ -1,33 +1,52 @@
-import { infiniteQueryOptions, queryOptions, useSuspenseQuery, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions, useSuspenseInfiniteQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { parseServiceConfig, type ServiceConfig } from "@ployz/sdk/config";
 import type { CollectionScope } from "#/collections/scope";
-import { getDeploymentAttemptServerFn, listEnvironmentDeploymentsServerFn } from "./deployment.functions";
+import { getDeploymentAttemptServerFn, listEnvironmentDeploymentsServerFn, listNodeDeploymentsServerFn } from "./deployment.functions";
 
-type DeploymentPage = Awaited<ReturnType<typeof listEnvironmentDeploymentsServerFn>>;
-export type DeploymentHistoryRow = DeploymentPage["rows"][number];
+export type DeploymentHistoryRow = Awaited<ReturnType<typeof listEnvironmentDeploymentsServerFn>>["items"][number];
+export type NodeDeployment = NonNullable<Awaited<ReturnType<typeof listNodeDeploymentsServerFn>>["running"]>;
 
 const historyKey = (organizationSlug: string): Array<string | null> => ["deployment-history", organizationSlug];
 
-/** An environment's attempts, a page of 20 at a time, newest first. */
+/** Every deployment list pages the same way: newest first, each page naming the attempt the next one starts before. */
+const pagedHistory = {
+  // SAFETY: widens the first page's cursor (none) to the attempt id later pages start before.
+  initialPageParam: undefined as string | undefined,
+  getNextPageParam: (page: { next: string | null }) => page.next ?? undefined,
+};
+
+/** An environment's attempts, a page at a time. */
 export function environmentDeploymentsQueryOptions(organizationSlug: string, environmentId: string) {
   return infiniteQueryOptions({
-    queryKey: [...historyKey(organizationSlug), "environment", environmentId],
+    ...pagedHistory,
     // Refetched when the change stream names a deployment row change (invalidateDeploymentHistory).
     staleTime: Infinity,
-    // SAFETY: widens the first page's cursor (none) to the attempt id later pages start before.
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (page: DeploymentPage) => page.next ?? undefined,
+    queryKey: [...historyKey(organizationSlug), "environment", environmentId],
     queryFn: ({ pageParam, signal }) =>
       listEnvironmentDeploymentsServerFn({ data: { organizationSlug, environmentId, before: pageParam }, signal }),
   });
 }
 
-/** Starts the list's first page before it opens. */
-export function warmEnvironmentDeployments(queryClient: QueryClient, organizationSlug: string, environmentId: string) {
-  void queryClient.prefetchInfiniteQuery(environmentDeploymentsQueryOptions(organizationSlug, environmentId));
+/** A node's History a page at a time; the first page also names its Running attempt. */
+export function nodeDeploymentsQueryOptions(organizationSlug: string, environmentId: string, nodeId: string) {
+  return infiniteQueryOptions({
+    ...pagedHistory,
+    // Refetched when the change stream names a deployment row change (invalidateDeploymentHistory).
+    staleTime: Infinity,
+    queryKey: [...historyKey(organizationSlug), "node", environmentId, nodeId],
+    queryFn: ({ pageParam, signal }) =>
+      listNodeDeploymentsServerFn({ data: { organizationSlug, environmentId, nodeId, before: pageParam }, signal }),
+  });
 }
 
-/** One attempt's row and the service configs it deployed; null without an id, or when the organization has no such attempt. */
+export function useNodeDeployments(organizationSlug: string, environmentId: string, nodeId: string) {
+  return useSuspenseInfiniteQuery(nodeDeploymentsQueryOptions(organizationSlug, environmentId, nodeId));
+}
+
+/**
+ * One attempt's row and the service configs it deployed (plus, before target lists, its nodes from its snapshots);
+ * null without an id, or when the organization has no such attempt.
+ */
 export function deploymentAttemptQueryOptions(organizationSlug: string, deploymentId: string | null) {
   return queryOptions({
     queryKey: [...historyKey(organizationSlug), "attempt", deploymentId],
@@ -44,7 +63,7 @@ export function invalidateDeploymentHistory(organizationSlug: string, scope: Col
 }
 
 /**
- * The service configs one attempt deployed, by node id, for card details (icon, source, mounts, the panel's Details).
+ * The service configs one attempt deployed, by node id, for the service panel's Details. Suspends until they arrive.
  * A removed service has none: the attempt holds no snapshot of it.
  */
 export function useAttemptServiceConfigs(organizationSlug: string, deploymentId: string): Map<string, ServiceConfig> {

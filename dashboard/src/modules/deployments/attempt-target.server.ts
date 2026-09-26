@@ -6,44 +6,53 @@ import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import type { AttemptTargetNodes } from "./deployment-contract";
-import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
 import { environmentDeployment } from "./tables";
 
 type Node = { nodeType: "service" | "volume"; nodeId: string; config: unknown };
 
-// Raw JSON reads: an applied config may predate today's config schema.
-const nameOf = ({ nodeType, config }: Node) => asString(asRecord(config)?.[nodeType === "service" ? "privateDns" : "name"]) ?? "";
-const needsBuild = ({ nodeType, config }: Node) => nodeType === "service" && asRecord(asRecord(config)?.["source"])?.["type"] === "git";
+/**
+ * A snapshot's node facts for the target node list. Raw JSON reads: an applied config may predate today's config schema.
+ * `name` is a service's private DNS name (its Image Build and runtime service name) or a volume's name; only a Git-sourced
+ * service builds an image.
+ */
+export function snapshotNodeFacts({ nodeType, nodeId, config }: Node): Omit<AttemptTargetNodes["nodes"][number], "changed" | "removed"> {
+  const record = asRecord(config);
+  const source = nodeType === "service" ? asRecord(record?.["source"]) : null;
+  const kind = source?.["type"];
+  const label = asString(source?.[kind === "git" ? "repository" : "image"]);
+  const mounts = record?.["mounts"];
+  return {
+    nodeId, nodeType,
+    name: asString(record?.[nodeType === "service" ? "privateDns" : "name"]) ?? "",
+    needsBuild: kind === "git",
+    source: (kind === "git" || kind === "image") && label ? { kind, label } : null,
+    mounts: (Array.isArray(mounts) ? mounts : []).flatMap((mount) => asString(asRecord(mount)?.["volumeResourceId"]) ?? []),
+  };
+}
 
 /**
- * Freezes the attempt's target node list: each of its snapshots diffed against the environment's Applied State,
- * plus the applied nodes it drops (Removed). Admission writes it, and the attempt's start rewrites it against
- * Applied State at that moment. Runs inside the caller's transaction, which holds the environment's queue lock.
+ * Writes the attempt's target node list: each of its snapshots diffed against `applied` (Applied State's nodes by
+ * `nodeType:nodeId`), plus the applied nodes it drops (Removed). The list is provisional while the attempt is queued and
+ * frozen with the Attempt Target when the attempt starts, rewritten against Applied State at that moment.
+ * Runs inside a transaction that holds the environment's queue lock.
  */
-export const freezeAttemptTargetNodes = Effect.fn("Deployments.freezeAttemptTargetNodes")(function* (
-  input: { environmentId: string; environmentDeploymentId: string },
+export const writeAttemptTargetNodes = Effect.fn("Deployments.writeAttemptTargetNodes")(function* (
+  environmentDeploymentId: string, applied: ReadonlyMap<string, Node>,
 ) {
   const { drizzle } = yield* Database;
-  const [target, projection] = yield* Effect.all([
-    drizzle.select({ nodeType: environmentNodeConfigSnapshot.nodeType, nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
-      .from(environmentNodeConfigSnapshot).where(eq(environmentNodeConfigSnapshot.environmentDeploymentId, input.environmentDeploymentId)),
-    loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: input.environmentId }),
-  ]);
-  const applied = projection.appliedSavedNodeByKey;
+  const target = yield* drizzle.select({ nodeType: environmentNodeConfigSnapshot.nodeType, nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
+    .from(environmentNodeConfigSnapshot).where(eq(environmentNodeConfigSnapshot.environmentDeploymentId, environmentDeploymentId));
   const targetKeys = new Set(target.map((node) => `${node.nodeType}:${node.nodeId}`));
   const targetNodes: AttemptTargetNodes = {
     version: 1,
     nodes: [
       ...target.map((node) => {
         const before = applied.get(`${node.nodeType}:${node.nodeId}`);
-        const build = needsBuild(node);
-        const changed = build || !before || canonicalJson(before.config) !== canonicalJson(node.config);
-        return { nodeId: node.nodeId, nodeType: node.nodeType, name: nameOf(node), changed, removed: false, needsBuild: build };
+        const facts = snapshotNodeFacts(node);
+        return { ...facts, changed: facts.needsBuild || !before || canonicalJson(before.config) !== canonicalJson(node.config), removed: false };
       }),
-      ...[...applied].filter(([key]) => !targetKeys.has(key)).map(([, node]) => (
-        { nodeId: node.nodeId, nodeType: node.nodeType, name: nameOf(node), changed: true, removed: true, needsBuild: false })),
+      ...[...applied].filter(([key]) => !targetKeys.has(key)).map(([, node]) => ({ ...snapshotNodeFacts(node), changed: true, removed: true, needsBuild: false, mounts: [] })),
     ],
   };
-  yield* drizzle.update(environmentDeployment).set({ targetNodes })
-    .where(eq(environmentDeployment.id, input.environmentDeploymentId));
+  yield* drizzle.update(environmentDeployment).set({ targetNodes }).where(eq(environmentDeployment.id, environmentDeploymentId));
 });

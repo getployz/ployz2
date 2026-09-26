@@ -8,7 +8,6 @@ import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
 import { organizationKeys } from "#/modules/environment-design/workspace.queries";
 import { refetchEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
-import { refetchNodeDeployments } from "#/modules/deployments/node-deployments.queries";
 import { invalidateDeploymentHistory } from "#/modules/deployments/deployment-history.queries";
 
 const orgChangesEventSchema = Schema.Struct({ collections: Schema.Array(changeNameSchema) });
@@ -30,7 +29,6 @@ const refetches = {
   organization: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
   environment_change_state: (organizationSlug: string, scope: CollectionScope) => {
     refetchEnvironmentChangeStates(organizationSlug, scope);
-    refetchNodeDeployments(organizationSlug, scope);
     invalidateDeploymentHistory(organizationSlug, scope);
   },
 } satisfies Record<ChangeName, Refetch>;

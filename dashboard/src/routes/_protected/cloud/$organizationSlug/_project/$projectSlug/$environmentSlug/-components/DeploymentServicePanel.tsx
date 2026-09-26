@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { Navigate, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Schema } from "effect";
@@ -7,12 +8,13 @@ import { getRawServicesCollection } from "#/collections/collections";
 import { ServiceBuildLogs, ServiceDeployLogs } from "#/components/deployment-logs";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
+import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { useAttemptServiceConfigs } from "#/modules/deployments/deployment-history.queries";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
-import { builtOnLine, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
+import { builtOnLine, imageName, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView } from "#/modules/deployments/deployment-view";
 import {
   DEPLOYMENT_SERVICE_PAGES, deploymentServicePageSchema, type DeploymentServicePage,
 } from "../services/$serviceId/-components/service-pages";
@@ -37,7 +39,6 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
     queryKey: ["deployment-panel-service", services.id, serviceId],
     query: (q) => q.from({ service: services }).where(({ service }) => eq(service.id, serviceId)).select(({ service }) => ({ name: service.name })),
   });
-  const config = useAttemptServiceConfigs(params.organizationSlug, attempt.deployment.id).get(serviceId) ?? null;
   const node = attempt.nodes.find((candidate) => candidate.nodeId === serviceId);
   const view = attempt.view.nodes.find((candidate) => candidate.nodeId === serviceId);
   if (node?.nodeType !== "service" || !view) return null;
@@ -77,10 +78,13 @@ export function DeploymentServicePanel({ attempt, serviceId }: { attempt: Deploy
             })}
           </TabsList>
           <TabsContent value="details" className="mt-4 overflow-y-auto">
-            <DeploymentServiceDetails organizationSlug={params.organizationSlug} deployment={deployment} serviceId={serviceId} view={view} config={config} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
+            {/* The configs the attempt deployed are read only when a panel opens; the rest of the panel never waits for them. */}
+            <Suspense fallback={<DetailsSkeleton />}>
+              <DeploymentServiceDetails organizationSlug={params.organizationSlug} deployment={deployment} serviceId={serviceId} view={view} commitSha={deployment.sourcePins[serviceId]?.commitSha ?? null} />
+            </Suspense>
           </TabsContent>
           <TabsContent value="build-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
-            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={node.name} />
+            <ServiceBuildLogs organizationSlug={params.organizationSlug} deploymentId={deployment.id} image={imageName(node)} />
           </TabsContent>
           <TabsContent value="deploy-logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             {view.outcome === "not_attempted" || view.outcome === "unchanged" ? <p className="mb-3 text-muted-foreground">{outcomeSentences[view.outcome]}</p> : null}
@@ -118,15 +122,19 @@ function Fields({ title, fields }: { title: string; fields: [label: string, valu
   );
 }
 
-function DeploymentServiceDetails({ organizationSlug, deployment, serviceId, view, config, commitSha }: {
+function DetailsSkeleton() {
+  return <div aria-hidden className="mx-auto flex w-full max-w-2xl flex-col gap-3"><Skeleton className="h-4 w-48" /><Skeleton className="h-24 w-full" /></div>;
+}
+
+function DeploymentServiceDetails({ organizationSlug, deployment, serviceId, view, commitSha }: {
   organizationSlug: string;
   deployment: DeploymentAttempt["deployment"];
   serviceId: string;
   view: DeploymentNodeView;
-  /** Null for a removed service: the attempt holds no snapshot of it. */
-  config: ServiceConfig | null;
   commitSha: string | null;
 }) {
+  // None for a removed service: the attempt holds no snapshot of it.
+  const config = useAttemptServiceConfigs(organizationSlug, deployment.id).get(serviceId) ?? null;
   const outcome = view.failure ? (
     <Alert variant="destructive">
       <AlertTitle>Failed</AlertTitle>

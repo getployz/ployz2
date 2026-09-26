@@ -30,6 +30,7 @@ import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-events.server";
 import { attemptNodes, deploymentView } from "./deployment-view";
+import { snapshotNodeFacts } from "./attempt-target.server";
 import { deploymentRowColumns } from "./deployment-row.server";
 import { environmentDeployment } from "./tables";
 import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
@@ -186,12 +187,24 @@ export const getDeploymentServiceVariables = Effect.fn("Deployments.serviceVaria
   return env.get(input.serviceId) ?? {};
 });
 
-const NODE_DEPLOYMENTS_PAGE = 20;
+/** Every paged deployment read's page size. */
+const PAGE_SIZE = 20;
+
+/** Attempts older than attempt `before`, in the (created_at, id) order every deployment page reads newest first. */
+const olderThan = (before: string) => sql`(${environmentDeployment.createdAt}, ${environmentDeployment.id}) < (
+  select previous.created_at, previous.id from ${environmentDeployment} previous where previous.id = ${before}
+)`;
+
+/** A page from up to one row past it: the extra row only says another page exists, and `next` continues after the page. */
+function page<Row extends { id: string }>(rows: readonly Row[]) {
+  const items = rows.slice(0, PAGE_SIZE);
+  return { items, next: rows.length > PAGE_SIZE ? items.at(-1)?.id ?? null : null };
+}
 
 /**
- * One node's attempts for its service panel, each with its Node Outcome from the frozen target list: the Running attempt
- * (the newest that deployed it, so a later failure leaves it in place) and a page of History, the other attempts that did
- * not leave it unchanged, newest first.
+ * One node's attempts for its service panel, each with its Node Outcome from the frozen target list: a page of History, the
+ * attempts that did not leave it unchanged, newest first; and on the first page the Running attempt (the newest that deployed
+ * it, so a later failure leaves it in place). History holds the Running attempt too; the panel shows it once.
  */
 export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(function* (actor: Actor, input: NodeDeploymentsQueryInput) {
   const organization = yield* requireOrganization(actor, input.organizationSlug);
@@ -206,10 +219,10 @@ export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(func
     eq(table.organizationId, organization.id),
     eq(table.environmentId, input.environmentId),
     sql`${table.targetNodes} -> 'nodes' @> ${JSON.stringify([{ nodeId: input.nodeId }])}::jsonb`,
-    before === null ? undefined : sql`(${table.createdAt}, ${table.id}) < (select created_at, id from ${table} where id = ${before})`,
-  )).orderBy(desc(table.createdAt), desc(table.id)).limit(NODE_DEPLOYMENTS_PAGE).pipe(Effect.map((rows) => rows.map((row) => {
+    before === null ? undefined : olderThan(before),
+  )).orderBy(desc(table.createdAt), desc(table.id)).limit(PAGE_SIZE).pipe(Effect.map((rows) => rows.map((row) => {
     const { nodes, progress } = attemptNodes(row.targetNodes, row.runtimeProgress);
-    const view = deploymentView({ deployment: { ...row, deployPreview: row.planned || null }, progress, nodes });
+    const view = deploymentView({ deployment: row, progress, nodes });
     const outcome = view.nodes.find((node) => node.nodeId === input.nodeId)?.outcome ?? "unchanged";
     return { id: row.id, message: row.message, createdAt: row.createdAt, outcome };
   })));
@@ -218,25 +231,21 @@ export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(func
   const scan = (before: string | null, keep: (attempt: NodeDeployment) => boolean, count: number) => Effect.gen(function* () {
     const found: NodeDeployment[] = [];
     for (let cursor = before; ;) {
-      const page = yield* candidates(cursor);
-      for (const attempt of page) {
+      const candidatePage = yield* candidates(cursor);
+      for (const attempt of candidatePage) {
         if (keep(attempt)) found.push(attempt);
         if (found.length === count) return found;
       }
-      const last = page.at(-1);
-      if (!last || page.length < NODE_DEPLOYMENTS_PAGE) return found;
+      const last = candidatePage.at(-1);
+      if (!last || candidatePage.length < PAGE_SIZE) return found;
       cursor = last.id;
     }
   });
   // ponytail: scans back to the node's last deployed attempt; store it per node if nodes go long without deploying.
-  const [running = null] = yield* scan(null, (attempt) => attempt.outcome === "deployed", 1);
-  // One past the page tells whether another page exists.
-  const history = yield* scan(input.before ?? null, (attempt) => attempt.outcome !== "unchanged" && attempt.id !== running?.id, NODE_DEPLOYMENTS_PAGE + 1);
-  const items = history.slice(0, NODE_DEPLOYMENTS_PAGE);
-  return { running, items, next: history.length > NODE_DEPLOYMENTS_PAGE ? items.at(-1)?.id ?? null : null };
+  const [running = null] = input.before === undefined ? yield* scan(null, (attempt) => attempt.outcome === "deployed", 1) : [];
+  const history = yield* scan(input.before ?? null, (attempt) => attempt.outcome !== "unchanged", PAGE_SIZE + 1);
+  return { running, ...page(history) };
 });
-
-const DEPLOYMENT_PAGE_SIZE = 20;
 
 /** The Org Store's deployment row plus the slugs its summary carries. */
 function selectAttempts(drizzle: EffectPgDatabase, organizationId: string, where: SQL | undefined) {
@@ -248,7 +257,7 @@ function selectAttempts(drizzle: EffectPgDatabase, organizationId: string, where
     .where(and(eq(environmentDeployment.organizationId, organizationId), where));
 }
 
-/** One page of an environment's attempts, newest first; ties on `created_at` break by id. `next` continues after the last row. */
+/** One page of an environment's attempts, newest first; ties on `created_at` break by id. */
 export const listEnvironmentDeployments = Effect.fn("Deployments.listEnvironmentDeployments")(function* (
   actor: Actor,
   input: EnvironmentDeploymentsQueryInput,
@@ -257,17 +266,14 @@ export const listEnvironmentDeployments = Effect.fn("Deployments.listEnvironment
   const { drizzle } = yield* Database;
   const rows = yield* selectAttempts(drizzle, organization.id, and(
     eq(environmentDeployment.environmentId, input.environmentId),
-    input.before === undefined ? undefined : sql`(${environmentDeployment.createdAt}, ${environmentDeployment.id}) < (
-      select previous.created_at, previous.id from ${environmentDeployment} previous where previous.id = ${input.before}
-    )`,
-  )).orderBy(desc(environmentDeployment.createdAt), desc(environmentDeployment.id)).limit(DEPLOYMENT_PAGE_SIZE + 1);
-  const page = rows.slice(0, DEPLOYMENT_PAGE_SIZE);
-  return { rows: page, next: rows.length > DEPLOYMENT_PAGE_SIZE ? page.at(-1)?.id ?? null : null };
+    input.before === undefined ? undefined : olderThan(input.before),
+  )).orderBy(desc(environmentDeployment.createdAt), desc(environmentDeployment.id)).limit(PAGE_SIZE + 1);
+  return page(rows);
 });
 
 /**
- * One attempt: its row (with its frozen target list) and the service configs it deployed, for card details.
- * Null when the organization has no such attempt.
+ * One attempt: its row (with its target list) and the service configs it deployed, for card details. An attempt from
+ * before target lists also gets its nodes from its snapshots (`snapshotNodes`). Null when the organization has no such attempt.
  */
 export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt")(function* (
   actor: Actor,
@@ -277,15 +283,19 @@ export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt"
   const { drizzle } = yield* Database;
   const [[row], snapshots] = yield* Effect.all([
     selectAttempts(drizzle, organization.id, eq(environmentDeployment.id, input.deploymentId)),
-    drizzle.select({ nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
+    drizzle.select({ nodeType: environmentNodeConfigSnapshot.nodeType, nodeId: environmentNodeConfigSnapshot.nodeId, config: environmentNodeConfigSnapshot.config })
       .from(environmentNodeConfigSnapshot)
       .where(and(
         eq(environmentNodeConfigSnapshot.organizationId, organization.id),
         eq(environmentNodeConfigSnapshot.environmentDeploymentId, input.deploymentId),
-        eq(environmentNodeConfigSnapshot.nodeType, "service"),
       )),
   ]);
   if (!row) return null;
-  // Sealed variable ciphertext stays on the server.
-  return { row, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
+  return {
+    row,
+    // Sealed variable ciphertext stays on the server.
+    serviceConfigs: snapshots.filter((snapshot) => snapshot.nodeType === "service")
+      .map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })),
+    snapshotNodes: row.targetNodes === null ? snapshots.map(snapshotNodeFacts) : null,
+  };
 });

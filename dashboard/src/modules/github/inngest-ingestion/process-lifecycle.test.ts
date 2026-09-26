@@ -7,7 +7,6 @@ import {
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
-import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { InngestClient } from "#/modules/inngest/client";
 
 describe("GitHub ingestion terminal lifecycle", () => {
@@ -23,8 +22,6 @@ describe("GitHub ingestion terminal lifecycle", () => {
         Effect.provideService(InngestClient, undefined as never),
         // SAFETY: This runner is asserted unused when the run id is absent.
         Effect.provideService(GithubApi, undefined as never),
-        // SAFETY: This runner is asserted unused when the run id is absent.
-        Effect.provideService(SecretEncryption, undefined as never),
       ));
     };
 

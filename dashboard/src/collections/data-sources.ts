@@ -18,7 +18,7 @@ export const dataSources = {
   "modules/environment-design/environment-document.collection.ts": { kind: "org-store", freshness: "derived from environments and projects" },
   "modules/environment-design/resource.collection.ts": { kind: "org-store", freshness: "derived from resources, lineages, positions, and documents" },
   "modules/services/services.collection.ts": { kind: "org-store", freshness: "derived from services and documents" },
-  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (active attempts plus the latest per Environment, with their frozen target node lists)" },
+  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (active attempts plus the latest per Environment, with their target node lists); an attempt outside them, or from before target lists, and the paged deployment list come from the deployment-history.queries.ts Remote Reads, with live status from the Org Store for rows it holds" },
   "modules/deployments/environment-change-state.queries.ts": { kind: "org-store", freshness: "server projection, refetched when the change log names environment_change_state (deployment rows or saved revisions); progress events excluded" },
   "modules/runtime/runtime.collection.ts": { kind: "runtime", freshness: "SSE runtime watch" },
   "modules/runtime/container-log.stream.ts": { kind: "runtime", freshness: "SSE log stream, older pages on scroll" },
@@ -30,8 +30,7 @@ export const dataSources = {
   "modules/runtime/volume-removal.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
   "modules/deployments/deployment-log.collection.ts": { kind: "remote", freshness: "polls until the deployment finishes; a finished log is never refetched" },
   "modules/deployments/deployment-build-log.queries.ts": { kind: "remote", freshness: "fresh on mount; polls until the build finishes" },
-  "modules/deployments/node-deployments.queries.ts": { kind: "remote", freshness: "never stale on its own: the change stream refetches it when deployment rows change (not on progress events)" },
-  "modules/deployments/deployment-history.queries.ts": { kind: "remote", freshness: "deployment list pages and one attempt (row, target list, card-detail snapshots): kept until the change stream names environment_change_state (a deployment row changed), then refetched; the list shows live status from the Org Store for rows it holds" },
+  "modules/deployments/deployment-history.queries.ts": { kind: "remote", freshness: "an environment's deployment list pages, a node's Running attempt and History pages, and one attempt (row, target node list, service configs): kept until the change stream names environment_change_state (a deployment row changed, not a progress event), then refetched" },
   "modules/deployments/deployment-variables.queries.ts": { kind: "remote", freshness: "never refetched: recomputed from the attempt's frozen inputs, which never change" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;
 

@@ -3,32 +3,23 @@ import {
   createFileRoute,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-import { prefetchRemote, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
+import { prefetchDeploymentMode } from "#/collections/route-data";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
-import { deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentCanvasScene";
-import { canvasRouteSearch } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
+import { canvasRouteSearch, viewedDeploymentId } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
   ...canvasRouteSearch,
-  loaderDeps: ({ search }) => ({ deployment: search.deployment, deploymentList: search.deploymentList }),
-  // Deployment Mode's nodes read the attempt and its build tail, and the open list its first page;
+  loaderDeps: ({ search }) => ({ deployment: viewedDeploymentId(search), deploymentList: search.deploymentList }),
+  // Deployment Mode's nodes read the attempt and its build tail, and the open list its first page; all start together.
   // SSR renders them and hover preload warms them.
   loader: async ({ params, context, deps }) => {
-    if (deps.deployment) {
-      await prefetchRemote(context,
-        deploymentBuildTailQueryOptions(params.organizationSlug, deps.deployment), deploymentAttemptQueryOptions(params.organizationSlug, deps.deployment));
-    }
-    if (deps.deploymentList) {
-      const environment = await requireEnvironment(context, params);
-      await prefetchRemotePages(context, environmentDeploymentsQueryOptions(params.organizationSlug, environment.id));
-    }
+    await prefetchDeploymentMode(context, params, deps);
   },
   errorComponent: CanvasError,
   component: CanvasLayout,

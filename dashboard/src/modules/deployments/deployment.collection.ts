@@ -1,9 +1,9 @@
 import { reconcileCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { collectionOptions, eq, liveQueryCollectionOptions, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { useSuspenseInfiniteQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { attemptNodes, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { attemptNodes, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView, type SnapshotNode } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentsCollection,
@@ -73,7 +73,6 @@ function deploymentSummary(deployment: DeploymentHistoryRow): EnvironmentDeploym
     runtimeProgress: deployment.runtimeProgress,
     sourcePins: deployment.sourcePins,
     targetNodes: deployment.targetNodes,
-    buildServiceIds: deployment.targetNodes?.nodes.filter((node) => node.needsBuild).map((node) => node.nodeId) ?? [],
     canRetry: deployment.canRetry,
     failureCode: deployment.failureCode,
     dispatchRequestedAt: deployment.dispatchRequestedAt,
@@ -93,8 +92,9 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
   await reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope));
 }
 
-/** `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
-export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView; buildPending: boolean };
+export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView };
+/** The attempt Deployment Mode shows. `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
+export type ViewedAttempt = DeploymentAttempt & { buildPending: boolean };
 
 /** An environment's attempts in the Org Store, newest first. */
 function useStoredAttempts(organizationSlug: string, environmentId: string) {
@@ -107,28 +107,39 @@ function useStoredAttempts(organizationSlug: string, environmentId: string) {
   return data;
 }
 
-function projectAttempt(deployment: EnvironmentDeploymentSummary, buildLog?: BuildLog | null): DeploymentAttempt {
-  const { nodes, progress } = attemptNodes(deployment.targetNodes, deployment.runtimeProgress);
-  return { deployment, nodes, view: deploymentView({ deployment, progress, nodes, buildLog }), buildPending: false };
+/** One attempt through the deployment view projection; `snapshotNodes` stand in for the target node list an old attempt lacks. */
+function viewAttempt(deployment: EnvironmentDeploymentSummary, { snapshotNodes, buildLog }: { snapshotNodes?: readonly SnapshotNode[] | null; buildLog?: BuildLog | null } = {}): DeploymentAttempt {
+  const { nodes, progress } = attemptNodes(deployment.targetNodes, deployment.runtimeProgress, snapshotNodes ?? []);
+  const view = deploymentView({ deployment: { ...deployment, planned: deployment.deployPreview !== null }, progress, nodes, buildLog });
+  return { deployment, nodes, view };
 }
 
 /**
- * One Cloud Deployment Attempt of an environment through the deployment view projection; null when the environment has no such attempt.
- * An attempt outside the Org Store suspends on its Remote Read. `buildLog` also reads the attempt's Build Steps and output tails
- * (polled until it finishes) for per-image build stages and tails.
+ * The attempt Deployment Mode shows, through the deployment view projection; null when the environment has no such attempt.
+ * An attempt the Org Store holds with its target node list needs no read. One outside it, or from before target lists, comes
+ * from its per-attempt Remote Read: `pending` until it arrives, never suspending. `buildLog` also reads the attempt's Build Steps
+ * and output tails (polled until it finishes) for per-image build stages and tails.
  */
-export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}): DeploymentAttempt | null {
+export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}) {
   const stored = useStoredAttempts(organizationSlug, environmentId).find((candidate) => candidate.id === deploymentId);
-  const { data: remote } = useSuspenseQuery(deploymentAttemptQueryOptions(organizationSlug, stored ? null : deploymentId));
-  const deployment = stored ?? (remote?.row.environmentId === environmentId ? deploymentSummary(remote.row) : undefined);
-  const tailId = buildLog && deployment?.buildServiceIds.length ? deployment.id : null;
+  const { data: read, isPending } = useQuery({
+    ...deploymentAttemptQueryOptions(organizationSlug, stored?.targetNodes ? null : deploymentId),
+    // A failed read (not a missing attempt, which reads null) fails the canvas route.
+    throwOnError: true,
+  });
+  const remote = read?.row.environmentId === environmentId ? read : null;
+  const deployment = stored ?? (remote ? deploymentSummary(remote.row) : undefined);
+  const tailId = buildLog && deployment && (deployment.targetNodes?.nodes ?? remote?.snapshotNodes ?? []).some((node) => node.needsBuild) ? deployment.id : null;
   const tail = useBuildTail(organizationSlug, tailId);
-  return deployment ? { ...projectAttempt(deployment, tail.data), buildPending: tailId !== null && tail.isPending } : null;
+  const attempt: ViewedAttempt | null = deployment && (deployment.targetNodes || remote)
+    ? { ...viewAttempt(deployment, { snapshotNodes: remote?.snapshotNodes, buildLog: tail.data }), buildPending: tailId !== null && tail.isPending }
+    : null;
+  return { attempt, pending: attempt === null && isPending };
 }
 
 /** The attempts of an environment the Org Store holds (active ones plus the latest) through the deployment view projection, newest first. */
 export function useEnvironmentDeployments(organizationSlug: string, environmentId: string): DeploymentAttempt[] {
-  return useStoredAttempts(organizationSlug, environmentId).map((deployment) => projectAttempt(deployment));
+  return useStoredAttempts(organizationSlug, environmentId).map((deployment) => viewAttempt(deployment));
 }
 
 /**
@@ -138,6 +149,6 @@ export function useEnvironmentDeployments(organizationSlug: string, environmentI
 export function useDeploymentList(organizationSlug: string, environmentId: string) {
   const stored = new Map(useStoredAttempts(organizationSlug, environmentId).map((deployment) => [deployment.id, deployment]));
   const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = useSuspenseInfiniteQuery(environmentDeploymentsQueryOptions(organizationSlug, environmentId));
-  const attempts = data.pages.flatMap((page) => page.rows).map((row) => projectAttempt(stored.get(row.id) ?? deploymentSummary(row)));
+  const attempts = data.pages.flatMap((page) => page.items).map((row) => viewAttempt(stored.get(row.id) ?? deploymentSummary(row)));
   return { attempts, hasMore: hasNextPage, loadingMore: isFetchingNextPage, showMore: () => void fetchNextPage() };
 }

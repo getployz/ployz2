@@ -13,7 +13,6 @@ import {
   makeDatabaseService,
   makeReportingDatabase,
 } from "#/server/database.server";
-import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const execFile = promisify(execFileCallback);
 
@@ -161,8 +160,6 @@ export async function startPostgresTestHarness() {
         }),
       ).pipe(
         Layer.merge(Layer.effect(ReportingDatabase, makeReportingDatabase(databaseUrl))),
-        // The key the tests encrypt seeded secrets with.
-        Layer.merge(Layer.succeed(SecretEncryption, makeSecretEncryption("test-encryption-secret"))),
         Layer.provide(Reactivity.layer),
       ),
     );
@@ -178,14 +175,14 @@ export async function startPostgresTestHarness() {
       database,
       pool,
       runEffect<Success, Failure>(
-        operation: Effect.Effect<Success, Failure, Database | ReportingDatabase | SecretEncryption>,
+        operation: Effect.Effect<Success, Failure, Database | ReportingDatabase>,
       ) {
         return databaseRuntime.runPromise(operation);
       },
       runTransaction<Success, Failure>(
         operation: (
           transaction: typeof database.drizzle,
-        ) => Effect.Effect<Success, Failure, Database | SecretEncryption>,
+        ) => Effect.Effect<Success, Failure, Database>,
       ) {
         return databaseRuntime.runPromise(
           database.transaction(
