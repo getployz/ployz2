@@ -101,7 +101,7 @@ export const environmentDeployment = pgTable(
       jsonb("deploy_preview").$type<EnvironmentDeploymentPreview>(),
     runtimeProgress: jsonb("runtime_progress").$type<import("./deployment-progress").DeploymentProgress>(),
     // Admission writes it. Attempts from before target node lists have an empty one: no pre-0.2.0 history is kept.
-    targetNodes: jsonb("target_nodes").notNull().default(sql`'{"version":1,"nodes":[]}'::jsonb`).$type<import("./deployment-contract").TargetNodeList>(),
+    targetNodes: jsonb("target_nodes").notNull().default({ version: 1, nodes: [] }).$type<import("./deployment-contract").TargetNodeList>(),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
     message: text("message"),

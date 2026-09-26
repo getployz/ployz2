@@ -386,7 +386,7 @@ export type TargetNode = TargetNodeList["nodes"][number];
  * The attempt's nodes from its Target Node List. Once the Engine reports rows, an unremoved service is changed only if it
  * has operations. Rows for removed services carry no serviceId from the record side, so they are resolved here by name.
  */
-export function targetNodes(list: TargetNodeList, progress: DeploymentProgress | null) {
+export function viewTargetNodes(list: TargetNodeList, progress: DeploymentProgress | null) {
   const serviceFor = (name: string | null) => list.nodes.find((node) => node.nodeType === "service" && node.name === name)?.nodeId ?? null;
   const resolved = progress && { ...progress, rows: progress.rows.map((row) => row.serviceId ? row : { ...row, serviceId: serviceFor(row.serviceName) }) };
   const rows = resolved?.rows ?? [];

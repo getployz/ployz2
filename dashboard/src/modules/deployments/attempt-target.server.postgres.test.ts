@@ -10,7 +10,7 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { writeTargetNodeList } from "./attempt-target.server";
 import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
-import { targetNodes, deploymentView } from "./deployment-view";
+import { viewTargetNodes, deploymentView } from "./deployment-view";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
 const userId = "00000000-0000-4000-8000-000000000902";
@@ -98,7 +98,7 @@ it("writes the target node list against Applied State, counting a failed attempt
   });
 
   if (!row) throw new Error("Missing target attempt");
-  const { nodes, progress } = targetNodes(row.targetNodes, null);
+  const { nodes, progress } = viewTargetNodes(row.targetNodes, null);
   const view = deploymentView({ deployment: { status: "applied", failureMessage: null, planned: true }, progress, nodes });
   expect(Object.fromEntries(view.nodes.map((node) => [node.nodeId, node.outcome]))).toEqual({
     [api]: "unchanged", [web]: "deployed", [data]: "unchanged", [build]: "deployed", [old]: "removed",

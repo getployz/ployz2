@@ -29,7 +29,7 @@ import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-events.server";
-import { targetNodes, deploymentView } from "./deployment-view";
+import { viewTargetNodes, deploymentView } from "./deployment-view";
 import { deploymentRowColumns } from "./deployment-row.server";
 import { environmentDeployment } from "./tables";
 import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
@@ -220,7 +220,7 @@ export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(func
     sql`${table.targetNodes} -> 'nodes' @> ${JSON.stringify([{ nodeId: input.nodeId }])}::jsonb`,
     before === null ? undefined : olderThan(before),
   )).orderBy(desc(table.createdAt), desc(table.id)).limit(PAGE_SIZE).pipe(Effect.map((rows) => rows.map((row) => {
-    const { nodes, progress } = targetNodes(row.targetNodes, row.runtimeProgress);
+    const { nodes, progress } = viewTargetNodes(row.targetNodes, row.runtimeProgress);
     const view = deploymentView({ deployment: row, progress, nodes });
     const outcome = view.nodes.find((node) => node.nodeId === input.nodeId)?.outcome ?? "unchanged";
     return { id: row.id, message: row.message, createdAt: row.createdAt, outcome };

@@ -23,7 +23,8 @@ async function attempt(environmentId: string, minute: number, status = "applied"
 }
 
 beforeAll(async () => {
-  harness = await startPostgresTestHarness();
+  // Its own server: the change log's xid horizon is cluster-wide, so other files' open transactions would hold back the delta read.
+  harness = await startPostgresTestHarness({ ownServer: true });
   await sql("insert into organization (id, name, slug) values ($1, 'Acme', 'acme')", [organizationId]);
   await sql("insert into \"user\" (id, email, name) values ($1, 'owner@example.test', 'Owner')", [userId]);
   await sql("insert into member (user_id, organization_id, role) values ($1, $2, 'owner')", [userId, organizationId]);

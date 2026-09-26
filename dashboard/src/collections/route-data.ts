@@ -40,13 +40,6 @@ export async function requireEnvironment(context: RouteDataContext, input: Envir
   return loadWorkspaceEnvironment(input, scopeOf(context));
 }
 
-/** Awaits the Org Store for a loader that decides from it; resolves at once on client navigations, where it is in memory. */
-export async function requireOrgStore(context: RouteDataContext, organizationSlug: string) {
-  const scope = scopeOf(context);
-  await context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scope));
-  return scope;
-}
-
 /** SSR failure fails the organization route: no org page can render without the Org Store. */
 export async function prefetchOrgStore(context: RouteDataContext, organizationSlug: string) {
   const ready = context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scopeOf(context)));
@@ -70,7 +63,16 @@ export async function prefetchRemotePages<T, K extends QueryKey, P>(context: Rou
   if (environmentManager.isServer()) await ready;
 }
 
-/** Awaits prefetches the loader started together (`false` skips one); loaders never await `Promise.all` themselves. */
-export async function prefetchTogether(...prefetches: Array<Promise<void> | false | null>) {
-  await Promise.all(prefetches);
+/**
+ * Prefetches a loader decides from the Org Store, started together (`false` skips one). During SSR it first awaits the Org
+ * Store, whose failure fails the route like `prefetchOrgStore`. On the client it never waits: the gate owns the Org Store's
+ * pending and retryable error state, and `start` decides from the rows already in memory.
+ */
+export async function prefetchFromOrgStore(context: RouteDataContext, organizationSlug: string,
+  start: (scope: CollectionScope) => Array<Promise<void> | false | null>) {
+  const scope = scopeOf(context);
+  const ready = context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scope));
+  if (environmentManager.isServer()) await ready;
+  else void ready.catch(() => {});
+  await Promise.all(start(scope));
 }

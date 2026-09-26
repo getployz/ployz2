@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ContainerId, DeployOperation, MachineId, OperationRow } from "@ployz/sdk";
 import { resolvedServiceSpecFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
-import { targetNodes, builtOnLine, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type TargetNode, type DeploymentViewInput } from "./deployment-view";
+import { viewTargetNodes, builtOnLine, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type TargetNode, type DeploymentViewInput } from "./deployment-view";
 
 function row(index: number, operation?: DeployOperation): OperationRow {
   const spec = resolvedServiceSpecFixture();
@@ -188,12 +188,12 @@ describe("deployment view projection", () => {
       { nodeId: "old", nodeType: "service" as const, name: "old", changed: true, removed: true, needsBuild: false, ...facts },
       { nodeId: "data", nodeType: "volume" as const, name: "data", changed: false, removed: false, needsBuild: false, ...facts },
     ] };
-    expect(targetNodes(list, null).nodes.map(({ nodeId, changed }) => [nodeId, changed])).toEqual([["api", true], ["web", true], ["old", true], ["data", false]]);
+    expect(viewTargetNodes(list, null).nodes.map(({ nodeId, changed }) => [nodeId, changed])).toEqual([["api", true], ["web", true], ["old", true], ["data", false]]);
     // Only api has rows; the removed service's row arrives without a serviceId and resolves by name.
     const remove = row(0, { type: "remove_container", machine_id: "machine-0" as MachineId, container_id: "gone" as ContainerId });
     const rows = [{ ...row(1), service_name: "api" }, { ...remove, service_name: "old" }];
     const recorded = deploymentProgressForEvent({ type: "progress", completed: 0, total: 2, rows }, rows, { serviceIdFor: (name) => name === "api" ? "api" : null });
-    const { nodes, progress } = targetNodes(list, recorded);
+    const { nodes, progress } = viewTargetNodes(list, recorded);
     expect(nodes.map(({ nodeId, changed }) => [nodeId, changed])).toEqual([["api", true], ["web", false], ["old", true], ["data", false]]);
     expect(progress?.rows.map((r) => r.serviceId)).toEqual(["api", "old"]);
   });

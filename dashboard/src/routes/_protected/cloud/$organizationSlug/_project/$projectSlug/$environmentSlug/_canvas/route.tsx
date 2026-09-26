@@ -3,9 +3,9 @@ import {
   createFileRoute,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-import { prefetchRemote, prefetchRemotePages, prefetchTogether, requireEnvironment, requireOrgStore } from "#/collections/route-data";
+import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
+import { prefetchFromOrgStore, prefetchRemote, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
 import { deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
-import { isAttemptInOrgStore } from "#/modules/deployments/deployment.collection";
 import { deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
@@ -23,16 +23,15 @@ export const Route = createFileRoute(
   // SSR renders them and hover preload warms them.
   loader: async ({ params, context, deps: { deployment, deploymentList } }) => {
     const { organizationSlug } = params;
-    const scope = await requireOrgStore(context, organizationSlug);
-    // The list is keyed by environment id, which the Org Store resolves at once.
-    const environment = deploymentList ? await requireEnvironment(context, params) : null;
-    await prefetchTogether(
+    await prefetchFromOrgStore(context, organizationSlug, (scope) => [
       deployment !== null && prefetchRemote(context, deploymentBuildTailQueryOptions(organizationSlug, deployment)),
       // An attempt the Org Store holds draws from it alone.
-      deployment !== null && !isAttemptInOrgStore(organizationSlug, scope, deployment)
+      deployment !== null && !getEnvironmentDeploymentsCollection(organizationSlug, scope).has(deployment)
         && prefetchRemote(context, deploymentAttemptQueryOptions(organizationSlug, deployment)),
-      environment && prefetchRemotePages(context, environmentDeploymentsQueryOptions(organizationSlug, environment.id)),
-    );
+      // The list is keyed by environment id, which the Org Store resolves.
+      deploymentList === true && requireEnvironment(context, params).then((environment) =>
+        prefetchRemotePages(context, environmentDeploymentsQueryOptions(organizationSlug, environment.id))),
+    ]);
   },
   errorComponent: CanvasError,
   component: CanvasLayout,

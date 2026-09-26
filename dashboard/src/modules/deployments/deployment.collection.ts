@@ -3,7 +3,7 @@ import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/co
 import { collectionOptions, eq, liveQueryCollectionOptions, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useQuery, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { targetNodes, deploymentView, type TargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { viewTargetNodes, deploymentView, type TargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentsCollection,
@@ -87,11 +87,6 @@ function deploymentSummary(deployment: DeploymentHistoryRow): EnvironmentDeploym
   return { ...decoded, deployPreview: deployment.deployPreview === null ? null : parseSdkDeployPreview(deployment.deployPreview) };
 }
 
-/** Whether the Org Store holds the attempt, so Deployment Mode draws it with no per-attempt read. Needs a loaded Org Store. */
-export function isAttemptInOrgStore(organizationSlug: string, scope: CollectionScope, deploymentId: string) {
-  return getEnvironmentDeploymentsCollection(organizationSlug, scope).has(deploymentId);
-}
-
 /** Admission and Saved State commands can also replace a queued attempt's history. */
 export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
   await reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope));
@@ -114,7 +109,7 @@ function useStoredAttempts(organizationSlug: string, environmentId: string) {
 
 /** One attempt through the deployment view projection. */
 function viewAttempt(deployment: EnvironmentDeploymentSummary, buildLog?: BuildLog | null): DeploymentAttempt {
-  const { nodes, progress } = targetNodes(deployment.targetNodes, deployment.runtimeProgress);
+  const { nodes, progress } = viewTargetNodes(deployment.targetNodes, deployment.runtimeProgress);
   const view = deploymentView({ deployment: { ...deployment, planned: deployment.deployPreview !== null }, progress, nodes, buildLog });
   return { deployment, nodes, view };
 }
