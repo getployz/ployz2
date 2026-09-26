@@ -12,7 +12,7 @@ import type { BuildCandidate } from "./build-order";
 import { githubSkipReason, installFailedSchema, type GithubImageBuild } from "./image-build";
 import { persistBuildLog } from "./deployment-events.server";
 import {
-  awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild, settled,
+  awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, imageBuildNow, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild,
   moveStartedGithubBuild, skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
@@ -135,7 +135,7 @@ export const checkGithubImageBuild = Effect.fn("Deployments.checkGithubImageBuil
   build: ImageBuildTarget, seen: { ended: boolean; startLimit: boolean },
 ) {
   const row = yield* loadImageBuild(build.id);
-  if (row?.status !== "building" || row.builder !== "github") return settled(build, row?.status ?? "failed") satisfies GithubBuildCheck;
+  if (row?.status !== "building" || row.builder !== "github") return yield* imageBuildNow(build);
   if (overBudget(row)) return yield* finishGithubImageBuild(build, row, true);
   if (seen.ended || row.github.report?.platforms || (yield* githubRunEnded(row))) return yield* finishGithubImageBuild(build, row, false);
   if (row.checkedInAt === null) return seen.startLimit ? yield* withdrawGithubImageBuild(build, row) : waiting;
@@ -152,7 +152,7 @@ const overBudget = (row: GithubRow) => row.checkedInAt !== null && Date.now() - 
  */
 export const settleOrMoveReportedGithubBuild = Effect.fn("Deployments.settleOrMoveReportedGithubBuild")(function* (build: ImageBuildTarget) {
   const row = yield* loadImageBuild(build.id);
-  if (row?.status !== "building" || row.builder !== "github") return settled(build, row?.status ?? "failed");
+  if (row?.status !== "building" || row.builder !== "github") return yield* imageBuildNow(build);
   if (!row.github.report?.platforms) return null;
   const found = yield* finishGithubImageBuild(build, row, false);
   return found.kind === "waiting" ? null : found;
@@ -333,8 +333,6 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
     return skip.kind === "started" ? waiting : skip;
   }
   const ended = yield* endGithubBuild(build, row, timedOut);
-  // Moved already by a retry of this look; the next look finds it on the next Builder.
-  if (ended.kind === "moved") return waiting;
   if (ended.kind !== "move") return ended;
   const moved = yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
   const report = row.github.report;

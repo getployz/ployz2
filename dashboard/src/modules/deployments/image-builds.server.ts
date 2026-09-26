@@ -62,6 +62,17 @@ const statusNow = Effect.fn("Deployments.imageBuildStatus")(function* (imageBuil
   return row?.status ?? "failed";
 });
 
+/**
+ * Where a build its caller no longer holds stands: settled, or moved on to the next Builder, with
+ * the reason the move put on its trail in the same update.
+ */
+export const imageBuildNow = Effect.fn("Deployments.imageBuildNow")(function* (build: Build) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ status: table.status, skips: table.skips }).from(table).where(eq(table.id, build.id)).limit(1);
+  const reason = row?.status === "building" ? row.skips.at(-1) : undefined;
+  return reason ? { kind: "skipped", reason } satisfies ImageBuildAttempt : settled(build, row?.status ?? "failed");
+});
+
 /** The attempt's Git Services each get one Image Build. */
 export const imageBuildServices = (context: Pick<DeploymentContext, "snapshots">) =>
   context.snapshots.filter((snapshot) => snapshot.config.source.type === "git");
@@ -222,14 +233,10 @@ export const settleImageBuild = (build: Build, outcome: ImageBuildOutcome) =>
  */
 export const settleGithubImageBuild = (build: Build, runId: number, outcome: ImageBuildOutcome) =>
   settleWhere(build, outcome, and(eq(table.builder, "github"), eq(table.githubRunId, runId))).pipe(
-    Effect.map((status) => status === "building" ? movedOn : settled(build, status)),
+    Effect.flatMap((status) => status === "building" ? imageBuildNow(build) : Effect.succeed(settled(build, status))),
   );
 
-/** A GitHub settle that lost to the walk moving the build on: it is the next Builder's now. */
-export const movedOn = { kind: "moved" } as const;
-
 /** The status a row has after settling it, whether this update or an earlier one settled it. */
-
 const settleWhere = Effect.fn("Deployments.settleImageBuild")(function* (build: Build, outcome: ImageBuildOutcome, holder: SQL | undefined) {
   const { drizzle } = yield* Database;
   const encryption = yield* SecretEncryption;

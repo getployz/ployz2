@@ -29,7 +29,7 @@ import type { BuildOrder } from "./build-order";
 import { skipReasonText, type SkipReason } from "./image-build";
 import { planImageBuildWalk } from "./build-order.server";
 import { builtOn, builtOnLine } from "./deployment-view";
-import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps } from "./github-image-builds.server";
+import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps, settleOrMoveReportedGithubBuild } from "./github-image-builds.server";
 import { settleGithubImageBuild } from "./image-builds.server";
 import { persistDeploymentSourcePin } from "./source-pins.server";
 
@@ -544,7 +544,12 @@ describe("Image Builds on GitHub Actions", () => {
     // A late final report is refused, and a report path that loaded the row before the move settles nothing.
     expect(await refused({ from: 3, events: [], platforms: ["linux/amd64"] })).toMatchObject({ _tag: "NotFound" });
     expect(await run(settleGithubImageBuild(await target(), githubRunId, { status: "failed", message: "late", machineId: machine.id })))
-      .toEqual({ kind: "moved" });
+      .toEqual({ kind: "skipped", reason: { builder: "github", kind: "runner_stopped" } });
+    // A later look of the walk finds it moved on, for the same reason.
+    expect(await run(checkGithubImageBuild(await target(), { ended: true, startLimit: false })))
+      .toEqual({ kind: "skipped", reason: { builder: "github", kind: "runner_stopped" } });
+    expect(await run(settleOrMoveReportedGithubBuild(await target())))
+      .toEqual({ kind: "skipped", reason: { builder: "github", kind: "runner_stopped" } });
     expect(await row()).toEqual(moved);
   });
 
