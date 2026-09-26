@@ -468,6 +468,7 @@ async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
         "Waiting for local daemon",
+        None,
         crate::setup_retry::WAIT,
         retry_local_connect,
         async |_| {
@@ -528,6 +529,7 @@ async fn wait_phase(
     crate::setup_retry::run(
         &mut (),
         timeout_message,
+        None,
         wait,
         ConnectError::is_setup_retryable,
         async |_| {

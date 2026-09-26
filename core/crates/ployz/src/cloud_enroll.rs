@@ -261,6 +261,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
         let response = crate::setup_retry::run(
             &mut (),
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
+            None,
             crate::setup_retry::WAIT,
             |error| matches!(error, Error::Connect(_)),
             async |_| post_json(&http, url, identity).await,
@@ -335,6 +336,7 @@ async fn post_callback(
     crate::setup_retry::run(
         &mut (),
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
+        None,
         crate::setup_retry::WAIT,
         Error::is_transport,
         async |_| {

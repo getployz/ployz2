@@ -39,7 +39,7 @@ impl UpgradeRequests for Client {
         target: &MachineTarget,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::RequestMachineUpgrade>(request, Some(target), wait)
+        self.call_repeatable_for::<op::RequestMachineUpgrade>(request, Some(target), None, wait)
             .await
     }
 
@@ -49,8 +49,13 @@ impl UpgradeRequests for Client {
         target: &MachineTarget,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::InspectMachineUpgrade>(request, Some(target), wait)
-            .await
+        self.call_repeatable_for::<op::InspectMachineUpgrade>(
+            request,
+            Some(target),
+            Some("Waiting for ployzd to restart…"),
+            wait,
+        )
+        .await
     }
 }
 
@@ -383,6 +388,160 @@ mod tests {
         assert!(error.contains(attempt_id.as_str()), "{error}");
         assert!(error.contains("machine upgrade inspect"), "{error}");
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
+    }
+
+    /// One ployzd generation on a real Unix socket. Its runtime stands in for the process.
+    /// An absent `inspect` outcome answers with an Unknown gRPC status.
+    fn daemon(
+        path: &std::path::Path,
+        inspect: Option<MachineUpgradeOutcome>,
+        hung: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> tokio::runtime::Runtime {
+        use ployz_core::{OpaquePayload, RpcRequestBody, RpcResponse};
+        use tonic::{Response, Status};
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::UnixListener::bind(path).unwrap()
+        };
+        let hung = std::sync::Arc::new(std::sync::Mutex::new(hung));
+        let target = ployz_core::MachineVersion::parse("1.2.3").unwrap();
+        let rpc = tower::service_fn(move |request: tonic::Request<OpaquePayload>| {
+            let (hung, inspect, target) = (hung.clone(), inspect.clone(), target.clone());
+            async move {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "this fixture serves confirmation and upgrade RPCs"
+                )]
+                let response = match request.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::DescribeContract(_) => {
+                        RpcResponse::from(ployz_core::ContractDescription {
+                            machine_id: MachineId::random(),
+                            protocol_major: ployz_core::PROTOCOL_MAJOR,
+                            daemon_version: "fixture".into(),
+                            capabilities: Default::default(),
+                        })
+                    }
+                    RpcRequestBody::RequestMachineUpgrade(request) => {
+                        RpcResponse::from(MachineUpgradeAttempt {
+                            attempt_id: request.attempt_id,
+                            target,
+                            outcome: MachineUpgradeOutcome::Accepted,
+                        })
+                    }
+                    RpcRequestBody::InspectMachineUpgrade(request) => {
+                        let hung = hung.lock().unwrap().take();
+                        if let Some(hung) = hung {
+                            hung.send(()).unwrap();
+                            std::future::pending::<()>().await;
+                        }
+                        let Some(outcome) = inspect else {
+                            return Err(Status::unknown("upgrade record is unreadable"));
+                        };
+                        RpcResponse::from(MachineUpgradeAttempt {
+                            attempt_id: request.attempt_id.unwrap(),
+                            target,
+                            outcome,
+                        })
+                    }
+                    request => panic!("unexpected request: {request:?}"),
+                };
+                Ok::<_, Status>(Response::new(response.encode().unwrap()))
+            }
+        });
+        let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
+            let rpc = rpc.clone();
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    tonic::server::Grpc::new(tonic::codec::ProstCodec::default())
+                        .unary(rpc, request)
+                        .await,
+                )
+            }
+        });
+        runtime.spawn(tonic::transport::Server::builder().serve_with_incoming(
+            service,
+            tokio_stream::wrappers::UnixListenerStream::new(listener),
+        ));
+        runtime
+    }
+
+    async fn local_client(path: &std::path::Path) -> Client {
+        let selected = crate::context::SelectedConnections {
+            source: crate::context::ConnectionSource::Direct,
+            connections: vec![crate::context::Connection::unix(path).unwrap()],
+        };
+        crate::connect::connect_selected_with(
+            selected,
+            std::sync::Arc::new(crate::connect::SystemConnector::default()),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn daemon_restart_during_the_upgrade_is_waited_out() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ployz.sock");
+        let (hung, restarting) = tokio::sync::oneshot::channel();
+        let old = daemon(&path, Some(MachineUpgradeOutcome::Accepted), Some(hung));
+        let mut client = local_client(&path).await;
+        let machine = machine('e', 5);
+        let restart = async {
+            restarting.await.unwrap();
+            // The old process exits with the inspect read in flight.
+            old.shutdown_background();
+            std::fs::remove_file(&path).unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            daemon(
+                &path,
+                Some(MachineUpgradeOutcome::Succeeded {
+                    version: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
+                }),
+                None,
+            )
+        };
+        let (attempt, new) = tokio::join!(
+            run_one(
+                &mut client,
+                &machine,
+                MachineRelease::parse("1.2.3").unwrap(),
+                MachineUpgradeAttemptId::random(),
+            ),
+            restart
+        );
+        new.shutdown_background();
+        let attempt = attempt.unwrap();
+        assert!(
+            matches!(attempt.outcome, MachineUpgradeOutcome::Succeeded { .. }),
+            "{attempt:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_error_answer_fails_the_upgrade_without_retrying() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ployz.sock");
+        let daemon = daemon(&path, None, None);
+        let mut client = local_client(&path).await;
+        let started = Instant::now();
+        let error = run_one(
+            &mut client,
+            &machine('f', 6),
+            MachineRelease::parse("1.2.3").unwrap(),
+            MachineUpgradeAttemptId::random(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        daemon.shutdown_background();
+        assert!(error.contains("upgrade record is unreadable"), "{error}");
+        // One poll interval, no retry budget spent.
+        assert!(started.elapsed() < Duration::from_secs(3), "{error}");
     }
 
     #[test]

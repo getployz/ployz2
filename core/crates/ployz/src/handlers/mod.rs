@@ -127,6 +127,7 @@ async fn reconnect_client(
     crate::setup_retry::run(
         &mut (),
         "Reconnecting to the Cluster",
+        None,
         crate::setup_retry::WAIT,
         crate::connect::ConnectError::is_setup_retryable,
         async |_| {
