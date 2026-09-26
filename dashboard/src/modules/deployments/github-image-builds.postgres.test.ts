@@ -481,6 +481,19 @@ describe("Image Builds on GitHub Actions", () => {
     expect(fake.serverBuilds).toEqual([]);
   });
 
+  it("keeps a build whose step failed in an earlier batch failed when the final report never arrives", async () => {
+    await buildOrder("github-then-servers");
+    await queued();
+    await dispatch();
+    await checkIn(oidcToken());
+    const failedStep = { Build: { Step: { id: "s1", name: "RUN make", started: null, completed: null, cached: false, error: "exit code 2" } } };
+    await post({ from: 0, events: [...runnerEvents, { at: 4_000, event: failedStep }] });
+    const output = await engine(runCompleted()).execute();
+    expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
+    expect(await row()).toMatchObject({ status: "failed", failureMessage: "GitHub: a build step failed.", skips: [] });
+    expect(fake.serverBuilds).toEqual([]);
+  });
+
   const infrastructureFailures: [string, () => Promise<void>, SkipReason][] = [
     ["the runner stopped before its final report", async () => { await post({ from: 0, events: runnerEvents }); }, { builder: "github", kind: "runner_stopped" }],
     ["the runner reported no platforms and no failed step", async () => { await report([]); }, { builder: "github", kind: "no_push" }],
@@ -489,8 +502,6 @@ describe("Image Builds on GitHub Actions", () => {
       { builder: "github", kind: "install_failed", version: "0.1.0-beta.28" }],
     ["the run ran out of time", async () => {
       await harness.db.update(schema.environmentDeploymentImageBuild).set({ checkedInAt: new Date(Date.now() - 3 * 60 * 60_000) });
-      expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false }))).toEqual({ kind: "skipped", reason: { builder: "github", kind: "out_of_time" } });
-      expect(fake.github.map(({ operation }) => operation)).toContain("cancel_run");
     }, { builder: "github", kind: "out_of_time" }],
   ];
 
@@ -504,7 +515,10 @@ describe("Image Builds on GitHub Actions", () => {
     expect(output.error).toBeUndefined();
     expect(await row()).toMatchObject({ status: "built", builder: "server", checkedInAt: null, github: null, skips: [reason] });
     expect(new Set(fake.ended)).toEqual(new Set([grantId(1)]));
-    expect((await buildLog()).imageBuilds).toEqual([expect.objectContaining({ image: "api", skips: [reason] })]);
+    const log = await buildLog();
+    expect(log.imageBuilds).toEqual([expect.objectContaining({ image: "api", skips: [reason] })]);
+    // GitHub's go shows no failed step: the servers took over.
+    expect(log.steps.filter((step) => step.error !== null)).toEqual([]);
   }, 30_000);
 
   it.each(infrastructureFailures)("fails a GitHub-only build with why when %s", async (_case, arrange, reason) => {

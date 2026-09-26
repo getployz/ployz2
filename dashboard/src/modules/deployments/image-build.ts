@@ -59,6 +59,9 @@ export function skipReasonText(reason: SkipReason): string {
   }
 }
 
+/** The ployz version a runner couldn't install, as it reports it. */
+export const installFailedSchema = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z.+-]{1,64}$/u));
+
 /** Mirrors core's `BuildGrantId` (ployz-core `value.rs`): 64 lowercase hex, its key's public half. */
 const buildGrantIdSchema = Schema.declare<BuildGrantId>(
   (value): value is BuildGrantId => typeof value === "string" && /^[0-9a-f]{64}$/u.test(value),
@@ -87,7 +90,18 @@ export const githubImageBuildSchema = Schema.Struct({
     received: Schema.Number,
     collector: collectorCheckpointSchema,
     platforms: Schema.NullOr(Schema.Array(Schema.String)),
-    installFailed: Schema.optional(Schema.String),
+    installFailed: Schema.optionalKey(installFailedSchema),
   })),
 });
 export type GithubImageBuild = typeof githubImageBuildSchema.Type;
+
+/**
+ * Why GitHub moves on a started build that ended without an image: it failed for GitHub's reasons,
+ * not the build's. Null when a Build Step failed, in any batch: that is final.
+ */
+export function githubSkipReason(report: GithubImageBuild["report"], timedOut: boolean): SkipReason | null {
+  if (report?.collector.stepFailed) return null;
+  if (report?.installFailed !== undefined) return { builder: "github", kind: "install_failed", version: report.installFailed };
+  if (timedOut) return { builder: "github", kind: "out_of_time" };
+  return report?.platforms ? { builder: "github", kind: "no_push" } : { builder: "github", kind: "runner_stopped" };
+}

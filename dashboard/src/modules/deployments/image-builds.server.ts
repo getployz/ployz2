@@ -16,7 +16,8 @@ import { environmentDeployment, environmentDeploymentImageBuild as table, type I
  * returns what happened, so no caller re-reads a row to learn it:
  *
  *   start ──▶ building ─┬─ claim for GitHub ─▶ check-in with grant ─▶ report …
- *                       ├─ skip (not once started, but for GitHub's infrastructure) ─▶ building, next Builder
+ *                       ├─ skip (not once started) ─▶ building, next Builder
+ *                       ├─ move a started GitHub run that failed for infrastructure ─▶ building, next Builder
  *                       └─ settle ─▶ built | failed | cancelled
  */
 
@@ -129,23 +130,34 @@ export const claimForGithub = Effect.fn("Deployments.claimImageBuildForGithub")(
   return claimed ? { kind: "claimed" as const } : settled(build, yield* statusNow(build.id));
 });
 
+/** Adds `reason` to the skip trail and clears what the Builder left, so the next one starts clean. */
+const skipPatch = (reason: SkipReason) => ({
+  skips: sql`${table.skips} || ${JSON.stringify([reason])}::jsonb`,
+  builder: "server" as const, githubRunId: null, checkedInAt: null, github: null, machineId: null, serverChoice: null, updatedAt: new Date(),
+});
+
 /**
- * Adds the current Builder to the skip trail and clears what it left, so the next one starts clean.
- * Refused once the build started (GitHub checked in: `started`) or settled. Only `startedRun`, a
- * GitHub run that checked in and then failed for infrastructure reasons, moves a started build.
+ * Skips the current Builder. Refused once the build started (GitHub checked in: `started`) or
+ * settled: only `moveStartedGithubBuild` moves a started build.
  */
-export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(function* (build: Build, reason: SkipReason, startedRun?: number) {
+export const skipImageBuilder = Effect.fn("Deployments.skipImageBuilder")(function* (build: Build, reason: SkipReason) {
   const { drizzle } = yield* Database;
-  const [skipped] = yield* drizzle.update(table).set({
-    skips: sql`${table.skips} || ${JSON.stringify([reason])}::jsonb`,
-    builder: "server", githubRunId: null, checkedInAt: null, github: null, machineId: null, serverChoice: null, updatedAt: new Date(),
-  }).where(and(
-    eq(table.id, build.id), eq(table.status, "building"),
-    startedRun === undefined ? isNull(table.checkedInAt) : eq(table.githubRunId, startedRun),
-  )).returning({ id: table.id });
+  const [skipped] = yield* drizzle.update(table).set(skipPatch(reason))
+    .where(and(eq(table.id, build.id), eq(table.status, "building"), isNull(table.checkedInAt))).returning({ id: table.id });
   if (skipped) return { kind: "skipped", reason } satisfies ImageBuildAttempt;
   const status = yield* statusNow(build.id);
   return status === "building" ? { kind: "started" as const } : settled(build, status);
+});
+
+/**
+ * Skips GitHub for a run that checked in and then failed for infrastructure reasons, so the next
+ * Builder gets the build. Only while that run still holds it; otherwise reports how it settled.
+ */
+export const moveStartedGithubBuild = Effect.fn("Deployments.moveStartedGithubBuild")(function* (build: Build, runId: number, reason: SkipReason) {
+  const { drizzle } = yield* Database;
+  const [moved] = yield* drizzle.update(table).set(skipPatch(reason))
+    .where(and(eq(table.id, build.id), eq(table.status, "building"), eq(table.githubRunId, runId))).returning({ id: table.id });
+  return moved ? { kind: "skipped", reason } satisfies ImageBuildAttempt : settled(build, yield* statusNow(build.id));
 });
 
 /** Skips a Builder that cannot have started the build: nothing checked in for it. */

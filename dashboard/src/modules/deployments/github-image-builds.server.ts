@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { BuildGrantId, BuildReceipt, MachineId, PreparationEvent } from "@ployz/sdk";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, type Types } from "effect";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -9,11 +9,11 @@ import { buildFingerprints, buildGrantTag, ployzVersion } from "#/modules/runtim
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import type { BuildCandidate } from "./build-order";
-import type { SkipReason } from "./image-build";
+import { githubSkipReason, installFailedSchema, type GithubImageBuild } from "./image-build";
 import { persistBuildLog } from "./deployment-events.server";
 import {
   awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, loadImageBuild, recordGithubReport, recordServerChoice, settleImageBuild, settled,
-  skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
+  moveStartedGithubBuild, skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
 import { preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
@@ -135,31 +135,27 @@ export const checkGithubImageBuild = Effect.fn("Deployments.checkGithubImageBuil
   build: ImageBuildTarget, seen: { ended: boolean; startLimit: boolean },
 ) {
   const row = yield* loadImageBuild(build.id);
-  if (row?.status !== "building" || row.builder !== "github") return yield* leftGithub(build, row);
-  if (seen.ended || (yield* githubRunEnded(row))) return yield* finishGithubImageBuild(build, row, false);
+  if (row?.status !== "building" || row.builder !== "github") return settled(build, row?.status ?? "failed") satisfies GithubBuildCheck;
+  if (overBudget(row)) return yield* finishGithubImageBuild(build, row, true);
+  if (seen.ended || row.github.report?.platforms || (yield* githubRunEnded(row))) return yield* finishGithubImageBuild(build, row, false);
   if (row.checkedInAt === null) return seen.startLimit ? yield* withdrawGithubImageBuild(build, row) : waiting;
-  if (Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS) return yield* finishGithubImageBuild(build, row, true);
   return waiting;
 });
 
+const overBudget = (row: GithubRow) => row.checkedInAt !== null && Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS;
+
 /**
  * The build's result once it settled, which a final report may do before the walk begins a wait;
- * null while it still builds.
+ * null while it still builds. A final report that left the build unsettled (GitHub failed it) is
+ * acted on here, so the walk moves on without waiting for a wake it may have missed.
  */
 export const settledGithubImageBuild = Effect.fn("Deployments.settledGithubImageBuild")(function* (build: ImageBuildTarget) {
   const row = yield* loadImageBuild(build.id);
-  return row?.status === "building" && row.builder === "github" ? null : yield* leftGithub(build, row);
+  if (row?.status !== "building" || row.builder !== "github") return settled(build, row?.status ?? "failed");
+  if (!row.github.report?.platforms) return null;
+  const found = yield* finishGithubImageBuild(build, row, false);
+  return found.kind === "waiting" ? null : found;
 });
-
-/**
- * A dispatched build GitHub no longer holds: it settled, or GitHub was skipped, perhaps by the
- * runner's final report, and the trail's last entry says why.
- */
-const leftGithub = (build: Pick<ImageBuildTarget, "id" | "image">, row: ImageBuildRow | undefined) => {
-  if (row?.status !== "building") return Effect.succeed<ImageBuildAttempt>(settled(build, row?.status ?? "failed"));
-  const reason = row.skips.at(-1);
-  return reason ? Effect.succeed<ImageBuildAttempt>({ kind: "skipped", reason }) : Effect.die(new Error("GitHub left an Image Build without a skip."));
-};
 
 /** Whether GitHub says the build's run completed; unknown (GitHub unreachable) reads as still running. */
 const githubRunEnded = (row: GithubRow) => githubRun(row).pipe(
@@ -270,7 +266,7 @@ const stepsReportSchema = Schema.Struct({
   events: Schema.Array(Schema.Struct({ at: Schema.Number, event: buildEventSchema })),
   platforms: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The ployz version the runner couldn't install; it sends this with empty `platforms`. */
-  installFailed: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9A-Za-z.+-]{1,64}$/u))),
+  installFailed: Schema.optionalKey(installFailedSchema),
 });
 
 const MAX_STEPS_REPORT_BYTES = 16 * 1024 * 1024;
@@ -301,20 +297,21 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
     output.push(...writes.output);
   }
   const platforms = report.platforms ?? null;
-  if (platforms) steps.push(...collector.finish(platforms.length ? null : "The build failed on GitHub; see its run."));
+  // Only a failed Build Step fails the build; a build GitHub failed moves on, so its log shows no failure.
+  if (platforms) steps.push(...collector.finish(platforms.length || !collector.checkpoint().stepFailed ? null : "The build failed on GitHub; see its run."));
   yield* persistBuildLog(row.deploymentId, { steps, output }, row.image);
   const taken = Math.max(received, report.from + report.events.length);
-  const recorded = {
-    received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms], installFailed: platforms ? report.installFailed : undefined,
-  };
+  const recorded: Types.Mutable<NonNullable<GithubImageBuild["report"]>> = { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] };
+  if (platforms && report.installFailed !== undefined) recorded.installFailed = report.installFailed;
   if (!(yield* recordGithubReport(row.id, received, recorded))) {
     return yield* new Conflict({ message: "Another report of this build was taken first." });
   }
   if (platforms) {
     // The runner reports its end once the image is pushed, before its run completes (it still
-    // uploads build cache), so the report settles the build and wakes the waiting walk. A failure
-    // after the report was recorded leaves settling to the run's completion or the poll.
-    yield* finishGithubImageBuild(row, { ...row, github: { ...github, report: recorded } }, false);
+    // uploads build cache), so the report settles the build and wakes the waiting walk. A build
+    // GitHub failed is left to the walk to move on. A failure after the report was recorded leaves
+    // settling to the run's completion or the poll.
+    yield* endGithubBuild(row, { ...row, github: { ...github, report: recorded } }, false);
     yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${row.id}`, runId: row.githubRunId })).pipe(
       // The run's completion wakes it anyway.
       Effect.catch((error) => Effect.logWarning("Could not wake the walk for a reported GitHub build.", error)),
@@ -324,11 +321,9 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
 });
 
 /**
- * Settles a GitHub build once its runner reported its end, its run ended, or it ran out of budget
- * (`timedOut`: its run is cancelled first): ends the grant and writes the receipt from the digest
- * the Machine verified. A run that ended before it checked in never started, so GitHub is skipped.
- * A started run that pushed nothing failed only if a Build Step failed; otherwise GitHub failed it,
- * and it is skipped with why.
+ * The walk's end of a GitHub build, once its runner reported its end, its run ended, or it ran out
+ * of budget (`timedOut`). A run that ended before it checked in never started, so GitHub is
+ * skipped; a started run GitHub failed moves on to the next Builder.
  */
 const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(function* (build: Pick<ImageBuildTarget, "id" | "image">, row: GithubRow, timedOut: boolean) {
   if (row.checkedInAt === null) {
@@ -336,6 +331,16 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
     // It checked in just now; the next check finds its run ended on GitHub and finishes it.
     return skip.kind === "started" ? waiting : skip;
   }
+  const ended = yield* endGithubBuild(build, row, timedOut);
+  return ended.kind === "move" ? yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason) : ended;
+});
+
+/**
+ * Ends a started GitHub build's grant (`timedOut`: its run is cancelled first) and settles it:
+ * built, with the receipt from the digest the Machine verified, or failed at a Build Step. Without
+ * an image and a failed step, GitHub failed it: `move`, with why.
+ */
+const endGithubBuild = Effect.fn("Deployments.endGithubBuild")(function* (build: Pick<ImageBuildTarget, "id" | "image">, row: GithubRow, timedOut: boolean) {
   if (timedOut) yield* cancelGithubBuildRun(row);
   const failed = (message: string) => settleImageBuild(build, { status: "failed", message, machineId: row.machineId });
   const grant = row.github.grant;
@@ -348,21 +353,13 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
     Effect.catch((error) => Effect.logWarning("Could not end a GitHub build's grant; the next check retries.", error).pipe(Effect.as(null))),
   );
   if (!ended) {
-    const spent = timedOut || Date.now() - row.checkedInAt.getTime() > GITHUB_RUN_BUDGET_MS;
-    return spent ? yield* failed("GitHub: your Machine couldn't be reached to confirm the push within 2 hours.") : waiting;
+    return timedOut || overBudget(row) ? yield* failed("GitHub: your Machine couldn't be reached to confirm the push within 2 hours.") : waiting;
   }
   const pushed = ended.pushed;
-  const report = row.github.report;
-  const platforms = report?.platforms;
+  const platforms = row.github.report?.platforms;
   if (!pushed || !platforms?.length) {
-    if (platforms && report?.collector.stepFailed) return yield* failed("GitHub: a build step failed.");
-    const reason: SkipReason = report?.installFailed !== undefined ? { builder: "github", kind: "install_failed", version: report.installFailed }
-      : timedOut ? { builder: "github", kind: "out_of_time" }
-      : platforms ? { builder: "github", kind: "no_push" }
-      : { builder: "github", kind: "runner_stopped" };
-    const skip = yield* skipImageBuilder(build, reason, row.githubRunId);
-    // Skipped just now by the other of the final report and the walk.
-    return skip.kind === "started" ? yield* leftGithub(build, yield* loadImageBuild(build.id)) : skip;
+    const reason = githubSkipReason(row.github.report, timedOut);
+    return reason ? ({ kind: "move", reason } as const) : yield* failed("GitHub: a build step failed.");
   }
   const receipt: BuildReceipt = {
     fingerprint: grant.fingerprint, machine_id: row.machineId,
