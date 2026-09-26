@@ -1,6 +1,6 @@
 import { deploymentSourcePinsSchema, validateDeploymentSourcePins, type DeploymentSourcePins } from "./source-pins";
 import { serviceRegistryCredential, service as serviceIdentity } from "#/modules/environment-design/tables";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { parseResourceConfig, parseServiceConfig } from "@ployz/sdk/config";
 import "@tanstack/react-start/server-only";
 
 import { randomUUID } from "node:crypto";
@@ -192,6 +192,13 @@ function insertNodeSnapshots(input: {
     yield* drizzle
       .insert(schemaEnvironmentNodeConfigSnapshot)
       .values(snapshots.map(({ configSnapshot }) => configSnapshot));
+    yield* Effect.forEach(
+      input.nodeSnapshots.filter(({ nodeType }) => nodeType === "volume"),
+      (snapshot) => drizzle.update(schemaEnvironmentResource)
+        .set({ deployedName: parseResourceConfig("volume", snapshot.config).name, removedAt: null })
+        .where(and(eq(schemaEnvironmentResource.environmentId, input.environmentId), eq(schemaEnvironmentResource.id, snapshot.nodeId))),
+      { discard: true },
+    );
     const secrets = snapshots.flatMap((snapshot) =>
       snapshot.encryptedRegistryUsername || snapshot.encryptedRegistrySecret
         ? [

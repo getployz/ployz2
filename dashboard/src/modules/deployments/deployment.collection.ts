@@ -14,7 +14,6 @@ import {
   getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
-  getVolumeRemoveAttemptsCollection,
 } from "#/collections/collections";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import {
@@ -32,7 +31,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
   const projects = getProjectsCollection(organizationSlug, scope);
   const nodeSnapshots =
     getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
-  const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug, scope);
 
   const rows = client.collection(collectionOptions(liveQueryCollectionOptions({
     id: `${deployments.id}:deployment-relationships`,
@@ -55,13 +53,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
               eq(snapshot.environmentDeploymentId, deployment.id),
             ),
         ),
-        volumeRemoveAttempts: toArray(
-          q
-            .from({ volumeRemoveAttempt: volumeRemoveAttempts })
-            .where(({ volumeRemoveAttempt }) =>
-              eq(volumeRemoveAttempt.environmentDeploymentId, deployment.id),
-            ),
-        ),
       })),
   })));
 
@@ -72,7 +63,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
       q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {
         const deployment = deploymentRelationships.deployment;
         const snapshots = deploymentRelationships.nodeSnapshots ?? [];
-        const volumeAttempts = deploymentRelationships.volumeRemoveAttempts ?? [];
         const decoded = decodeStrict(
           environmentDeploymentSummarySchema,
           {
@@ -88,9 +78,7 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
             runtimeProgress: deployment.runtimeProgress,
             sourcePins: deployment.sourcePins,
             buildServiceIds: snapshots.filter((snapshot) => snapshot.nodeType === "service" && parseServiceConfig(snapshot.config).source.type === "git").map((snapshot) => snapshot.nodeId),
-            canRetry:
-              deployment.status === "failed" &&
-              volumeAttempts.length === 0,
+            canRetry: deployment.canRetry,
             failureCode: deployment.failureCode,
             dispatchRequestedAt: deployment.dispatchRequestedAt,
             startedAt: deployment.startedAt,
@@ -98,27 +86,8 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
             cancellationRequestedAt: deployment.cancellationRequestedAt,
             createdAt: deployment.createdAt,
             updatedAt: deployment.updatedAt,
-            serviceCount: snapshots.filter(
-              (snapshot) => snapshot.nodeType === "service",
-            ).length,
             projectSlug: deploymentRelationships.projectSlug,
             environmentSlug: deploymentRelationships.environmentSlug,
-            volumeRemoveAttempts:
-              volumeAttempts.map((attempt) => ({
-                id: attempt.id,
-                environmentDeploymentId: attempt.environmentDeploymentId,
-                environmentResourceId: attempt.environmentResourceId,
-                retryOfAttemptId: attempt.retryOfAttemptId,
-                volumes: attempt.volumes,
-                status: attempt.status,
-                inngestRunId: attempt.inngestRunId,
-                outcome: attempt.outcome,
-                failureMessage: attempt.failureMessage,
-                startedAt: attempt.startedAt,
-                terminalAt: attempt.terminalAt,
-                createdAt: attempt.createdAt,
-                updatedAt: attempt.updatedAt,
-              })),
           },
         );
         return {
@@ -141,7 +110,6 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
     reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
     reconcileCollection(getEnvironmentSavedStateRevisionsCollection(organizationSlug, scope)),
     reconcileCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
-    reconcileCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
   ]);
 }
 

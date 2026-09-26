@@ -89,6 +89,11 @@ export const readCollection = Effect.fn("Collections.read")(function* (
             (select progress from ${tables.environmentDeploymentEvent}
              where deployment_id = ${tables.environmentDeployment}.${sql.identifier("id")} order by id desc limit 1)
           )`,
+          // Removal retries need a fresh destructive review, so an attempt that staged one cannot retry.
+          canRetry: sql<boolean>`${tables.environmentDeployment.status} = 'failed' and not exists (
+            select 1 from ${tables.volumeRemoveAttempt}
+            where ${tables.volumeRemoveAttempt.environmentDeploymentId} = ${tables.environmentDeployment}.${sql.identifier("id")}
+          )`,
         }).from(tables.environmentDeployment).where(scoped(tables.environmentDeployment));
       // Sealed variable ciphertext stays on the server; deploy resolution reads the full rows.
       case "environment_node_config_snapshot":
@@ -97,9 +102,6 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "environment_node_introduction":
         return (yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
           .where(scoped(tables.environmentNodeIntroduction))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));
-      case "volume_remove_attempt":
-        return yield* database.drizzle.select().from(tables.volumeRemoveAttempt)
-          .where(scoped(tables.volumeRemoveAttempt));
       case "organization_enrollment": {
         // The pairing row holds the encrypted pairing secret; expose only the derived status.
         const pairings = yield* database.drizzle.select({

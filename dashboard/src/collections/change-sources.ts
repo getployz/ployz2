@@ -21,7 +21,6 @@ export const changeNameSources = {
   environment_saved_state_snapshot: ["environment_saved_state_snapshot"],
   environment_node_config_snapshot: ["environment_node_config_snapshot"],
   environment_node_introduction: ["environment_node_introduction"],
-  volume_remove_attempt: ["volume_remove_attempt"],
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],
   organization_build_order: ["organization_build_order"],
