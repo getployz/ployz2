@@ -250,7 +250,6 @@ fn invalid_argument(message: String) -> RpcError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PushOutcome {
-    pub pushed: Vec<PushedImage>,
     pub failures: Vec<String>,
 }
 
@@ -274,8 +273,8 @@ pub(crate) async fn push_project_images(
     machines: &[MachineObservation],
     preview: &DeployPlan,
     cancellation: &CancellationToken,
+    progress: &impl Fn(crate::sdk::prepare::Progress),
 ) -> Result<PushOutcome, crate::sdk::prepare::PreparationError> {
-    let mut pushed = Vec::new();
     let mut failures = Vec::new();
     // Check every actual destination before any image or application changes.
     let deliveries = builds.iter().map(|service| {
@@ -297,15 +296,34 @@ pub(crate) async fn push_project_images(
         if targets.is_empty() {
             continue;
         }
+        // The Build Machine already holds its image; only the others receive it.
+        let receivers = machines
+            .iter()
+            .filter(|machine| machine.machine.id != service.machine_id)
+            .filter(|machine| targets.contains(&machine.machine.id.to_string()))
+            .map(|machine| machine.machine.name.to_string())
+            .collect::<Vec<_>>();
+        if !receivers.is_empty() {
+            progress(crate::sdk::prepare::Progress::Sending {
+                service: service.name.to_string(),
+                machines: receivers,
+            });
+        }
         match push_image(client, service, machines, &targets, cancellation).await {
             Ok((images, service_failures)) => {
-                pushed.extend(images);
+                for image in images {
+                    progress(crate::sdk::prepare::Progress::Delivered {
+                        image: image.image,
+                        service: service.name.to_string(),
+                        machine_id: image.machine_id,
+                    });
+                }
                 failures.extend(service_failures);
             }
             Err(error) => failures.push(format!("{}: {error}", service.image)),
         }
     }
-    Ok(PushOutcome { pushed, failures })
+    Ok(PushOutcome { failures })
 }
 
 pub(crate) async fn plan_project(

@@ -11,16 +11,13 @@ import {
   imageBuildWanted, loadBuildReceipts, recordServerChoice, settleImageBuild, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildTarget,
 } from "./image-builds.server";
-import { preparationProgressCollector, type BuildStepWrite } from "./preparation-progress";
+import { ployzStep, preparationProgressCollector, type BuildStepWrite } from "./preparation-progress";
 import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import { connectedRuntime, oneServiceDeployment, watchDeploymentCancellation } from "./runtime-session.server";
 import { acquireDeploymentSources } from "./runtime-sources.server";
 
 /** A build that reused an image still leaves this one Build Step as its evidence. */
-export const reusedImageStep = (): BuildStepWrite => {
-  const now = new Date();
-  return { build: 0, key: "stage:Reused", name: "Reused image", startedAt: now, completedAt: now, cached: true, error: null };
-};
+export const reusedImageStep = (): BuildStepWrite => ({ ...ployzStep("stage:Reused", "Reused image"), cached: true });
 
 /** How one go on the Cluster ended, before the Image Build records it. */
 type ClusterBuild =

@@ -2,8 +2,11 @@ import type { PreparationEvent } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { PreparationProgress } from "./deployment-progress";
 
-/** A build step as the engine reports it: a BuildKit vertex or a Ployz-owned phase. */
-export type BuildStepWrite = { build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; cached: boolean; error: string | null };
+/**
+ * A build step as the engine reports it: a BuildKit vertex or a Ployz-owned phase. `image` files a
+ * deploy-time step under one Image Build instead of the writer's own.
+ */
+export type BuildStepWrite = { build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; cached: boolean; error: string | null; image?: string };
 export type BuildOutputWrite = { build: number; step: string; stderr: boolean; text: string };
 export type PreparationWrites = { progress: PreparationProgress | null; steps: BuildStepWrite[]; output: BuildOutputWrite[] };
 
@@ -27,14 +30,24 @@ export type CollectorCheckpoint = typeof collectorCheckpointSchema.Type;
 export const BUILD_OUTPUT_KEY = "build-output";
 
 const stageNames = new Map([
-  ["Admission", "Waiting for the builder"], ["Queued", "Queued"], ["Upload", "Uploading source"], ["Preparation", "Preparing the builder"],
-  ["Building", "Building"], ["Output", "Loading images"], ["Cleanup", "Cleaning up"],
+  ["Admission", "Starting the build"], ["Queued", "Waiting for a free build slot"], ["Upload", "Uploading source"], ["Preparation", "Preparing the builder"],
+  ["Building", "Building"], ["Output", "Exporting image"], ["Cleanup", "Cleaning up"], ["Push", "Pushing image"],
 ]);
 const stageName = (stage: string) => stageNames.get(stage) ?? stage;
 export const BUILDING_KEY = "stage:Building";
 /** Attempt-wide rows the engine files under the last build run: image cleanup and delivery. */
 export const CLEANUP_KEY = "stage:Cleanup";
 export const TRANSFER_KEY = "transfer";
+/** Heads one Builder's section of an Image Build's log; its name is the Builder: "GitHub Actions" or a Server. */
+export const BUILDER_KEY = "stage:Builder";
+/** Sending one image to the Machines that run it, filed under that image at deploy time. */
+const sendKey = (image: string) => `send:${image}`;
+
+/** A Ployz-owned step starting at `at`, which the caller may leave open or fail. */
+export const ployzStep = (key: string, name: string, at = new Date()): BuildStepWrite =>
+  ({ build: 0, key, name, startedAt: at, completedAt: at, cached: false, error: null });
+/** The heading row of a Builder's section, as the walk writes it when the Builder takes the build. */
+export const builderStep = (builder: string, at?: Date) => ployzStep(BUILDER_KEY, builder, at);
 
 /**
  * Which step a failed attempt is pinned on: the failed BuildKit step already
@@ -108,11 +121,22 @@ export function preparationProgressCollector(now: () => Date = () => new Date(),
       }
       if ("Selected" in event) {
         current = { ...current, machineId: event.Selected.machine.id, machineName: event.Selected.machine.name, message: "Builder selected" };
-        return { progress: current, steps: [], output: [] };
+        return { progress: current, steps: [builderStep(event.Selected.machine.name, now())], output: [] };
+      }
+      if ("Sending" in event) {
+        const { service, machines } = event.Sending;
+        const row = { ...create(sendKey(service), `Sending image to ${machines.join(", ")}`), image: service };
+        rows.set(rowId(build, row.key), row);
+        return { progress: null, steps: [{ ...row }], output: [] };
       }
       if ("Delivered" in event) {
+        const sent = rows.get(rowId(build, sendKey(event.Delivered.service)));
+        if (sent) sent.completedAt ??= now();
         const row = open === null ? undefined : rows.get(open);
-        return { progress: null, steps: [], output: row ? [{ build: row.build, step: row.key, stderr: false, text: `Delivered ${event.Delivered.image} to ${event.Delivered.machine_id}\n` }] : [] };
+        return {
+          progress: null, steps: sent ? [{ ...sent }] : [],
+          output: row ? [{ build: row.build, step: row.key, stderr: false, text: `Delivered ${event.Delivered.image} to ${event.Delivered.machine_id}\n` }] : [],
+        };
       }
       if ("Platforms" in event) return none();
       const build_ = event.Build;
@@ -156,6 +180,8 @@ export function preparationProgressCollector(now: () => Date = () => new Date(),
       }
       return [...rows].flatMap(([id, row]) => {
         if (row.completedAt !== null && id !== blamed) return [];
+        // An image still being sent when preparation failed is the one that failed to arrive.
+        if (error && row.key.startsWith("send:")) row.error = error;
         row.completedAt ??= now();
         return [{ ...row }];
       });

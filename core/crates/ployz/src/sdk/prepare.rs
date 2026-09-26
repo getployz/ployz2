@@ -220,8 +220,15 @@ pub enum Progress {
     Selected(Box<SelectedBuilder>),
     Build(ployz_build::Progress),
     Transfer,
+    /// One Service's image starts going to these Machines, by name.
+    Sending {
+        service: String,
+        machines: Vec<String>,
+    },
+    /// One Machine received a Service's image.
     Delivered {
         image: String,
+        service: String,
         machine_id: ployz_core::MachineId,
     },
 }
@@ -278,14 +285,9 @@ pub async fn prepare(
         &machines,
         &plan,
         cancellation,
+        &progress,
     )
     .await?;
-    for image in outcome.pushed {
-        progress(Progress::Delivered {
-            image: image.image,
-            machine_id: image.machine_id,
-        });
-    }
     if cancellation.is_cancelled() {
         return Err(PreparationError::Cancelled);
     }

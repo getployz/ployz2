@@ -4,12 +4,11 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getDeploymentLogsCollection, useDeploymentLogsReadState } from "#/modules/deployments/deployment-log.collection";
 import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments/deployment-progress";
 import { Button } from "#/components/ui/button";
-import { Item, ItemActions, ItemContent, ItemDescription } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { useBuildLog, type BuildOutputRow, type BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 import { BUILDING_KEY, CLEANUP_KEY } from "#/modules/deployments/preparation-progress";
-import { builtOn, builtOnLine, imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
+import { buildLogSections, imageBuildSteps, stripAnsi, type ImageBuildEvidence } from "#/modules/deployments/deployment-view";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
@@ -44,13 +43,15 @@ const lastLine = (rows: readonly BuildOutputRow[]) => {
   return lines.at(-1) ?? null;
 };
 
-export function BuildLogs({ steps, output, finished, now = Date.now() }: {
-  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; finished: boolean; now?: number;
+/** One Image Build's log: a section per Builder's go, each a plain line and then its steps. */
+export function BuildLogs({ steps, output, finished, evidence, now = Date.now() }: {
+  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; finished: boolean; evidence?: ImageBuildEvidence; now?: number;
 }) {
   // Rows the user toggled; failed rows open by default until toggled.
   const [toggled, setToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
+  const sections = buildLogSections(steps, evidence);
   const started = steps.filter((step) => step.startedAt !== null);
-  if (!started.length) {
+  if (!sections.some((section) => section.title !== null) && !started.length) {
     return <p className="text-muted-foreground">{finished ? "No retained build output for this image." : "Waiting for the build to start"}</p>;
   }
   const outputByStep = new Map<number, BuildOutputRow[]>();
@@ -61,12 +62,21 @@ export function BuildLogs({ steps, output, finished, now = Date.now() }: {
   // One attempt may run BuildKit several times; the run's heading matters only then, or when it failed.
   const runs = new Set(started.map((step) => step.build).filter((build) => build > 0)).size;
   const failedRuns = new Set(steps.filter((step) => step.error !== null).map((step) => step.build));
-  const shown = started.filter((step) => step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build))));
+  const shown = (section: readonly BuildStepRow[]) => section.filter((step) => step.startedAt !== null
+    && (step.error !== null || (step.key !== CLEANUP_KEY && (step.key !== BUILDING_KEY || runs > 1 || failedRuns.has(step.build)))));
+  const heading = "mt-2 flex items-center gap-3 px-1 font-medium";
   return <ol>
-    {shown.map((step) => step.key === BUILDING_KEY && step.error === null
-      ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
-      : <StepRow key={step.id} step={step} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
-          onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />)}
+    {sections.flatMap((section, index) => [
+      section.title === null ? [] : [<li key={`section:${index}`} className={heading}>
+        <span className="w-16 shrink-0" /><span className="w-4 shrink-0" />
+        <span className="min-w-0 flex-1">{section.title}</span>
+        {section.runUrl ? <Button variant="link" size="xs" nativeButton={false} render={<a href={section.runUrl} target="_blank" rel="noreferrer" />}>View run ↗</Button> : null}
+      </li>],
+      shown(section.steps).map((step) => step.key === BUILDING_KEY && step.error === null
+        ? <li key={step.id} className={heading}><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
+        : <StepRow key={step.id} step={step} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
+            onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />),
+    ].flat())}
   </ol>;
 }
 
@@ -126,17 +136,11 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
   const now = useNow(build.data?.finished === false);
   const steps = imageBuildSteps(build.data?.steps ?? [], image);
   const ids = new Set(steps.map((step) => step.id));
-  const server = builtOn(build.data, image);
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
-    {server ? <Item size="xs">
-      <ItemContent><ItemDescription>{builtOnLine(server)}</ItemDescription></ItemContent>
-      {server.server !== null && server.runUrl ? <ItemActions>
-        <Button variant="link" size="xs" nativeButton={false} render={<a href={server.runUrl} target="_blank" rel="noreferrer" />}>View run ↗</Button>
-      </ItemActions> : null}
-    </Item> : null}
     <BuildLogViewer key={`${deploymentId}:${image}`}>
-      {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))} finished={build.data?.finished ?? true} now={now} />}
+      {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))}
+        finished={build.data?.finished ?? true} evidence={build.data?.imageBuilds.find((row) => row.image === image)} now={now} />}
     </BuildLogViewer>
   </>;
 }

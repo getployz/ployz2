@@ -28,7 +28,7 @@ import { createMarkCancelledRowBackedWorkflow, createProcessEnvironmentDeploymen
 import type { BuildOrder } from "./build-order";
 import { skipReasonText, type SkipReason } from "./image-build";
 import { planImageBuildWalk } from "./build-order.server";
-import { builtOn, builtOnLine } from "./deployment-view";
+import { buildLogSections, builtOn } from "./deployment-view";
 import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps, settleOrMoveReportedGithubBuild } from "./github-image-builds.server";
 import { settleGithubImageBuild } from "./image-builds.server";
 import { persistDeploymentSourcePin } from "./source-pins.server";
@@ -344,7 +344,7 @@ describe("Image Builds on GitHub Actions", () => {
       const log = await buildLog();
       expect(log.steps.filter((step) => step.image === "api").map((step) => step.name)).toEqual(["Reused image"]);
       // Why nothing built stays on the build, as a Server choice does.
-      expect(builtOnLine(builtOn(log, "api") ?? { server: null, reason: null, skipped: [] })).toBe("Built on peer · reused the build of this commit");
+      expect(builtOn(log, "api")).toBe("peer");
     });
 
     it("dispatches the build when the receipt can't be checked", async () => {
@@ -449,10 +449,14 @@ describe("Image Builds on GitHub Actions", () => {
     expect(fake.prepared.at(-1)).toEqual({ api: receipt });
 
     const log = await harness.runEffect(loadDeploymentBuildLog({ organizationId, deploymentId, after: 0, limit: 50 }));
-    expect(log.steps.filter((step) => step.image === "api").map((step) => step.name)).toEqual(["Building", "RUN make"]);
+    // Cloud heads GitHub's section and times the wait for a runner; the runner reports the rest.
+    expect(log.steps.filter((step) => step.image === "api").map((step) => [step.name, step.attempt])).toEqual([
+      ["Building", 0], ["GitHub Actions", 0], ["Waiting for a runner", 0], ["RUN make", 0],
+    ]);
+    expect(log.steps.find((step) => step.name === "Waiting for a runner")?.completedAt).not.toBeNull();
     expect(log.output.map((line) => line.text)).toEqual(["ok\n"]);
-    // A GitHub build has no Server choice; the log links its run and says why GitHub took it.
-    expect(log.imageBuilds).toEqual([{ image: "api", serverChoice: null, github: { runUrl: "https://github.com/owner/repo/actions/runs/9001", reason: "first_in_build_order" }, skips: [] }]);
+    // A GitHub build has no Server choice; the log links its run.
+    expect(log.imageBuilds).toEqual([{ image: "api", serverChoice: null, github: { runUrl: "https://github.com/owner/repo/actions/runs/9001" }, skips: [] }]);
     // The build ended: no more Build Steps are taken.
     expect(await run(Effect.flip(recordGithubBuildSteps(runnerRequest(oidcToken()), built?.id ?? "", JSON.stringify({ from: 3, events: [] })))))
       .toMatchObject({ _tag: "Conflict" });
@@ -461,9 +465,12 @@ describe("Image Builds on GitHub Actions", () => {
   it("shows the runner's Build Steps as they arrive, once each, and only after check-in", async () => {
     await dispatch();
     expect(await refused({ from: 0, events: runnerEvents.slice(0, 1) })).toMatchObject({ _tag: "Conflict" });
+    // Until check-in, the log waits for a runner.
+    expect((await buildLog()).steps.find((step) => step.name === "Waiting for a runner")?.completedAt).toBeNull();
     await checkIn(oidcToken());
     expect(await post({ from: 0, events: runnerEvents.slice(0, 2) })).toEqual({ received: 2 });
-    expect((await buildLog()).steps.filter((step) => step.image === "api").map((step) => step.name)).toEqual(["Building", "RUN make"]);
+    expect((await buildLog()).steps.filter((step) => step.image === "api" && step.key !== "stage:Builder" && step.key !== "runner").map((step) => step.name))
+      .toEqual(["Building", "RUN make"]);
     // A retried batch repeats lines already taken; only the new one is filed.
     expect(await post({ from: 1, events: runnerEvents.slice(1) })).toEqual({ received: 3 });
     // A batch that skips lines is refused, naming where to resend from.
@@ -504,7 +511,10 @@ describe("Image Builds on GitHub Actions", () => {
     ["the runner stopped before its final report", async () => { await post({ from: 0, events: runnerEvents }); }, { builder: "github", kind: "runner_stopped" }],
     ["the runner reported no platforms and no failed step", async () => { await report([]); }, { builder: "github", kind: "no_push" }],
     ["the Machine recorded no push", async () => { fake.noPush = true; await report(["linux/amd64"]); }, { builder: "github", kind: "no_push" }],
-    ["the runner couldn't install ployz", async () => { await post({ from: 0, events: [], platforms: [], installFailed: "0.1.0-beta.28" }); },
+    ["the runner couldn't install ployz", async () => {
+      const install = { id: "install", name: "Installing ployz", started: "2026-09-26T00:00:00Z", completed: "2026-09-26T00:00:05Z", cached: false, error: "Could not install ployz 0.1.0-beta.28." };
+      await post({ from: 0, events: [{ at: 1_000, event: { Build: { Step: install } } }], platforms: [], installFailed: "0.1.0-beta.28" });
+    },
       { builder: "github", kind: "install_failed", version: "0.1.0-beta.28" }],
     ["the run ran out of time", async () => {
       await harness.db.update(schema.environmentDeploymentImageBuild).set({ checkedInAt: new Date(Date.now() - 3 * 60 * 60_000) });
@@ -523,8 +533,12 @@ describe("Image Builds on GitHub Actions", () => {
     expect(new Set(fake.ended)).toEqual(new Set([grantId(1)]));
     const log = await buildLog();
     expect(log.imageBuilds).toEqual([expect.objectContaining({ image: "api", skips: [reason] })]);
-    // GitHub's go shows no failed step: the servers took over.
-    expect(log.steps.filter((step) => step.error !== null)).toEqual([]);
+    // One timeline: GitHub's go, then one sentence for the move and the servers' go, which alone decides the build.
+    const steps = log.steps.filter((step) => step.image === "api");
+    expect(buildLogSections(steps, log.imageBuilds[0]).map((section) => section.title))
+      .toEqual(["Building on GitHub Actions", `${skipReasonText(reason)} Building on ${machine.name} instead.`]);
+    expect(steps.filter((step) => step.error !== null && step.key !== "install")).toEqual([]);
+    expect(steps.filter((step) => step.startedAt !== null && step.completedAt === null && step.attempt === 0)).toEqual([]);
   }, 30_000);
 
   it("leaves a build the walk moved to the servers alone when a late GitHub report or settle arrives", async () => {
@@ -638,13 +652,13 @@ describe("Image Builds on GitHub Actions", () => {
 
   it.each([
     ["no workflow", () => fake.githubErrors.set("fetch_workflow", githubError("fetch_workflow", 404, "not_found")),
-      { builder: "github", kind: "no_workflow", repository: "owner/repo" }, "GitHub: no workflow in owner/repo"],
+      { builder: "github", kind: "no_workflow", repository: "owner/repo" }, "owner/repo has no Ployz build workflow."],
     ["no permission", () => fake.githubErrors.set("resolve_repository", githubError("resolve_repository", 403, "request_failed")),
-      { builder: "github", kind: "no_permission", repository: "owner/repo" }, "GitHub: no permission in owner/repo"],
+      { builder: "github", kind: "no_permission", repository: "owner/repo" }, "GitHub has no permission in owner/repo."],
     ["multi-platform", () => { fake.platforms = ["linux/amd64", "linux/arm64"]; },
-      { builder: "github", kind: "multi_platform", platforms: ["amd64", "arm64"] }, "GitHub: needs amd64+arm64"],
+      { builder: "github", kind: "multi_platform", platforms: ["amd64", "arm64"] }, "GitHub builds one platform, and this image needs amd64 and arm64."],
     ["dispatch error", () => fake.githubErrors.set("dispatch_workflow", githubError("dispatch_workflow", 422, "request_failed")),
-      { builder: "github", kind: "dispatch_failed", message: "GitHub answered 422." }, "GitHub: could not start the build (GitHub answered 422.)"],
+      { builder: "github", kind: "dispatch_failed", message: "GitHub answered 422." }, "GitHub couldn't start the build (GitHub answered 422.)."],
   ] satisfies [string, () => void, SkipReason, string][])("skips GitHub at once for %s, and with GitHub only the build fails with that reason", async (_case, arrange, reason, message) => {
     arrange();
     await queued();
@@ -732,7 +746,7 @@ describe("Image Builds on GitHub Actions", () => {
     expect(output.error).toBeUndefined();
     expect(await row()).toMatchObject({ status: "built", builder: "github" });
     expect((await buildLog()).imageBuilds).toEqual([{
-      image: "api", serverChoice: null, github: { runUrl: "https://github.com/owner/repo/actions/runs/9001", reason: "next_in_build_order" }, skips: [serversNotStarted],
+      image: "api", serverChoice: null, github: { runUrl: "https://github.com/owner/repo/actions/runs/9001" }, skips: [serversNotStarted],
     }]);
   }, 30_000);
   describe("a Service's Preferred Builder", () => {

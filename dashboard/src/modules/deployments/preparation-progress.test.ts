@@ -1,5 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { expect, it } from "vitest";
+import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { preparationProgressCollector } from "./preparation-progress";
 
 const keys = (steps: readonly { build: number; key: string; error: string | null }[]) => steps.map((step) => [step.build, step.key, step.error]);
@@ -28,9 +29,26 @@ it("turns phases and BuildKit steps into one step tree with attributed output", 
   expect(progress.event({ Build: { StepOutput: { step: "sha256:a", stderr: false, text: "cached\n" } } }).output.map((row) => row.build)).toEqual([2]);
   expect(keys(progress.event({ Build: { Stage: "Cleanup" } }).steps)).toEqual([[2, "stage:Building", null], [2, "stage:Cleanup", null]]);
   expect(keys(progress.event("Transfer").steps)).toEqual([[2, "stage:Cleanup", null], [2, "transfer", null]]);
-  expect(progress.event({ Delivered: { image: "web:1", machine_id: "m1" as MachineId } }).output).toEqual([{ build: 2, step: "transfer", stderr: false, text: "Delivered web:1 to m1\n" }]);
-  expect(keys(progress.finish())).toEqual([[2, "transfer", null]]);
+  // Each image's sending is its own step, filed under that image.
+  expect(progress.event({ Sending: { service: "web", machines: ["hel-2", "hel-3"] } }).steps).toEqual([
+    { build: 2, key: "send:web", name: "Sending image to hel-2, hel-3", startedAt: expect.any(Date), completedAt: null, cached: false, error: null, image: "web" },
+  ]);
+  const delivered = progress.event({ Delivered: { image: "web:1", service: "web", machine_id: "m1" as MachineId } });
+  expect(delivered.output).toEqual([{ build: 2, step: "transfer", stderr: false, text: "Delivered web:1 to m1\n" }]);
+  expect(delivered.steps.map((row) => [row.key, row.completedAt !== null])).toEqual([["send:web", true]]);
+  progress.event({ Sending: { service: "api", machines: ["hel-2"] } });
+  // An image still on its way when preparation failed is the one that didn't arrive.
+  expect(keys(progress.finish("image push failed"))).toEqual([[2, "transfer", "image push failed"], [2, "send:api", "image push failed"]]);
   expect(progress.finish()).toEqual([]);
+});
+
+it("heads a Server's section when the Engine selects it", () => {
+  const progress = preparationProgressCollector(() => new Date(5_000));
+  const machine = runtimeWatchMachineFixture("m1", "hel-1");
+  expect(progress.event({ Selected: { machine, reason: { kind: "spread" }, rejections: [] } }).steps).toEqual([
+    { build: 0, key: "stage:Builder", name: "hel-1", startedAt: new Date(5_000), completedAt: new Date(5_000), cached: false, error: null },
+  ]);
+  expect(progress.event({ Build: { Stage: "Queued" } }).steps.map((row) => row.name)).toEqual(["Waiting for a free build slot"]);
 });
 
 it("keeps builder messages in their own row, which fails when the engine blames the build", () => {

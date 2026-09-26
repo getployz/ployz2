@@ -12,11 +12,11 @@ import type { BuildCandidate } from "./build-order";
 import { githubSkipReason, installFailedSchema, type GithubImageBuild } from "./image-build";
 import { persistBuildLog } from "./deployment-events.server";
 import {
-  awaitsCheckIn, checkInImageBuild, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, imageBuildNow, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild,
+  awaitsCheckIn, checkInImageBuild, closeOpenSteps, claimForGithub, loadBuildReceipts, loadGithubImageBuilds, imageBuildNow, loadImageBuild, recordGithubReport, recordServerChoice, settleGithubImageBuild, settleImageBuild,
   moveStartedGithubBuild, skipImageBuilder, skipUnstarted, START_WITHIN_MINUTES,
   type ImageBuildAttempt, type ImageBuildRow, type ImageBuildTarget,
 } from "./image-builds.server";
-import { preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
+import { builderStep, ployzStep, preparationProgressCollector, type BuildOutputWrite, type BuildStepWrite } from "./preparation-progress";
 import { loadDeploymentContext } from "./runtime-hydration.repository.server";
 import type { DeploymentContext } from "./runtime-repository.contract";
 import { connectedRuntime, oneServiceDeployment } from "./runtime-session.server";
@@ -116,6 +116,9 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
     yield* cancelGithubRun({ installationId: source.installationId, fullName: workflow.fullName, runId: run.runId }).pipe(Effect.ignore);
     return claim satisfies GithubBuildStart;
   }
+  // Cloud sees both ends of the wait for a runner: this dispatch and the check-in, which closes it.
+  const now = new Date();
+  yield* persistBuildLog(build.deploymentId, { steps: [builderStep(GITHUB_BUILDER, now), { ...ployzStep("runner", "Waiting for a runner", now), completedAt: null }], output: [] }, build.image);
   return { kind: "dispatched", runId: run.runId } satisfies GithubBuildStart;
 }, (effect, build) => effect.pipe(
   // A GitHub or SDK failure before dispatch is GitHub being unusable, not the build failing.
@@ -123,6 +126,9 @@ export const startGithubImageBuild = Effect.fn("Deployments.startGithubImageBuil
 ));
 
 type GithubRow = Extract<ImageBuildRow, { builder: "github" }>;
+
+/** GitHub as its build log section names it. */
+const GITHUB_BUILDER = "GitHub Actions";
 
 /**
  * One look at a dispatched build, after the Workflow run webhook reported its run `ended` or a wait
@@ -231,9 +237,10 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
       Effect.mapError((cause) => new BuildGrantUnavailable({ cause })),
     );
     return { minted, machine };
-  }).pipe(Effect.scoped);
+  }).pipe(Effect.scoped, Effect.tapError(() => checkInFailed(row)));
   const grant = { id: minted.id, fingerprint };
-  if (!(yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant }))) {
+  const checkedIn = yield* checkInImageBuild({ imageBuildId: row.id, runId: row.githubRunId, machineId: machine.id, grant });
+  if (!checkedIn) {
     // Lost to a second check-in or to the start-within skip during a slow mint (rare). The grant's
     // secret never left Cloud, so a grant that fails to end is unusable anyway.
     yield* endGrant(row.organizationId, machine.id, minted.id).pipe(
@@ -241,9 +248,23 @@ export const checkInGithubBuild = Effect.fn("Deployments.checkInGithubBuild")(fu
     );
     return yield* refused;
   }
+  // The runner arrived: its wait ends.
+  yield* closeOpenSteps(row.id);
   // The runner installs this version: the process that computed the fingerprint names it, even mid-rollout.
   return { grant: minted.grant, commit, fingerprint, ployzVersion: ployzVersion(), deployment };
 });
+
+/**
+ * A check-in the runner arrived for but Cloud couldn't start: the one internal GitHub step the log
+ * shows, and only failed. Best effort; the run then ends and the walk moves on or fails.
+ */
+const checkInFailed = (row: GithubRow) => Effect.gen(function* () {
+  yield* closeOpenSteps(row.id);
+  const now = new Date();
+  yield* persistBuildLog(row.deploymentId, {
+    steps: [{ ...ployzStep("check-in", "Starting the build", now), error: "Your servers couldn't be reached to receive the image." }], output: [],
+  }, row.image, row.skips.length);
+}).pipe(Effect.catch((error) => Effect.logWarning("Could not log a failed GitHub check-in.", error)));
 
 const buildStepSchema = Schema.Struct({
   id: Schema.String, name: Schema.String, started: Schema.NullOr(Schema.String), completed: Schema.NullOr(Schema.String),
@@ -300,7 +321,8 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
   const platforms = report.platforms ?? null;
   // A failed Build Step already shows in its row; a build GitHub failed moves on without one.
   if (platforms) steps.push(...collector.finish());
-  yield* persistBuildLog(row.deploymentId, { steps, output }, row.image);
+  // Filed under this run's section even if the walk moved the build on meanwhile.
+  yield* persistBuildLog(row.deploymentId, { steps, output }, row.image, row.skips.length);
   const taken = Math.max(received, report.from + report.events.length);
   const recorded: Types.Mutable<NonNullable<GithubImageBuild["report"]>> = { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] };
   if (platforms && report.installFailed !== undefined) recorded.installFailed = report.installFailed;
@@ -334,14 +356,7 @@ const finishGithubImageBuild = Effect.fn("Deployments.finishGithubImageBuild")(f
   }
   const ended = yield* endGithubBuild(build, row, timedOut);
   if (ended.kind !== "move") return ended;
-  const moved = yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
-  const report = row.github.report;
-  if (moved.kind === "skipped" && report && !report.platforms) {
-    // No final report closed the runner's open steps: close them, so they don't dangle beside the
-    // next Builder's. Only once moved: a final report that settled it first keeps its own steps.
-    yield* persistBuildLog(row.deploymentId, { steps: preparationProgressCollector(undefined, report.collector).finish(), output: [] }, row.image);
-  }
-  return moved;
+  return yield* moveStartedGithubBuild(build, row.githubRunId, ended.reason);
 });
 
 /**
