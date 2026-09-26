@@ -20,7 +20,7 @@ Pick the kind with one question each:
 2. Core runtime state? **Runtime.**
 3. Anything else: third-party APIs, unbounded history, logs, on-demand searches? **Remote Read.**
 
-Ask the question of what a view derives from, not just what it shows. A bounded view (a deployment list's status, each volume's latest config) that joins an unbounded table pulls that whole table into the Org Store. Compute such facts on the server instead, as a column or a server projection. Four history tables break this today (deployments, node config snapshots, saved-state revisions, volume remove attempts). The redesign's goal: Org Store size is O(environments × nodes), independent of how many times anyone deployed or saved.
+Ask the question of what a view derives from, not just what it shows. A bounded view (a deployment list's status, each volume's latest config) that joins an unbounded table pulls that whole table into the Org Store. Compute such facts on the server instead, as a column or a server projection.
 
 File names say where a source lives, not its kind: a Query file that projects org rows on the server (`environment-change-state.queries.ts`) is still Org Store. The registry records each file's kind.
 
