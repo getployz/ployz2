@@ -48,10 +48,14 @@ const intentService = (id: string, slug: string) => {
 };
 const service = (id: string, name: string) => ({ id, organizationId, projectId, environmentId, lineageId: id, name, policy: defaultServicePolicy,
   hasRegistryCredential: false, firstDeployedAt: createdAt, createdAt, updatedAt: createdAt });
-const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgress | null, status = "applied") => ({
+type TargetNode = { nodeId: string; nodeType: "service"; name: string; changed: boolean; removed: boolean; needsBuild: boolean };
+/** A service in an attempt's frozen target list. */
+const target = (nodeId: string, name: string, { changed = true, removed = false } = {}): TargetNode =>
+  ({ nodeId, nodeType: "service", name, changed, removed, needsBuild: false });
+const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgress | null, status = "applied", nodes: TargetNode[] | null = null) => ({
   id, organizationId, environmentId, triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: id, serviceActionPolicy: null,
   status, inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, sourcePins: {}, variableProducers: null, deployManifest: null,
-  deployPreview: null, runtimeProgress, failureCode: null, failureMessage: null, message: null, cancellationRequestedAt: null, dispatchRequestedAt: null,
+  deployPreview: null, runtimeProgress, targetNodes: nodes && { version: 1, nodes }, failureCode: null, failureMessage: null, message: null, cancellationRequestedAt: null, dispatchRequestedAt: null,
   startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt,
 });
 const snapshot = (deploymentId: string, nodeId: string, privateDns: string) => ({ id: `${deploymentId}:${nodeId}`, organizationId, environmentId,
@@ -71,12 +75,15 @@ const rows = new Map<string, unknown[]>(Object.entries({
     intent: { version: 1, environmentSlug: "production", services: [intentService(api, "api"), intentService(web, "web"), intentService(worker, "worker")], volumes: [] } }],
   environment_summary: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt }],
   service: [service(api, "api"), service(old, "old"), service(web, "web"), service(worker, "worker")],
-  environment_deployment: [deployment(previous, 1, null),
-    deployment(attemptId, 2, { completed: 1, total: 2, outcome: "failed", rows: [removal, healthFailure], compensation: [] }, "failed"),
-    deployment(replaceFailedId, 3, { completed: 0, total: 1, outcome: "failed", rows: [failedReplace], compensation: [] }, "failed")],
+  environment_deployment: [deployment(previous, 1, null, "applied", [target(api, "api"), target(old, "old"), target(web, "web")]),
+    deployment(attemptId, 2, { completed: 1, total: 2, outcome: "failed", rows: [removal, healthFailure], compensation: [] }, "failed",
+      [target(api, "api", { changed: false }), target(web, "web"), target(old, "old", { removed: true })]),
+    deployment(replaceFailedId, 3, { completed: 0, total: 1, outcome: "failed", rows: [failedReplace], compensation: [] }, "failed",
+      [target(api, "api"), target(old, "old", { removed: true }), target(web, "web", { removed: true })])],
   environment_node_config_snapshot: [snapshot(previous, api, "api"), snapshot(previous, old, "old"), snapshot(previous, web, "web"),
     snapshot(attemptId, api, "api"), snapshot(attemptId, web, "web"), snapshot(replaceFailedId, api, "api")],
 }));
+const runningTarget = [target(api, "api", { changed: false }), target(worker, "worker"), target(old, "old", { removed: true }), target(web, "web", { removed: true })];
 const card = (name: string) => screen.getAllByText(name)[0]?.closest("[data-canvas-node]");
 
 async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production", changeStates = [] }: {
@@ -173,7 +180,7 @@ describe("deployment mode on the environment canvas", () => {
     const gone = "00000000-0000-4000-8000-000000000025";
     const goneAttempt = "f0000000-0000-4000-8000-000000000016";
     const router = await openCanvas({ extra: {
-      environment_deployment: [deployment(goneAttempt, 4, null)],
+      environment_deployment: [deployment(goneAttempt, 4, null, "applied", [target(api, "api", { changed: false }), target(gone, "billing")])],
       environment_node_config_snapshot: [snapshot(goneAttempt, api, "api"), snapshot(goneAttempt, gone, "billing")],
       environment_canvas_node_position: [{ id: "00000000-0000-4000-8000-000000000031", organizationId, environmentId, resourceType: "service", resourceId: api, x: 0, y: 0, createdAt, updatedAt: createdAt }],
     } });
@@ -299,7 +306,7 @@ describe("the deploy bar", () => {
 
   it("opens a running attempt directly and offers Cancel, and Retry on a failed one", async () => {
     const router = await openCanvas({ extra: {
-      environment_deployment: [deployment(failedId, 3, null, "failed"), deployment(runningId, 4, null, "deploying")],
+      environment_deployment: [deployment(failedId, 3, null, "failed"), deployment(runningId, 4, null, "deploying", runningTarget)],
       environment_node_config_snapshot: [snapshot(runningId, api, "api"), snapshot(runningId, worker, "worker")],
     } });
     await click(bar().getByRole("link", { name: /Deploying 0\/3/ }));
@@ -321,7 +328,7 @@ describe("the deploy bar", () => {
 
   it("remembers leaving your own running attempt and reopening it", async () => {
     const router = await openCanvas({ extra: {
-      environment_deployment: [deployment(runningId, 4, null, "deploying")],
+      environment_deployment: [deployment(runningId, 4, null, "deploying", runningTarget)],
       environment_node_config_snapshot: [snapshot(runningId, api, "api")],
     } });
     expect(setOpenStarted()).not.toHaveBeenCalled();
@@ -339,7 +346,7 @@ describe("the deploy bar", () => {
 
   it("never opens a Git-triggered attempt or counts it as yours", async () => {
     await openCanvas({ extra: {
-      environment_deployment: [{ ...deployment(runningId, 4, null, "deploying"), triggerOrigin: {
+      environment_deployment: [{ ...deployment(runningId, 4, null, "deploying", runningTarget), triggerOrigin: {
         origin: "github", deliveryId: "delivery", branchEvaluationRevision: 1, installationId: 1, repositoryId: 1,
       } }],
       environment_node_config_snapshot: [snapshot(runningId, api, "api")],
@@ -444,7 +451,7 @@ describe("the apply zone", () => {
   });
 
   it("keeps the changes during a Git-triggered deployment and shows a Deploy behind it as Queued", async () => {
-    const fromPush = { ...deployment(runningId, 4, null, "deploying"),
+    const fromPush = { ...deployment(runningId, 4, null, "deploying", runningTarget),
       triggerOrigin: { origin: "github", deliveryId: "delivery", branchEvaluationRevision: 1, installationId: 1, repositoryId: 1 } };
     // The pushed run deploys Saved State, which is Applied State here, so the canvas edit stays pending.
     const running: EnvironmentChangeStateProjection = { ...pending, deploymentEvidence: {

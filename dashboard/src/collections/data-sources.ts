@@ -19,7 +19,7 @@ export const dataSources = {
   "modules/environment-design/environment-document.collection.ts": { kind: "org-store", freshness: "derived from environments and projects" },
   "modules/environment-design/resource.collection.ts": { kind: "org-store", freshness: "derived from resources, lineages, positions, and documents" },
   "modules/services/services.collection.ts": { kind: "org-store", freshness: "derived from services and documents" },
-  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments, snapshots, and volume removals" },
+  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (their frozen target node lists) and volume removals; one attempt's snapshots for Deployment Mode card details" },
   "modules/deployments/environment-change-state.queries.ts": { kind: "org-store", freshness: "server projection, refetched when deployment or saved-state metadata changes" },
   "modules/runtime/runtime.collection.ts": { kind: "runtime", freshness: "SSE runtime watch" },
   "modules/runtime/container-log.stream.ts": { kind: "runtime", freshness: "SSE log stream, older pages on scroll" },

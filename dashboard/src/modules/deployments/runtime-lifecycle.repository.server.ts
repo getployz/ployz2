@@ -25,6 +25,7 @@ import {
 import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
 import { loadEnvironmentSnapshotProjection } from "./environment-state.repository.server";
+import { freezeAttemptTargetNodes } from "./attempt-target.server";
 import { coreOperationWatch } from "#/modules/operations/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -138,6 +139,10 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
           )
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
+        // Starting freezes the Attempt Target: its node list is rediffed against Applied State now.
+        if (input.status === "planning" && environmentId) {
+          yield* freezeAttemptTargetNodes({ environmentId, environmentDeploymentId: input.environmentDeploymentId });
+        }
         // An attempt leaving queued (building → planning, failed, cancelled) frees the queue for the pending attempt.
         if (environmentId) yield* dispatchPendingAfterCommit(environmentId);
         // An ended attempt stops its Image Builds; a running build step observes this and aborts.
@@ -468,7 +473,7 @@ export const dispatchEnvironmentDeployment = Effect.fn("Deployments.dispatchAfte
  * An attempt leaving queued frees the queue for the pending attempt. Annotated: a failed dispatch
  * settles through markEnvironmentDeploymentStatus, which calls back here.
  */
-function dispatchPendingAfterCommit(environmentId: string): Effect.Effect<void, never, Database | InngestClient> {
+function dispatchPendingAfterCommit(environmentId: string): Effect.Effect<void, never, Database | InngestClient | SecretEncryption> {
   return afterDatabaseCommit(dispatchPendingDeployment(environmentId).pipe(
     Effect.catch((error) => Effect.logError("Failed to dispatch the pending deployment", error)
       .pipe(Effect.annotateLogs({ environmentId }))),

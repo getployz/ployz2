@@ -1,0 +1,1 @@
+ALTER TABLE "environment_deployment" ADD COLUMN "target_nodes" jsonb;

@@ -116,6 +116,24 @@ export const deploymentServiceVariablesQuerySchema = Schema.Struct({
   serviceId: Uuid,
 });
 
+/**
+ * The Attempt Target's nodes as plain facts, diffed against Applied State when the attempt was admitted and
+ * again when it started. Never config: schema changes never touch frozen rows. `name` is a service's private DNS
+ * name (its Image Build and runtime service name) or a volume's name.
+ */
+export const attemptTargetNodesSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  nodes: Schema.Array(Schema.Struct({
+    nodeId: Schema.String,
+    nodeType: Schema.Literals(["service", "volume"]),
+    name: Schema.String,
+    changed: Schema.Boolean,
+    removed: Schema.Boolean,
+    needsBuild: Schema.Boolean,
+  })),
+});
+export type AttemptTargetNodes = typeof attemptTargetNodesSchema.Type;
+
 export const environmentDeploymentSummarySchema = Schema.Struct({
   id: Uuid,
   environmentId: Uuid,
@@ -128,6 +146,7 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   deployPreview: Schema.NullOr(runtimeDeployPreviewSchema),
   runtimeProgress: Schema.NullOr(deploymentProgressSchema),
   sourcePins: deploymentSourcePinsSchema,
+  targetNodes: Schema.NullOr(attemptTargetNodesSchema),
   buildServiceIds: Schema.Array(Schema.String),
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
@@ -137,7 +156,6 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   cancellationRequestedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
-  serviceCount: finiteNumber({ integer: true, minimum: 0 }),
   projectSlug: ProjectSlug,
   environmentSlug: EnvironmentSlug,
   volumeRemoveAttempts: Schema.mutable(

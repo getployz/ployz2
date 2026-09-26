@@ -1,13 +1,13 @@
 import { reconcileCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import {
-  collectionOptions, liveQueryCollectionOptions,
+  and, collectionOptions, liveQueryCollectionOptions,
   eq,
   toArray,
   useLiveSuspenseQuery,
 } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { attemptTarget, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
+import { attemptNodes, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentSavedStateRevisionsCollection,
@@ -21,7 +21,7 @@ import {
   environmentDeploymentSummarySchema,
   type EnvironmentDeploymentSummary,
 } from "#/modules/deployments/deployment-contract";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { parseServiceConfig, type ServiceConfig } from "@ployz/sdk/config";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 import { useBuildTail } from "#/modules/deployments/deployment-build-log.queries";
 
@@ -30,8 +30,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
   const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
   const environments = getEnvironmentsCollection(organizationSlug, scope);
   const projects = getProjectsCollection(organizationSlug, scope);
-  const nodeSnapshots =
-    getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
   const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug, scope);
 
   const rows = client.collection(collectionOptions(liveQueryCollectionOptions({
@@ -48,13 +46,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
         deployment,
         projectSlug: project.slug,
         environmentSlug: environment.namespace,
-        nodeSnapshots: toArray(
-          q
-            .from({ snapshot: nodeSnapshots })
-            .where(({ snapshot }) =>
-              eq(snapshot.environmentDeploymentId, deployment.id),
-            ),
-        ),
         volumeRemoveAttempts: toArray(
           q
             .from({ volumeRemoveAttempt: volumeRemoveAttempts })
@@ -71,7 +62,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
     query: (q) =>
       q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {
         const deployment = deploymentRelationships.deployment;
-        const snapshots = deploymentRelationships.nodeSnapshots ?? [];
         const volumeAttempts = deploymentRelationships.volumeRemoveAttempts ?? [];
         const decoded = decodeStrict(
           environmentDeploymentSummarySchema,
@@ -87,7 +77,8 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
             deployPreview: deployment.deployPreview,
             runtimeProgress: deployment.runtimeProgress,
             sourcePins: deployment.sourcePins,
-            buildServiceIds: snapshots.filter((snapshot) => snapshot.nodeType === "service" && parseServiceConfig(snapshot.config).source.type === "git").map((snapshot) => snapshot.nodeId),
+            targetNodes: deployment.targetNodes,
+            buildServiceIds: deployment.targetNodes?.nodes.filter((node) => node.needsBuild).map((node) => node.nodeId) ?? [],
             canRetry:
               deployment.status === "failed" &&
               volumeAttempts.length === 0,
@@ -98,9 +89,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
             cancellationRequestedAt: deployment.cancellationRequestedAt,
             createdAt: deployment.createdAt,
             updatedAt: deployment.updatedAt,
-            serviceCount: snapshots.filter(
-              (snapshot) => snapshot.nodeType === "service",
-            ).length,
             projectSlug: deploymentRelationships.projectSlug,
             environmentSlug: deploymentRelationships.environmentSlug,
             volumeRemoveAttempts:
@@ -148,29 +136,16 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
 /** `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
 export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: AttemptTargetNode[]; view: DeploymentView; buildPending: boolean };
 
-/** An environment's attempts newest first, with the attempt rows and node snapshots `attemptTarget` reads besides the attempt itself. */
+/** An environment's attempts newest first, each projected from its frozen target list. */
 function useEnvironmentAttemptInputs(organizationSlug: string, environmentId: string) {
-  const scope = useCollectionScope();
-  const summaries = getOrganizationDeploymentsCollection(organizationSlug, scope);
-  const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
-  const snapshots = getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
+  const summaries = getOrganizationDeploymentsCollection(organizationSlug, useCollectionScope());
   const { data: attempts } = useLiveSuspenseQuery({
     queryKey: ["environment-deployment-attempts", summaries.id, environmentId],
     query: (q) => q.from({ deployment: summaries }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
       .orderBy(({ deployment }) => deployment.createdAt, "desc"),
   });
-  const { data: history } = useLiveSuspenseQuery({
-    queryKey: ["deployment-attempt-history", deployments.id, environmentId],
-    query: (q) => q.from({ deployment: deployments }).where(({ deployment }) => eq(deployment.environmentId, environmentId))
-      .select(({ deployment }) => ({ id: deployment.id, status: deployment.status, createdAt: deployment.createdAt })),
-  });
-  const { data: snapshotRows } = useLiveSuspenseQuery({
-    queryKey: ["deployment-attempt-snapshots", snapshots.id, environmentId],
-    query: (q) => q.from({ snapshot: snapshots }).where(({ snapshot }) => eq(snapshot.environmentId, environmentId))
-      .select(({ snapshot }) => ({ environmentDeploymentId: snapshot.environmentDeploymentId, nodeType: snapshot.nodeType, nodeId: snapshot.nodeId, config: snapshot.config })),
-  });
   const project = (deployment: EnvironmentDeploymentSummary, buildLog?: BuildLog | null): DeploymentAttempt => {
-    const { nodes, progress } = attemptTarget({ attempt: deployment, progress: deployment.runtimeProgress, history, snapshots: snapshotRows });
+    const { nodes, progress } = attemptNodes(deployment.targetNodes, deployment.runtimeProgress);
     return { deployment, nodes, view: deploymentView({ deployment, progress, nodes, buildLog }), buildPending: false };
   };
   return { attempts, project };
@@ -201,4 +176,20 @@ export function useNodeDeployments(organizationSlug: string, environmentId: stri
     const node = view.nodes.find((candidate) => candidate.nodeId === nodeId);
     return node ? [{ deployment, node }] : [];
   });
+}
+
+/**
+ * The service configs one attempt deployed, by node id, for card details (icon, source, mounts, the panel's Details).
+ * A removed service has none: the attempt holds no snapshot of it.
+ */
+// ponytail: reads the node config snapshots collection for this one attempt; the per-attempt Remote Read replaces it.
+export function useAttemptServiceConfigs(organizationSlug: string, deploymentId: string): Map<string, ServiceConfig> {
+  const snapshots = getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, useCollectionScope());
+  const { data } = useLiveSuspenseQuery({
+    queryKey: ["deployment-attempt-service-configs", snapshots.id, deploymentId],
+    query: (q) => q.from({ snapshot: snapshots })
+      .where(({ snapshot }) => and(eq(snapshot.environmentDeploymentId, deploymentId), eq(snapshot.nodeType, "service")))
+      .select(({ snapshot }) => ({ nodeId: snapshot.nodeId, config: snapshot.config })),
+  });
+  return new Map(data.map((row) => [row.nodeId, parseServiceConfig(row.config)]));
 }

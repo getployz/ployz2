@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { Handle, Position } from "@xyflow/react";
-import { CheckIcon, CircleIcon, HardDriveIcon, ServerIcon, XIcon } from "lucide-react";
+import { CheckIcon, CircleIcon, HardDriveIcon, PackageIcon, ServerIcon, XIcon } from "lucide-react";
 import { formatDuration } from "#/components/deployment-logs";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
@@ -43,19 +43,19 @@ function StageLabel({ name, stage }: { name: string; stage: Stage }) {
  */
 export function DeploymentNodeCard({ data, className }: { data: CanvasDeploymentNodeData; className?: string }) {
   const { node, view } = data;
-  const source = node.nodeType === "service" ? node.config.source : null;
-  const subtitle = source ? getServiceSubtitle({ source }) : "Named volume";
+  const source = data.config?.source ?? null;
+  const subtitle = source ? getServiceSubtitle({ source }) : node.nodeType === "volume" ? "Named volume" : null;
   const dimmed = view.outcome === "unchanged" || view.outcome === "not_attempted";
   const badge = outcomeBadges[view.outcome];
-  // Until the build tail arrives a Git service's stages are unknown; claiming Queued would be false.
-  const pending = useDeploymentMode()?.buildPending === true && source?.type === "git" && !dimmed;
+  // Until the build tail arrives a built service's stages are unknown; claiming Queued would be false.
+  const pending = useDeploymentMode()?.buildPending === true && node.image !== null && !dimmed;
   return (
     <Card size="node" state={badge === "destructive" || badge === "info" ? badge : undefined}
       data-canvas-node={node.nodeId} data-dimmed={dimmed} className={cn("justify-between", dimmed && "opacity-40", className)}>
       <CardHeader>
         <div className="flex items-start gap-3">
           <Avatar>
-            <AvatarFallback>{source ? getServiceIcon({ source }) : <HardDriveIcon />}</AvatarFallback>
+            <AvatarFallback>{source ? getServiceIcon({ source }) : node.nodeType === "volume" ? <HardDriveIcon /> : <PackageIcon />}</AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1 overflow-hidden">
             <CardTitle className="truncate">{data.name}</CardTitle>

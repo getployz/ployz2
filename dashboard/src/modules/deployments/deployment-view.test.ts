@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ContainerId, DeployOperation, MachineId, OperationRow } from "@ployz/sdk";
 import { resolvedServiceSpecFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
-import { parseServiceConfig } from "@ployz/sdk/config";
-import { builtOnLine, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
+import { attemptNodes, builtOnLine, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, type AttemptTargetNode, type DeploymentViewInput } from "./deployment-view";
 
 function row(index: number, operation?: DeployOperation): OperationRow {
   const spec = resolvedServiceSpecFixture();
@@ -20,8 +19,7 @@ const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: 
   ({ status, failureMessage: null, deployPreview: null, ...extra });
 /** A service in the Attempt Target; `image` makes it a built one. */
 const node = ({ nodeId, changed, removed = false, image = null }: { nodeId: string; changed: boolean; removed?: boolean; image?: string | null }): AttemptTargetNode => ({
-  nodeId, changed, removed, image, nodeType: "service",
-  config: parseServiceConfig({ version: 2, source: { version: 1, type: "empty", rootDir: "/" }, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: nodeId }),
+  nodeId, changed, removed, image, nodeType: "service", name: nodeId,
 });
 
 describe("deployment view projection", () => {
@@ -180,5 +178,32 @@ describe("deployment view projection", () => {
   it("does not claim an unknown runtime outcome was never attempted", () => {
     const view = deploymentView({ deployment: deployment("failed", { failureMessage: "Connection lost", deployPreview: {} }), progress: null, nodes: [node({ nodeId: "web", changed: true })] });
     expect(view.nodes[0]).toMatchObject({ outcome: "failed", deploy: { state: "failed" }, failure: { message: "Connection lost" } });
+  });
+
+  it("renders an attempt from before target lists without nodes", () => {
+    const { nodes, progress } = attemptNodes(null, null);
+    const view = deploymentView({ deployment: deployment("failed", { failureMessage: "Connection lost" }), progress, nodes });
+    expect(view).toMatchObject({ status: "failed", nodes: [], changed: 0 });
+    expect(deploymentStatusLabel(view)).toBe("Failed · 0 of 0 deployed");
+  });
+
+  it("reads the frozen target list, refined by the Engine's rows once they arrive", () => {
+    const list = { version: 1 as const, nodes: [
+      { nodeId: "api", nodeType: "service" as const, name: "api", changed: true, removed: false, needsBuild: true },
+      { nodeId: "web", nodeType: "service" as const, name: "web", changed: true, removed: false, needsBuild: false },
+      { nodeId: "old", nodeType: "service" as const, name: "old", changed: true, removed: true, needsBuild: false },
+      { nodeId: "data", nodeType: "volume" as const, name: "data", changed: false, removed: false, needsBuild: false },
+    ] };
+    expect(attemptNodes(list, null).nodes.map(({ nodeId, changed, image }) => ({ nodeId, changed, image }))).toEqual([
+      { nodeId: "api", changed: true, image: "api" }, { nodeId: "web", changed: true, image: null },
+      { nodeId: "old", changed: true, image: null }, { nodeId: "data", changed: false, image: null },
+    ]);
+    // Only api has rows; the removed service's row arrives without a serviceId and resolves by name.
+    const remove = row(0, { type: "remove_container", machine_id: "machine-0" as MachineId, container_id: "gone" as ContainerId });
+    const rows = [{ ...row(1), service_name: "api" }, { ...remove, service_name: "old" }];
+    const recorded = deploymentProgressForEvent({ type: "progress", completed: 0, total: 2, rows }, rows, { serviceIdFor: (name) => name === "api" ? "api" : null });
+    const { nodes, progress } = attemptNodes(list, recorded);
+    expect(nodes.map(({ nodeId, changed }) => [nodeId, changed])).toEqual([["api", true], ["web", false], ["old", true], ["data", false]]);
+    expect(progress?.rows.map((r) => r.serviceId)).toEqual(["api", "old"]);
   });
 });
