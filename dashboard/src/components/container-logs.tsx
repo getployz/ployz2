@@ -62,35 +62,38 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
     <div className="flex min-h-0 flex-1 flex-col">
-      <LogHeader time={LOG_TIME_COLUMN.container} latest={virtual.isAtEnd() ? null : <LatestButton onClick={() => virtual.scrollToEnd()} />}>Message</LogHeader>
-      <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="flex min-h-0 flex-1 flex-col overflow-auto font-mono text-xs"
-        onPointerDown={() => { dragging.current = true; }}
-        onPointerUp={() => { dragging.current = false; }}
-        onPointerLeave={() => { dragging.current = false; }}
-        onWheel={event => { if (event.deltaY < 0) loadAtTop(event.deltaY); }}
-        onKeyDown={event => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) loadAtTop(event.key === "Home" ? -Infinity : event.key === "PageUp" ? -event.currentTarget.clientHeight : -40); }}
-        onTouchStart={event => { touchY.current = event.touches[0]?.clientY ?? 0; }}
-        onTouchMove={event => {
-          const next = event.touches[0]?.clientY ?? touchY.current;
-          if (next > touchY.current) loadAtTop(touchY.current - next);
-          touchY.current = next;
-        }}>
-        {empty ?? <div className="relative w-full shrink-0" style={{ height: virtual.getTotalSize() }}>
-          <div className="absolute inset-x-0 top-0">
-            {historyPending ? <LogSkeleton rows={1} label="Loading older logs" time={LOG_TIME_COLUMN.container} /> : null}
-            {historyError ? <div role="alert" className="flex items-center gap-2"><span>Couldn’t load older logs.</span> <Button variant="ghost" size="sm" onClick={() => void stream.loadOlder()}>Retry</Button></div> : null}
-          </div>
-          {virtual.getVirtualItems().map(item => {
-            const row = rows[item.index];
-            if (!row) return null;
-            return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6" style={{ transform: `translateY(${item.start}px)` }}>
-              <time className={cn("shrink-0 text-muted-foreground", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
-              <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", row.channel === "stderr" && "text-destructive")}>
-                <span className="mr-3 text-muted-foreground">{row.serviceName} · {row.machineName}</span>{row.message}
-              </span>
-            </div>;
-          })}
-        </div>}
+      <LogHeader time={LOG_TIME_COLUMN.container}>Message</LogHeader>
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="flex min-h-0 flex-1 flex-col overflow-auto font-mono text-xs"
+          onPointerDown={() => { dragging.current = true; }}
+          onPointerUp={() => { dragging.current = false; }}
+          onPointerLeave={() => { dragging.current = false; }}
+          onWheel={event => { if (event.deltaY < 0) loadAtTop(event.deltaY); }}
+          onKeyDown={event => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) loadAtTop(event.key === "Home" ? -Infinity : event.key === "PageUp" ? -event.currentTarget.clientHeight : -40); }}
+          onTouchStart={event => { touchY.current = event.touches[0]?.clientY ?? 0; }}
+          onTouchMove={event => {
+            const next = event.touches[0]?.clientY ?? touchY.current;
+            if (next > touchY.current) loadAtTop(touchY.current - next);
+            touchY.current = next;
+          }}>
+          {empty ?? <div className="relative w-full shrink-0" style={{ height: virtual.getTotalSize() }}>
+            <div className="absolute inset-x-0 top-0">
+              {historyPending ? <LogSkeleton rows={1} label="Loading older logs" time={LOG_TIME_COLUMN.container} /> : null}
+              {historyError ? <div role="alert" className="flex items-center gap-2"><span>Couldn’t load older logs.</span> <Button variant="ghost" size="sm" onClick={() => void stream.loadOlder()}>Retry</Button></div> : null}
+            </div>
+            {virtual.getVirtualItems().map(item => {
+              const row = rows[item.index];
+              if (!row) return null;
+              return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6" style={{ transform: `translateY(${item.start}px)` }}>
+                <time className={cn("shrink-0 text-muted-foreground", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
+                <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", row.channel === "stderr" && "text-destructive")}>
+                  <span className="mr-3 text-muted-foreground">{row.serviceName} · {row.machineName}</span>{row.message}
+                </span>
+              </div>;
+            })}
+          </div>}
+        </div>
+        {rows.length > 0 && !virtual.isAtEnd() ? <LatestButton onClick={() => virtual.scrollToEnd()} /> : null}
       </div>
     </div>
   </div>;
