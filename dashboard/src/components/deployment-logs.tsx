@@ -14,7 +14,7 @@ import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer, LogSkeleton } from "./log-scroll";
 import { cn } from "#/lib/utils";
-import { useTimeZone } from "#/utils/time-zone";
+import { clock, useTimeZone } from "#/utils/time-zone";
 
 /** BuildKit names steps `[stage n/m] instruction`; Ployz-owned steps are plain. */
 export function splitStepName(name: string): { stage: string | null; title: string } {
@@ -38,7 +38,6 @@ function useNow(active: boolean) {
   return now;
 }
 
-export const clock = (timeZone: string) => new Intl.DateTimeFormat("en-GB", { hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone });
 
 const lastLine = (rows: readonly BuildOutputRow[]) => {
   const lines = stripAnsi(rows.map((row) => row.text).join("")).split("\n").filter((line) => line.trim());

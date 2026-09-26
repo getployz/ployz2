@@ -1,6 +1,7 @@
 import { useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { LogSkeleton, useLogScroll } from "./log-scroll";
+import { clock, useTimeZone } from "#/utils/time-zone";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { Button } from "#/components/ui/button";
@@ -23,6 +24,7 @@ function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLog
   const { collection, refresh } = stream;
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
   const { status, errors, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const time = clock(useTimeZone(), true);
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
@@ -78,7 +80,7 @@ function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLog
           const row = rows[item.index];
           if (!row) return null;
           return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 w-full whitespace-pre-wrap break-words leading-6" style={{ transform: `translateY(${item.start}px)` }}>
-            <time className="mr-3 text-muted-foreground">{new Date(Number(BigInt(row.timestamp) / 1_000_000n)).toISOString().slice(11, 23)}Z</time>
+            <time className="mr-3 text-muted-foreground">{time.format(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
             <span className="mr-3 text-muted-foreground">{row.serviceName} · {row.machineName}</span>{row.message}
           </div>;
         })}

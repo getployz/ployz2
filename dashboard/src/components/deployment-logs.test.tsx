@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
-import { BuildLogs, clock, formatDuration, splitStepName } from "./deployment-logs";
+import { BuildLogs, formatDuration, splitStepName } from "./deployment-logs";
+import { clock } from "#/utils/time-zone";
 import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import type { BuildOutputRow, BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 
