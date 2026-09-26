@@ -327,4 +327,18 @@ describe("every Org Store collection reads its changes from the Organization cha
     const window = await harness.runEffect(readChangeWindow({ organizationId, since }));
     expect(collectionsOf(window.sourceTables)).toEqual(["organization"]);
   });
+
+  it("names the change-state projection on Save and deployment status, never on progress", async () => {
+    const names = async (text: string, values: unknown[]) => {
+      const { cursor: since } = await harness.runEffect(readChangeWindow({ organizationId, since: undefined }));
+      await sql(text, values);
+      return collectionsOf((await harness.runEffect(readChangeWindow({ organizationId, since }))).sourceTables);
+    };
+    expect(await names("insert into environment_saved_state_snapshot (organization_id, environment_id, actor_id, intent, volume_deletion_authorizations) values ($1, $2, $3, '{}', '[]')",
+      [organizationId, environmentId, userId])).toContain("environment_change_state");
+    expect(await names("update environment_deployment set status = 'planning' where id = $1", [deploymentId]))
+      .toContain("environment_change_state");
+    expect(await names("insert into environment_deployment_event (organization_id, deployment_id, progress) values ($1, $2, '{\"stage\": \"building\"}')",
+      [organizationId, deploymentId])).not.toContain("environment_change_state");
+  });
 });

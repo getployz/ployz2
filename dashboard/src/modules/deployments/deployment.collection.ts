@@ -10,7 +10,6 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { attemptTarget, deploymentView, type AttemptTargetNode, type BuildLog, type DeploymentView } from "#/modules/deployments/deployment-view";
 import {
   getEnvironmentDeploymentsCollection,
-  getEnvironmentSavedStateRevisionsCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
@@ -139,7 +138,6 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
 export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
   await Promise.all([
     reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
-    reconcileCollection(getEnvironmentSavedStateRevisionsCollection(organizationSlug, scope)),
     reconcileCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
     reconcileCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
   ]);

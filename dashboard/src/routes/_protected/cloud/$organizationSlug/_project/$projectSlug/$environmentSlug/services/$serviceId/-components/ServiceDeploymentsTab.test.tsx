@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { afterEach, expect, it } from "vitest";
-import { getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
+import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { orgStoreOptions } from "#/collections/org-store";
 import { preloadCollection } from "#/collections/query-collection";
 import { getDbClient } from "#/collections/scope";
@@ -52,7 +52,7 @@ async function openTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed(rows.get(table) ?? []));
-  await Promise.all([getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection].map((get) => preloadCollection(get("acme", scope))));
+  await preloadCollection(getEnvironmentDeploymentsCollection("acme", scope));
   await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => []));
   await queryClient.ensureQueryData(orgStoreOptions("acme", scope));
 

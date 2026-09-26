@@ -5,10 +5,7 @@ import type { BuildOrderRow } from "#/modules/deployments/build-order";
 import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
-import {
-  environmentDeployment as schemaEnvironmentDeployment,
-  environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
-} from "#/modules/deployments/tables";
+import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import {
   service as schemaService,
   environmentCanvasNodePosition as schemaEnvironmentCanvasNodePosition,
@@ -32,10 +29,6 @@ type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
 type EnvironmentResourceRow = typeof schemaEnvironmentResource.$inferSelect;
 type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy">;
-type EnvironmentSavedStateRevisionRow = Pick<
-  typeof schemaEnvironmentSavedStateSnapshot.$inferSelect,
-  "id" | "organizationId" | "environmentId"
->;
 type EnvironmentNodeConfigSnapshotRow =
   typeof schemaEnvironmentNodeConfigSnapshot.$inferSelect;
 type EnvironmentNodeIntroductionRow =
@@ -63,8 +56,6 @@ export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
 export const getResourceLineagesCollection = changeCollection<ResourceLineageRow>("resource_lineage", (row) => row.id);
 export const getRawEnvironmentResourcesCollection = changeCollection<EnvironmentResourceRow>("environment_resource", (row) => row.id);
 export const getEnvironmentDeploymentsCollection = changeCollection<EnvironmentDeploymentRow>("environment_deployment", (row) => row.id);
-export const getEnvironmentSavedStateRevisionsCollection = changeCollection<EnvironmentSavedStateRevisionRow>(
-  "environment_saved_state_snapshot", (row) => row.id);
 export const getEnvironmentNodeConfigSnapshotsCollection = changeCollection<EnvironmentNodeConfigSnapshotRow>(
   "environment_node_config_snapshot", (row) => row.id);
 export const getEnvironmentNodeIntroductionsCollection = changeCollection<EnvironmentNodeIntroductionRow>(
@@ -98,7 +89,6 @@ export const orgStoreTables = {
   environment_resource: getRawEnvironmentResourcesCollection,
   environment_canvas_node_position: getCanvasPositionsCollection,
   environment_deployment: getEnvironmentDeploymentsCollection,
-  environment_saved_state_snapshot: getEnvironmentSavedStateRevisionsCollection,
   environment_node_config_snapshot: getEnvironmentNodeConfigSnapshotsCollection,
   environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
   volume_remove_attempt: getVolumeRemoveAttemptsCollection,

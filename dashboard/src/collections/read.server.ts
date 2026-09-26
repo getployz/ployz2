@@ -48,13 +48,6 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       keys && inArray(sql.join(keyColumns.map((column) => sql`${table}.${sql.identifier(column)}`), sql` || ':' || `), keys),
     );
     switch (data.table) {
-      case "environment_saved_state_snapshot":
-        return yield* database.drizzle.select({
-          id: tables.environmentSavedStateSnapshot.id,
-          organizationId: tables.environmentSavedStateSnapshot.organizationId,
-          environmentId: tables.environmentSavedStateSnapshot.environmentId,
-        }).from(tables.environmentSavedStateSnapshot)
-          .where(scoped(tables.environmentSavedStateSnapshot));
       case "environment_summary":
         return yield* database.drizzle.select({
           id: tables.environment.id, projectId: tables.environment.projectId, organizationId: tables.environment.organizationId,

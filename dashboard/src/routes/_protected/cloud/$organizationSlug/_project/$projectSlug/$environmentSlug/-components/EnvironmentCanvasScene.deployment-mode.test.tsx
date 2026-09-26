@@ -10,7 +10,7 @@ import { Schema } from "effect";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as preference from "#/auth/open-started-deployments";
-import { getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
+import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { orgStoreOptions } from "#/collections/org-store";
 import { preloadCollection } from "#/collections/query-collection";
 import { getDbClient } from "#/collections/scope";
@@ -88,7 +88,7 @@ async function openCanvas({ extra = {}, path = "/cloud/acme/shop/production", ch
   // The failed attempt's event log is finished and empty, so Deploy logs reads it from cache.
   queryClient.setQueryData(["collections", "session", "user", "acme", "deployment_logs", replaceFailedId], { events: [], finished: true });
   // The change-state projection stamps its version from these tables, then reads the given states (none by default).
-  await Promise.all([getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection].map((get) => preloadCollection(get("acme", scope))));
+  await preloadCollection(getEnvironmentDeploymentsCollection("acme", scope));
   await queryClient.fetchQuery(environmentChangeStateOptions("acme", scope, async () => changeStates));
   await queryClient.ensureQueryData(orgStoreOptions("acme", scope));
 
