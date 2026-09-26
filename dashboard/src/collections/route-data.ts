@@ -1,4 +1,4 @@
-import { environmentManager, type FetchQueryOptions, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { environmentManager, type FetchInfiniteQueryOptions, type FetchQueryOptions, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { notFound } from "@tanstack/react-router";
 import type { CollectionScope } from "./scope";
 import { orgStoreOptions } from "./org-store";
@@ -54,5 +54,11 @@ export async function prefetchOrgStore(context: RouteDataContext, organizationSl
  */
 export async function prefetchRemote<T, K extends QueryKey>(context: RouteDataContext, ...reads: Array<FetchQueryOptions<T, Error, T, K>>) {
   const ready = Promise.all(reads.map((options) => context.queryClient.prefetchQuery(options)));
+  if (environmentManager.isServer()) await ready;
+}
+
+/** `prefetchRemote` for a paged read: its first page. */
+export async function prefetchRemotePages<T, K extends QueryKey, P>(context: RouteDataContext, options: FetchInfiniteQueryOptions<T, Error, T, K, P>) {
+  const ready = context.queryClient.prefetchInfiniteQuery(options);
   if (environmentManager.isServer()) await ready;
 }

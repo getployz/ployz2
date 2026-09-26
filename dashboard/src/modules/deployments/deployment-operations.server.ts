@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
@@ -9,6 +10,7 @@ import type {
   DeploymentServiceVariablesQueryInput,
   EnvironmentChangeStateNodeProjection,
   EnvironmentChangeStateProjection,
+  NodeDeploymentsQueryInput,
   OrganizationEnvironmentChangeStateQueryInput,
 } from "#/modules/deployments/deployment-contract";
 import { loadEnvironmentSnapshotProjection, type EnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
@@ -18,9 +20,13 @@ import { withoutSealedCiphertext } from "#/modules/environment-design/saved-inte
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import type { Actor } from "#/modules/identity/actor";
+import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-events.server";
+import type { DeploymentProgress } from "./deployment-progress";
+import { attemptNodes, deploymentView } from "./deployment-view";
+import { environmentDeployment, environmentDeploymentEvent } from "./tables";
 import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
 
 const requireOrganization = Effect.fn("Deployments.requireOrganization")(
@@ -173,4 +179,58 @@ export const getDeploymentServiceVariables = Effect.fn("Deployments.serviceVaria
   const clusterDomain = needsClusterDomain(context) ? (yield* loadClusterDomain(organization.id))?.name ?? null : null;
   const env = yield* loadDisplayedDeployEnv(context, clusterDomain);
   return env.get(input.serviceId) ?? {};
+});
+
+const NODE_DEPLOYMENTS_PAGE = 20;
+
+/**
+ * One node's attempts for its service panel, each with its Node Outcome from the frozen target list: the Running attempt
+ * (the newest that deployed it, so a later failure leaves it in place) and a page of History, the other attempts that did
+ * not leave it unchanged, newest first.
+ */
+export const listNodeDeployments = Effect.fn("Deployments.nodeDeployments")(function* (actor: Actor, input: NodeDeploymentsQueryInput) {
+  const organization = yield* requireOrganization(actor, input.organizationSlug);
+  const { drizzle } = yield* Database;
+  const table = environmentDeployment;
+  /** A page of the attempts whose target list holds the node, older than `before`; attempts without a list never match. */
+  const candidates = (before: string | null) => drizzle.select({
+    id: table.id, message: table.message, createdAt: table.createdAt, status: table.status, failureMessage: table.failureMessage,
+    planned: sql<boolean>`${table.deployPreview} is not null`, targetNodes: table.targetNodes,
+    runtimeProgress: sql<DeploymentProgress | null>`coalesce(
+      ${table.runtimeProgress},
+      (select progress from ${environmentDeploymentEvent}
+       where deployment_id = ${table}.${sql.identifier("id")} order by id desc limit 1)
+    )`,
+  }).from(table).where(and(
+    eq(table.organizationId, organization.id),
+    eq(table.environmentId, input.environmentId),
+    sql`${table.targetNodes} -> 'nodes' @> ${JSON.stringify([{ nodeId: input.nodeId }])}::jsonb`,
+    before === null ? undefined : sql`(${table.createdAt}, ${table.id}) < (select created_at, id from ${table} where id = ${before})`,
+  )).orderBy(desc(table.createdAt), desc(table.id)).limit(NODE_DEPLOYMENTS_PAGE).pipe(Effect.map((rows) => rows.map((row) => {
+    const { nodes, progress } = attemptNodes(row.targetNodes, row.runtimeProgress);
+    const view = deploymentView({ deployment: { ...row, deployPreview: row.planned || null }, progress, nodes });
+    const outcome = view.nodes.find((node) => node.nodeId === input.nodeId)?.outcome ?? "unchanged";
+    return { id: row.id, message: row.message, createdAt: row.createdAt, outcome };
+  })));
+  type NodeDeployment = Effect.Success<ReturnType<typeof candidates>>[number];
+  /** Up to `count` attempts that `keep` accepts, older than `before`, newest first. */
+  const scan = (before: string | null, keep: (attempt: NodeDeployment) => boolean, count: number) => Effect.gen(function* () {
+    const found: NodeDeployment[] = [];
+    for (let cursor = before; ;) {
+      const page = yield* candidates(cursor);
+      for (const attempt of page) {
+        if (keep(attempt)) found.push(attempt);
+        if (found.length === count) return found;
+      }
+      const last = page.at(-1);
+      if (!last || page.length < NODE_DEPLOYMENTS_PAGE) return found;
+      cursor = last.id;
+    }
+  });
+  // ponytail: scans back to the node's last deployed attempt; store it per node if nodes go long without deploying.
+  const [running = null] = yield* scan(null, (attempt) => attempt.outcome === "deployed", 1);
+  // One past the page tells whether another page exists.
+  const history = yield* scan(input.before ?? null, (attempt) => attempt.outcome !== "unchanged" && attempt.id !== running?.id, NODE_DEPLOYMENTS_PAGE + 1);
+  const items = history.slice(0, NODE_DEPLOYMENTS_PAGE);
+  return { running, items, next: history.length > NODE_DEPLOYMENTS_PAGE ? items.at(-1)?.id ?? null : null };
 });

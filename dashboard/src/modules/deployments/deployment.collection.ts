@@ -138,14 +138,6 @@ export function useEnvironmentDeployments(organizationSlug: string, environmentI
   return attempts.map((deployment) => project(deployment));
 }
 
-/** The environment's attempts whose target holds this node, newest first, each with the node's view. */
-export function useNodeDeployments(organizationSlug: string, environmentId: string, nodeId: string) {
-  return useEnvironmentDeployments(organizationSlug, environmentId).flatMap(({ deployment, view }) => {
-    const node = view.nodes.find((candidate) => candidate.nodeId === nodeId);
-    return node ? [{ deployment, node }] : [];
-  });
-}
-
 /**
  * The service configs one attempt deployed, by node id, for card details (icon, source, mounts, the panel's Details).
  * A removed service has none: the attempt holds no snapshot of it.

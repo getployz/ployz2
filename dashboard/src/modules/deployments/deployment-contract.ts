@@ -74,6 +74,14 @@ export const deploymentBuildTailQuerySchema = Schema.Struct({
   deploymentId: Uuid,
 });
 
+/** `before` pages History back from that attempt. */
+export const nodeDeploymentsQuerySchema = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  environmentId: Uuid,
+  nodeId: Uuid,
+  before: Schema.optional(Uuid),
+});
+
 export const deploymentServiceVariablesQuerySchema = Schema.Struct({
   organizationSlug: OrganizationSlug,
   deploymentId: Uuid,
@@ -186,6 +194,7 @@ export type DeploymentOperationEvidencePageQueryInput =
   typeof deploymentOperationEvidencePageQuerySchema.Type;
 export type DeploymentBuildTailQueryInput = typeof deploymentBuildTailQuerySchema.Type;
 export type DeploymentServiceVariablesQueryInput = typeof deploymentServiceVariablesQuerySchema.Type;
+export type NodeDeploymentsQueryInput = typeof nodeDeploymentsQuerySchema.Type;
 export type EnvironmentDeploymentSummary = Omit<
   typeof environmentDeploymentSummarySchema.Type,
   "deployPreview"

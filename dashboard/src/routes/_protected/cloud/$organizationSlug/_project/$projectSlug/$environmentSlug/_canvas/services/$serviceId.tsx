@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
+import { prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
+import { nodeDeploymentsQueryOptions } from "#/modules/deployments/node-deployments.queries";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -12,6 +14,13 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
 )({
   validateSearch: Schema.toStandardSchemaV1(serviceSearchSchema),
+  // Switching tabs navigates, so the Deployments tab's first page starts loading as it opens.
+  loaderDeps: ({ search }) => ({ tab: search.tab }),
+  loader: async ({ params, context, deps }) => {
+    if (deps.tab !== "deployments") return;
+    const environment = await requireEnvironment(context, params);
+    await prefetchRemotePages(context, nodeDeploymentsQueryOptions(params.organizationSlug, environment.id, params.serviceId));
+  },
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Service" />,
   component: RouteComponent,
