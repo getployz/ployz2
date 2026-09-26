@@ -1,6 +1,6 @@
 import { useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import { useLogScroll } from "./log-scroll";
+import { LogSkeleton, useLogScroll } from "./log-scroll";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { Button } from "#/components/ui/button";
@@ -55,7 +55,7 @@ function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLog
       {!virtual.isAtEnd() ? <Button variant="ghost" size="sm" onClick={() => virtual.scrollToEnd()}>Latest</Button> : null}
     </div>
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
-    <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="h-80 grow overflow-auto font-mono text-xs"
+    <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="min-h-0 flex-1 overflow-auto font-mono text-xs"
       onPointerDown={() => { dragging.current = true; }}
       onPointerUp={() => { dragging.current = false; }}
       onPointerLeave={() => { dragging.current = false; }}
@@ -67,10 +67,11 @@ function LogViewer({ selection, lifecycle, finished }: { selection: ContainerLog
         if (next > touchY.current) loadAtTop(touchY.current - next);
         touchY.current = next;
       }}>
-      {!rows.length && status === "Live" ? <p className="text-muted-foreground">No matching output available.</p> : null}
+      {rows.length ? null : status === "Live" ? <p className="text-muted-foreground">No matching output available.</p>
+        : status === "Connecting…" ? <LogSkeleton label="Loading logs" /> : null}
       <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
         <div className="absolute inset-x-0 top-0">
-          {historyPending ? <p role="status" className="text-muted-foreground">Loading older logs…</p> : null}
+          {historyPending ? <LogSkeleton rows={1} label="Loading older logs" /> : null}
           {historyError ? <div role="alert" className="flex items-center gap-2"><span>Couldn’t load older logs.</span> <Button variant="ghost" size="sm" onClick={() => void stream.loadOlder()}>Retry</Button></div> : null}
         </div>
         {virtual.getVirtualItems().map(item => {
