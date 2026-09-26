@@ -55,6 +55,8 @@ it("tells the deploy log, not the build, which Machines each image goes to", () 
   expect(progress.event({ Delivered: { image: "web:1", service: "web", machine_id: "m1" as MachineId } }).progress).toMatchObject({ serviceId: "service-web", message: "Image sent" });
   // One line per image, however many Machines received it.
   expect(progress.event({ Delivered: { image: "web:1", service: "web", machine_id: "m2" as MachineId } }).progress).toBeNull();
+  // The Service stays out of whatever phase comes next.
+  expect(progress.current().serviceId).toBeNull();
 });
 
 it("keeps builder messages in their own row, which fails when the engine blames the build", () => {

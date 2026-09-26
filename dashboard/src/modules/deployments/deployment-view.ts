@@ -62,7 +62,8 @@ export function builtOn(log: Pick<BuildLog, "imageBuilds"> | null | undefined, i
 
 /** Who took one go at an Image Build: the Builder its skip names, or the one that holds the build now. Null for a reused image. */
 function goBuilder(skipped: SkipReason | undefined, evidence: ImageBuildEvidence | undefined): string | null {
-  if (skipped) return skipped.builder === "github" ? "GitHub Actions" : "your servers";
+  if (skipped?.builder === "github") return "GitHub Actions";
+  if (skipped) return skipped.kind === "not_started" && skipped.machineName !== undefined ? skipped.machineName : "your servers";
   if (evidence?.github) return "GitHub Actions";
   const choice = evidence?.serverChoice;
   return choice && choice.reason.kind !== "reused" ? choice.machineName : null;
@@ -75,8 +76,7 @@ export type BuildLogSection<Step> = { title: string | null; runUrl: string | nul
  * An Image Build's log as one timeline: a section per Builder's go, in order. The first says where it
  * builds; each later one first says, from the skip trail, why the build moved: "GitHub couldn't
  * finish this build: its runner stopped. Building on hel-1 instead." A go's Builder is the one its
- * skip names, or the current holder for the last; a Server go that moved on no longer names its
- * Server. A Builder skipped before it wrote a step leaves only that sentence. The deploy step's own
+ * skip names, or the current holder for the last. A Builder skipped before it wrote a step leaves only that sentence. The deploy step's own
  * rows happened after every go, so they join the last.
  */
 export function buildLogSections<Step extends BuildStep>(steps: readonly Step[], evidence: ImageBuildEvidence | undefined): BuildLogSection<Step>[] {

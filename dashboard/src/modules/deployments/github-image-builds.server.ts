@@ -7,6 +7,7 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent } from "#/modules/inngest/events";
 import { buildFingerprints, buildGrantTag, ployzVersion } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
+import { Database } from "#/server/database.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import type { BuildCandidate } from "./build-order";
 import { githubSkipReason, installFailedSchema, type GithubImageBuild } from "./image-build";
@@ -325,14 +326,19 @@ export const recordGithubBuildSteps = Effect.fn("Deployments.recordGithubBuildSt
   const platforms = report.platforms ?? null;
   // A failed Build Step already shows in its row; a build GitHub failed moves on without one.
   if (platforms) steps.push(...collector.finish());
-  // GitHub's go, which holds the build as long as it takes reports: filed there even if the walk moves it on meanwhile.
-  yield* persistBuildLog(row.deploymentId, { steps, output }, { image: row.image, attempt: row.skips.length });
   const taken = Math.max(received, report.from + report.events.length);
   const recorded: Types.Mutable<NonNullable<GithubImageBuild["report"]>> = { received: taken, collector: collector.checkpoint(), platforms: platforms && [...platforms] };
   if (platforms && report.installFailed !== undefined) recorded.installFailed = report.installFailed;
-  if (!(yield* recordGithubReport(row.id, received, recorded))) {
-    return yield* new Conflict({ message: "Another report of this build was taken first." });
-  }
+  // The steps land with the report that takes them, in one transaction: a report that lost to a move
+  // (or another report) files nothing, so none reopens in GitHub's section after the move closed it.
+  // While GitHub holds the build, its go is the skip trail's length.
+  const database = yield* Database;
+  const accepted = yield* database.transaction(Effect.gen(function* () {
+    if (!(yield* recordGithubReport(row.id, received, recorded))) return false;
+    yield* persistBuildLog(row.deploymentId, { steps, output }, { image: row.image, attempt: row.skips.length });
+    return true;
+  }));
+  if (!accepted) return yield* new Conflict({ message: "Another report of this build was taken first." });
   if (platforms) {
     // The runner reports its end once the image is pushed, before its run completes (it still
     // uploads build cache), so the report settles the build and wakes the waiting walk. A build

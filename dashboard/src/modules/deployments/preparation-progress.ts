@@ -74,6 +74,8 @@ export function preparationProgressCollector(now: () => Date = () => new Date(),
   let open: string | null = resume?.open ?? null;
   let build = resume?.build ?? 0;
   let stepFailed = resume?.stepFailed ?? false;
+  /** The Service whose image is on its way; only its own progress names it, never a later phase. */
+  let sending: string | null = null;
   let finished = false;
   const create = (key: string, name: string): BuildStepWrite => {
     const row = { build, key, name, startedAt: now(), completedAt: null, cached: false, error: null };
@@ -116,16 +118,19 @@ export function preparationProgressCollector(now: () => Date = () => new Date(),
       // Sending an image is the deploy's, not its build's: it shows in that Service's deploy log.
       if ("Sending" in event) {
         const { service, machines } = event.Sending;
-        current = { ...current, phase: "transfer", serviceId: serviceIdFor(service), message: `Sending image to ${machines.join(", ")}` };
-        return { progress: current, steps: [], output: [] };
+        sending = serviceIdFor(service);
+        current = { ...current, phase: "transfer", message: `Sending image to ${machines.join(", ")}` };
+        return { progress: { ...current, serviceId: sending }, steps: [], output: [] };
       }
       if ("Delivered" in event) {
         const row = open === null ? undefined : rows.get(open);
-        const serviceId = serviceIdFor(event.Delivered.service);
-        const sent = current.phase === "transfer" && current.serviceId === serviceId && current.message?.startsWith("Sending") === true;
-        if (sent) current = { ...current, message: "Image sent" };
+        const sent = sending !== null && sending === serviceIdFor(event.Delivered.service) ? sending : null;
+        if (sent !== null) {
+          sending = null;
+          current = { ...current, message: "Image sent" };
+        }
         return {
-          progress: sent ? current : null, steps: [],
+          progress: sent === null ? null : { ...current, serviceId: sent }, steps: [],
           output: row ? [{ build: row.build, step: row.key, stderr: false, text: `Delivered ${event.Delivered.image} to ${event.Delivered.machine_id}\n` }] : [],
         };
       }

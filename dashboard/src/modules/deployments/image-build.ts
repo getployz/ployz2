@@ -27,7 +27,9 @@ export const skipReasonSchema = Schema.Union([
   /** The Service's Preferred Server is gone (`name` null) or no longer accepts builds: the walk went back to Auto. */
   Schema.Struct({ builder: Schema.Literal("servers"), kind: Schema.Literal("preferred_unavailable"), machineId: rustMachineIdSchema, name: Schema.NullOr(Schema.String) }),
   /** It hadn't started the build within its "start within" limit. */
-  Schema.Struct({ builder: Schema.Literals(["github", "servers"]), kind: Schema.Literal("not_started"), minutes: Schema.Number }),
+  Schema.Struct({ builder: Schema.Literal("github"), kind: Schema.Literal("not_started"), minutes: Schema.Number }),
+  /** No Server started it in time; `machineName` is the Server it waited on, once the Engine chose one. */
+  Schema.Struct({ builder: Schema.Literal("servers"), kind: Schema.Literal("not_started"), minutes: Schema.Number, machineName: Schema.optionalKey(Schema.String) }),
 ]);
 export type SkipReason = typeof skipReasonSchema.Type;
 

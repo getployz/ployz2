@@ -31,7 +31,8 @@ import { planImageBuildWalk } from "./build-order.server";
 import { buildLogSections, builtOn } from "./deployment-view";
 import { ployzStep } from "./preparation-progress";
 import { checkGithubImageBuild, checkInGithubBuild, recordGithubBuildSteps, settleOrMoveReportedGithubBuild } from "./github-image-builds.server";
-import { settleGithubImageBuild } from "./image-builds.server";
+import * as imageBuilds from "./image-builds.server";
+import { loadImageBuild, moveStartedGithubBuild, settleGithubImageBuild } from "./image-builds.server";
 import { persistDeploymentSourcePin } from "./source-pins.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000801";
@@ -43,7 +44,8 @@ const deploymentId = "00000000-0000-4000-8000-000000000806";
 const serviceId = "00000000-0000-4000-8000-000000000807";
 const runId = "github-build-run";
 const githubRunId = 9001;
-const serversNotStarted: SkipReason = { builder: "servers", kind: "not_started", minutes: 3 };
+// The servers queued it on the Server the Engine chose, which the skip keeps for the log.
+const serversNotStarted: SkipReason = { builder: "servers", kind: "not_started", minutes: 3, machineName: "entry" };
 const githubNotStarted: SkipReason = { builder: "github", kind: "not_started", minutes: 3 };
 const commit = "a".repeat(40);
 const pushed = `sha256:${"e".repeat(64)}`;
@@ -544,6 +546,22 @@ describe("Image Builds on GitHub Actions", () => {
     expect(steps.filter((step) => step.error !== null && step.key !== "install")).toEqual([]);
     expect(steps.filter((step) => step.startedAt !== null && step.completedAt === null && step.attempt === 0)).toEqual([]);
   }, 30_000);
+
+  it("files nothing from a report that loses to a move, so GitHub's section stays closed", async () => {
+    await buildOrder("github-then-servers");
+    await dispatch();
+    await checkIn(oidcToken());
+    await post({ from: 0, events: runnerEvents.slice(0, 1) });
+    // The report loaded the row while GitHub still held it; the walk moves the build before the report lands.
+    const stale = await run(loadImageBuild(await imageBuildId()));
+    expect(await run(moveStartedGithubBuild(await target(), githubRunId, { builder: "github", kind: "runner_stopped" }))).toMatchObject({ kind: "skipped" });
+    const load = vi.spyOn(imageBuilds, "loadImageBuild").mockReturnValueOnce(Effect.succeed(stale));
+    expect(await refused({ from: 1, events: runnerEvents.slice(1) })).toMatchObject({ _tag: "Conflict" });
+    load.mockRestore();
+    const steps = (await buildLog()).steps.filter((step) => step.image === "api");
+    expect(steps.map((step) => step.name)).not.toContain("RUN make");
+    expect(steps.filter((step) => step.startedAt !== null && step.completedAt === null)).toEqual([]);
+  });
 
   it("leaves a build the walk moved to the servers alone when a late GitHub report or settle arrives", async () => {
     await buildOrder("github-then-servers");

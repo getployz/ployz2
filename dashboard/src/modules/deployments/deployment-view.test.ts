@@ -131,8 +131,11 @@ describe("deployment view projection", () => {
       .map((section) => section.title)).toEqual(["o/r has no Ployz build workflow. Building on hel-1 instead."]);
     expect(buildLogSections([step(1, 0, "runner", "Waiting for a runner", 0, null, null, "web")], { ...evidence, serverChoice: null, github: { runUrl: "u" }, skips: [] })
       .map((section) => section.title)).toEqual(["Building on GitHub Actions"]);
-    // A Server go that moved on no longer knows its Server.
-    expect(buildLogSections([step(1, 0, "stage:Queued", "Waiting for a free build slot", 0, 180, null, "web")], { ...evidence, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] })
+    // A Server go that moved on keeps its Server's name on its skip; before the Engine chose one, it is "your servers".
+    const queued = [step(1, 0, "stage:Queued", "Waiting for a free build slot", 0, 180, null, "web")];
+    expect(buildLogSections(queued, { ...evidence, skips: [{ builder: "servers", kind: "not_started", minutes: 3, machineName: "hel-1" }] })
+      .map((section) => section.title)).toEqual(["Building on hel-1", "No server started the build within 3 min."]);
+    expect(buildLogSections(queued, { ...evidence, skips: [{ builder: "servers", kind: "not_started", minutes: 3 }] })
       .map((section) => section.title)).toEqual(["Building on your servers", "No server started the build within 3 min."]);
     // Only the last Builder's go decides the node: GitHub's earlier failure moved on, hel-1 still builds.
     const view = deploymentView({

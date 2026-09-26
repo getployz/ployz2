@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { BuildReceipt, MachineId } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Effect, type Types } from "effect";
+import type { SkipReason } from "./image-build";
 import { errorEvidenceFrom } from "#/lib/error-evidence";
 import { PloyzPreparationError } from "#/modules/runtime/ployz.server";
 import { Database, ReportingDatabase } from "#/server/database.server";
@@ -39,6 +40,7 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
   const collector = preparationProgressCollector();
   const reporting = deploymentReporting();
   let machineId: MachineId | null = null;
+  let machineName: string | undefined;
   let logged = false;
   const log = (writes: { steps: BuildStepWrite[]; output: { build: number; step: string; stderr: boolean; text: string }[] }) => {
     logged ||= writes.steps.length > 0;
@@ -60,6 +62,7 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
       if (event !== "Transfer" && "Selected" in event) {
         const { machine, reason } = event.Selected;
         machineId = machine.id;
+        machineName = machine.name;
         await Effect.runPromiseWith(progressContext)(recordServerChoice(build.id, machine.id, { machineName: machine.name, reason }));
       }
       const writes = collector.event(event);
@@ -85,7 +88,10 @@ export const buildOnServers = Effect.fn("Deployments.buildOnServers")(function* 
   yield* log({ steps, output: [] });
   switch (outcome.kind) {
     case "queued": {
-      return yield* skipUnstarted(build, { builder: "servers", kind: "not_started", minutes: START_WITHIN_MINUTES });
+      // The Server's name leaves the row with the skip; the skip keeps it for the log's heading.
+      const reason: Types.Mutable<SkipReason> = { builder: "servers", kind: "not_started", minutes: START_WITHIN_MINUTES };
+      if (machineName !== undefined) reason.machineName = machineName;
+      return yield* skipUnstarted(build, reason);
     }
     case "built": return yield* settleImageBuild(build, { status: "built", receipt: outcome.receipt });
     case "failed": return yield* settleImageBuild(build, { status: "failed", message: outcome.message, machineId });
