@@ -13,13 +13,12 @@ export type DataSourceKind = "org-store" | "runtime" | "remote";
 
 export const dataSources = {
   "collections/query-collection.ts": { kind: "org-store", freshness: "table default: the Organization change stream pushes which tables changed and each reads rows changed since its cursor; no timer; refetch on focus and reconnect; land this user's writes via writeCommitted" },
-  // ponytail: deployments are unbounded history; move them to paged remote reads when orgs outgrow eager loading.
-  "collections/collections.ts": { kind: "org-store", freshness: "table default for every table, deployments included: deployment events push progress" },
+  "collections/collections.ts": { kind: "org-store", freshness: "table default for every table; deployments hold active attempts plus the latest per Environment, and deployment events push their progress" },
   "collections/org-store.ts": { kind: "org-store", freshness: "readiness only, once per organization; the change stream keeps tables fresh" },
   "modules/environment-design/environment-document.collection.ts": { kind: "org-store", freshness: "derived from environments and projects" },
   "modules/environment-design/resource.collection.ts": { kind: "org-store", freshness: "derived from resources, lineages, positions, and documents" },
   "modules/services/services.collection.ts": { kind: "org-store", freshness: "derived from services and documents" },
-  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (their frozen target node lists)" },
+  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (active attempts plus the latest per Environment, with their frozen target node lists)" },
   "modules/deployments/environment-change-state.queries.ts": { kind: "org-store", freshness: "server projection, refetched when the change log names environment_change_state (deployment rows or saved revisions); progress events excluded" },
   "modules/runtime/runtime.collection.ts": { kind: "runtime", freshness: "SSE runtime watch" },
   "modules/runtime/container-log.stream.ts": { kind: "runtime", freshness: "SSE log stream, older pages on scroll" },
@@ -35,3 +34,14 @@ export const dataSources = {
   "modules/deployments/deployment-history.queries.ts": { kind: "remote", freshness: "deployment list pages and one attempt (row, target list, card-detail snapshots): kept until the change stream names environment_change_state (a deployment row changed), then refetched; the list shows live status from the Org Store for rows it holds" },
   "modules/deployments/deployment-variables.queries.ts": { kind: "remote", freshness: "never refetched: recomputed from the attempt's frozen inputs, which never change" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;
+
+/**
+ * Tables that grow with every Deploy, Save, or passing hour. Org Store views never read them: a count, a latest-of,
+ * or a per-attempt status computed from them comes from the server. `collections.test.ts` checks every view.
+ */
+export const historyTables = [
+  "environment_deployment_event", "environment_deployment_build_step", "environment_deployment_build_output",
+  "environment_deployment_image_build", "environment_deployment_secret", "environment_saved_state_snapshot",
+  "environment_node_config_snapshot", "volume_remove_attempt", "machine_remove_attempt", "teardown_attempt",
+  "core_operation_event", "organization_change",
+];

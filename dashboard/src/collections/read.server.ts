@@ -11,7 +11,7 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { BuildOrderRow } from "#/modules/deployments/build-order";
-import { deploymentRowColumns } from "#/modules/deployments/deployment-row.server";
+import { deploymentRowColumns, orgStoreDeploymentSlice } from "#/modules/deployments/deployment-row.server";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
@@ -72,8 +72,11 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "environment_canvas_node_position":
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
           .where(scoped(tables.environmentCanvasNodePosition));
+      // ponytail: an attempt that leaves the slice mid-session (a newer one landed) stays in this browser until the
+      // next full read: a delta read of its key returns no row and no delete. Bounded by what one session does.
       case "environment_deployment":
-        return yield* database.drizzle.select(deploymentRowColumns).from(tables.environmentDeployment).where(scoped(tables.environmentDeployment));
+        return yield* database.drizzle.select(deploymentRowColumns).from(tables.environmentDeployment)
+          .where(and(scoped(tables.environmentDeployment), orgStoreDeploymentSlice(organization.id)));
       // Sealed variable ciphertext stays on the server; deploy resolution reads the full rows.
       case "environment_node_introduction":
         return (yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
