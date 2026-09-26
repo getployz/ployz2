@@ -95,9 +95,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         let export = cancellation.clone();
         let building = events.clone();
         let (build, built) = tokio::task::spawn_blocking(move || {
-            let built = build.execute_local(&cancellation, &|event| {
-                building.write(&json!({"Build": event}));
-            });
+            let built = build.execute_local(&cancellation, &|event| building.write(event));
             (build, built)
         })
         .await
@@ -117,31 +115,30 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// The `--events` file: one `{"at": <unix ms>, "event": <SDK preparation event>}` line per
-/// event, the shape Cloud's build log reads. Progress is best effort: a failed write never
-/// fails the build.
+/// The `--events` file: one `{"at": <unix ms>, "event": {"Build": <progress>}}` line per
+/// event, the SDK preparation event shape Cloud's build log reads. Progress is best effort:
+/// a failed write never fails the build.
 struct Events(Option<std::sync::Mutex<std::fs::File>>);
 
 impl Events {
-    fn write(&self, event: &Value) {
+    fn write(&self, event: &ployz_build::Progress) {
         use std::io::Write as _;
         let Some(file) = &self.0 else { return };
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_millis());
         if let Ok(mut file) = file.lock() {
-            let _ = writeln!(file, "{}", json!({"at": at, "event": event}));
+            let _ = writeln!(file, "{}", json!({"at": at, "event": {"Build": event}}));
         }
     }
 
-    /// A line of the push, as output of its `Push` stage.
-    fn push_output(&self, text: &str) {
-        self.write(&json!({"Build": {"StepOutput": {"step": PUSH_STEP, "stderr": false, "text": format!("{text}\n")}}}));
+    /// One line of the push: output of the open `Push` stage.
+    fn push_line(&self, line: &str) {
+        self.write(&ployz_build::Progress::Output(
+            format!("{line}\n").into_bytes(),
+        ));
     }
 }
-
-/// The push is a Ployz stage of its own; `ployz_build` knows only the build's stages.
-const PUSH_STEP: &str = "stage:Push";
 
 /// The deployment's single Git-sourced Service: the one this command builds.
 fn git_service(deployment: &Value) -> Result<ServiceName, Error> {
@@ -201,7 +198,7 @@ async fn push(grant: &BuildGrant, built: &LocalImage, events: &Events) -> Result
         .strip_prefix("sha256:")
         .ok_or(BuildCommandError::NotDigestIdentified)?;
     let tag = format!("{}:{RETAINED_DIGEST_TAG_PREFIX}{hex}", built.repository);
-    events.write(&json!({"Build": {"Stage": "Push"}}));
+    events.write(&ployz_build::Progress::Stage(ployz_build::Stage::Push));
     let registry = open_grant_registry(grant, &ManagementRelay::default()).await?;
     let local = format!("{}/{tag}", registry.address());
     docker(&["tag", digest, &local]).await?;
@@ -213,7 +210,7 @@ async fn push(grant: &BuildGrant, built: &LocalImage, events: &Events) -> Result
             BuildCommandError::GrantRefused(refusal).into()
         }));
     }
-    events.push_output(&format!("Pushed {digest}"));
+    events.push_line(&format!("Pushed {digest}"));
     // The Machine stores a tagged manifest only when its bytes hash to the tag's
     // digest, so a completed push is the Machine's confirmation of `digest`.
     println!(
@@ -245,7 +242,7 @@ async fn docker_push(reference: &str, events: &Events) -> Result<(), Error> {
     if let Some(stdout) = child.stdout.take() {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            events.push_output(&line);
+            events.push_line(&line);
         }
     }
     let status = child.wait().await?;

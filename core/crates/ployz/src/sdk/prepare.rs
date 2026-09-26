@@ -222,13 +222,13 @@ pub enum Progress {
     Transfer,
     /// One Service's image starts going to these Machines, by name.
     Sending {
-        service: String,
-        machines: Vec<String>,
+        service: ployz_core::ServiceName,
+        machines: Vec<ployz_core::MachineName>,
     },
     /// One Machine received a Service's image.
     Delivered {
         image: String,
-        service: String,
+        service: ployz_core::ServiceName,
         machine_id: ployz_core::MachineId,
     },
 }
@@ -279,7 +279,7 @@ pub async fn prepare(
     if !builds.is_empty() {
         progress(Progress::Transfer);
     }
-    let outcome = crate::deploy::pipeline::push_project_images(
+    let failures = crate::deploy::pipeline::push_project_images(
         client,
         &builds,
         &machines,
@@ -291,10 +291,10 @@ pub async fn prepare(
     if cancellation.is_cancelled() {
         return Err(PreparationError::Cancelled);
     }
-    if !outcome.failures.is_empty() {
+    if !failures.is_empty() {
         return Err(PreparationError::Delivery(format!(
             "image push failed: {}",
-            outcome.failures.join("; ")
+            failures.join("; ")
         )));
     }
     Ok(Prepared { plan, builds })
