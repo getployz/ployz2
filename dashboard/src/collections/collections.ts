@@ -19,7 +19,6 @@ import {
 import {
   environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
-  volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 
 type ProjectRow = typeof schemaProject.$inferSelect;
@@ -28,12 +27,11 @@ type ServiceRow = typeof schemaService.$inferSelect;
 type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
 type EnvironmentResourceRow = typeof schemaEnvironmentResource.$inferSelect;
-type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy">;
+type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy"> & { canRetry: boolean };
 type EnvironmentNodeConfigSnapshotRow =
   typeof schemaEnvironmentNodeConfigSnapshot.$inferSelect;
 type EnvironmentNodeIntroductionRow =
   typeof schemaEnvironmentNodeIntroduction.$inferSelect;
-type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
 /** Every Org Store collection is fed by the Organization change log: a refetch reads only rows changed `since` its cursor. */
 function changeCollection<Row extends object>(table: CollectionName, getKey: (row: Row) => string) {
@@ -60,7 +58,6 @@ export const getEnvironmentNodeConfigSnapshotsCollection = changeCollection<Envi
   "environment_node_config_snapshot", (row) => row.id);
 export const getEnvironmentNodeIntroductionsCollection = changeCollection<EnvironmentNodeIntroductionRow>(
   "environment_node_introduction", (row) => `${row.nodeType}:${row.nodeId}`);
-export const getVolumeRemoveAttemptsCollection = changeCollection<VolumeRemoveAttemptRow>("volume_remove_attempt", (row) => row.id);
 export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
 export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
 export const getBuildOrderCollection = changeCollection<BuildOrderRow>("organization_build_order", (row) => row.id);
@@ -91,7 +88,6 @@ export const orgStoreTables = {
   environment_deployment: getEnvironmentDeploymentsCollection,
   environment_node_config_snapshot: getEnvironmentNodeConfigSnapshotsCollection,
   environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
-  volume_remove_attempt: getVolumeRemoveAttemptsCollection,
   organization_enrollment: getOrganizationEnrollmentCollection,
   organization_cluster_domain: getClusterDomainCollection,
   organization_build_order: getBuildOrderCollection,

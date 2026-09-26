@@ -52,7 +52,7 @@ const deployment = (id: string, minute: number, runtimeProgress: DeploymentProgr
   id, organizationId, environmentId, triggerOrigin: { origin: "manual", actorId: "user" }, savedStateSnapshotId: id, serviceActionPolicy: null,
   status, inngestRunId: null, coreDeployId: null, retryOfDeploymentId: null, sourcePins: {}, variableProducers: null, deployManifest: null,
   deployPreview: null, runtimeProgress, failureCode: null, failureMessage: null, message: null, cancellationRequestedAt: null, dispatchRequestedAt: null,
-  startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt,
+  startedAt: null, finishedAt: null, createdAt: new Date(createdAt.getTime() + minute * 60_000), updatedAt: createdAt, canRetry: status === "failed",
 });
 const snapshot = (deploymentId: string, nodeId: string, privateDns: string) => ({ id: `${deploymentId}:${nodeId}`, organizationId, environmentId,
   environmentDeploymentId: deploymentId, nodeType: "service", nodeId, nodeLineageId: nodeId, configVersion: 1, config: config(privateDns), createdAt, updatedAt: createdAt });

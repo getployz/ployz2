@@ -17,7 +17,6 @@ import {
 import { finiteNumber } from "#/modules/environment-design/schema";
 import { runtimeDeployPreviewSchema } from "#/modules/deployments/runtime-preview";
 import type { SdkDeployPreview } from "#/modules/deployments/runtime-preview";
-import { VOLUME_REMOVE_ATTEMPT_STATUSES } from "#/modules/runtime/volume-removal";
 
 export {
   DestructiveVolumeReviewChangedError,
@@ -27,7 +26,6 @@ export {
   type DestructiveVolumeReview,
 } from "#/modules/environment-design/destructive-volume-review";
 
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const PositiveSequence = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/u));
 const DeploymentMessage = Schema.NullOr(
   Schema.Trim.check(Schema.isMaxLength(500)),
@@ -41,40 +39,6 @@ const EnvironmentContext = {
 export const prepareEnvironmentDestructiveVolumesSchema = Schema.Struct(
   EnvironmentContext,
 );
-
-const volumeRemoveVolumeSummarySchema = Schema.Struct({
-  machine_id: NonEmptyString,
-  name: NonEmptyString,
-});
-
-const volumeRemoveOutcomeSummarySchema = Schema.Struct({
-  destroyed: Schema.mutable(Schema.Array(volumeRemoveVolumeSummarySchema)),
-  failed: Schema.mutable(
-    Schema.Array(
-      Schema.Struct({
-        ...volumeRemoveVolumeSummarySchema.fields,
-        message: Schema.optional(Schema.String),
-      }),
-    ),
-  ),
-  omitted: Schema.mutable(Schema.Array(volumeRemoveVolumeSummarySchema)),
-});
-
-export const volumeRemoveAttemptSummarySchema = Schema.Struct({
-  id: Uuid,
-  environmentDeploymentId: Schema.NullOr(Uuid),
-  environmentResourceId: Schema.NullOr(Uuid),
-  retryOfAttemptId: Schema.NullOr(Uuid),
-  volumes: Schema.mutable(Schema.Array(volumeRemoveVolumeSummarySchema)),
-  status: Schema.Literals(VOLUME_REMOVE_ATTEMPT_STATUSES),
-  inngestRunId: Schema.NullOr(Schema.String),
-  outcome: Schema.NullOr(volumeRemoveOutcomeSummarySchema),
-  failureMessage: Schema.NullOr(Schema.String),
-  startedAt: Schema.NullOr(Schema.Date),
-  terminalAt: Schema.NullOr(Schema.Date),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
-});
 
 export const reviewedPublicationSchema = Schema.Struct({
   ...EnvironmentContext,
@@ -137,12 +101,8 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   cancellationRequestedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
-  serviceCount: finiteNumber({ integer: true, minimum: 0 }),
   projectSlug: ProjectSlug,
   environmentSlug: EnvironmentSlug,
-  volumeRemoveAttempts: Schema.mutable(
-    Schema.Array(volumeRemoveAttemptSummarySchema),
-  ),
 });
 
 export type EnvironmentChangeStateNodeProjection = {
